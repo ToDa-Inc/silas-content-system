@@ -1,45 +1,88 @@
-import Image from "next/image";
 import Link from "next/link";
+import { ChevronRight, Heart, MessageCircle, Sparkles } from "lucide-react";
 import {
-  BarChart3,
-  ChevronRight,
-  Heart,
-  ListFilter,
-  MessageCircle,
-  Sparkles,
-} from "lucide-react";
+  fetchBaseline,
+  fetchCompetitors,
+  getApiBase,
+  getDefaultClientSlug,
+  getDefaultOrgSlug,
+  type CompetitorRow,
+} from "@/lib/intelligence-api";
+import { DiscoverPanel } from "./components/discover-button";
 
-const rows = [
-  {
-    id: "1",
-    label: "Hook Alpha",
-    title: '"Stop building features, start..."',
-    outlier: "12.1x",
-    pattern: "Pattern: Cognitive Dissonance",
-    thumb:
-      "https://lh3.googleusercontent.com/aida-public/AB6AXuA41Zy_xJm1DAPn9PC6aROKJP0rI935PCaZMjdVxEAcNm8IxFzFrkxZBX2r0FGscJ8SJnZCJB8gCgO7aARREYdQqiAZwuFFWZ6CqDP0hgYjIyiyf6oWOnYcRkNPVF5XJP92vrsv6C8esJfjdEtNQoYl4ct-3cLLlwnzefIJwgdez_PpSYo5BrGEMivgAJ66jD-8ORe4tsV0MEBgVNLDVURq8M838trE4W6zV7l-fcKNKuGxW7-b6NbLsZ2gwtnG3f_C9lHVxkhyZvk-",
-  },
-  {
-    id: "2",
-    label: "Hook Beta",
-    title: '"Most UI designers are making this..."',
-    outlier: "7.8x",
-    pattern: "Pattern: Negative Constraint",
-    thumb:
-      "https://lh3.googleusercontent.com/aida-public/AB6AXuBw8x3J-iyvqxfQDeYgI4HWsv54iA8kmUQGiOV-PF8u1fCKgqLCBLao_vj3DcHOgKdGRXHiiiun4Z4hLTFNxO2-o5Pd8D0Vjg0oxw51oRcrm4h0aTsaJbOVKuea4Eq7ayyrm4hjJ5qpSsQRS1LPUZEcJPAGiYNkpzWUmlh4ryOSTla65kuBFEV9XXzE6C3WbwMamynDEjiMZkHiB6qnYRUayKEURGKYvEOkk5U4uFQXHHXAaM_BOciAZx2NLIlU-gj37uZ5YetyuIH",
-  },
-  {
-    id: "3",
-    label: "Hook Gamma",
-    title: '"Why 99% of startups fail at launch"',
-    outlier: "5.2x",
-    pattern: "Pattern: Statistics Anchoring",
-    thumb:
-      "https://lh3.googleusercontent.com/aida-public/AB6AXuA0c5Aef0Tyqm2VkkrcpjEBtdA2y9U3oLI7C5BIx4sS9pCubiBB0roPNlMcNN9zUIy7IF1r18f9MzzQBC6i2rD3tAXp4fWDxzgKBzEtLBRq8kutIvqp0gauFrPsOdzys6X-rLLeVytJyjCbBjupq_HDeGPVepbLjskLw8CZPf5zx5l0ex-Ub1ys8FGr2nycgREU9mAoKFtHHMOTjsAZ-KKOUOkMaxDyZDXpHItsmWuXUoNfsJqaqCmVHK0eLjihLk4TUrHR4Dcq5PMC",
-  },
-];
+function tierBadge(tier: number | null) {
+  if (tier === 1) return "BLUEPRINT";
+  if (tier === 2) return "STRONG";
+  if (tier === 3) return "PEER";
+  if (tier === 4) return "SKIP";
+  return "—";
+}
 
-export default function IntelligencePage() {
+function CompetitorRowView({ row }: { row: CompetitorRow }) {
+  const initial = (row.username || "?").slice(0, 1).toUpperCase();
+  const title = `@${row.username}`;
+  const pattern =
+    row.tier_label ||
+    row.content_style ||
+    (row.topics?.length ? `Topics: ${row.topics.slice(0, 3).join(", ")}` : "—");
+  const outlier =
+    row.composite_score != null ? `${row.composite_score}` : row.relevance_score ?? "—";
+
+  return (
+    <div className="group grid cursor-default grid-cols-1 items-center gap-4 rounded-xl bg-surface-container-low p-4 transition-colors hover:border hover:border-outline-variant/10 hover:bg-surface-container-high md:grid-cols-12">
+      <div className="flex items-center gap-4 md:col-span-5">
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-zinc-800 text-sm font-bold text-amber-400">
+          {initial}
+        </div>
+        <div className="min-w-0">
+          <p className="text-[11px] font-bold uppercase tracking-tighter text-zinc-500">
+            {tierBadge(row.tier)}
+          </p>
+          <h4 className="truncate text-sm font-semibold text-on-surface">{title}</h4>
+        </div>
+      </div>
+      <div className="text-center md:col-span-2">
+        <p className="mb-1 text-[10px] text-zinc-500">Score</p>
+        <span className="text-lg font-bold text-amber-400">{outlier}</span>
+      </div>
+      <div className="md:col-span-3">
+        <p className="mb-1 text-[10px] uppercase tracking-widest text-zinc-500">Signal</p>
+        <div className="flex items-center gap-1">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+          <span className="line-clamp-2 text-[11px] font-medium text-on-surface">{pattern}</span>
+        </div>
+      </div>
+      <div className="flex justify-end md:col-span-2">
+        {row.profile_url ? (
+          <a
+            href={row.profile_url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-[11px] font-semibold text-primary hover:underline"
+          >
+            Profile
+          </a>
+        ) : (
+          <span className="text-zinc-600">—</span>
+        )}
+      </div>
+      {row.reasoning ? (
+        <p className="col-span-1 text-[11px] leading-relaxed text-zinc-500 md:col-span-12">
+          {row.reasoning}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+export default async function IntelligencePage() {
+  const [compRes, baseRes] = await Promise.all([fetchCompetitors(), fetchBaseline()]);
+  const competitors = compRes.data;
+  const baseline = baseRes.data;
+  const apiBase = getApiBase();
+  const orgSlug = getDefaultOrgSlug();
+  const clientSlug = getDefaultClientSlug();
+
   return (
     <main className="mx-auto max-w-[1400px] px-4 py-8 md:px-8">
       <header className="mb-10 flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
@@ -47,128 +90,92 @@ export default function IntelligencePage() {
           <nav className="mb-4 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">
             <span>Intelligence</span>
             <ChevronRight className="h-3 w-3" aria-hidden />
-            <span className="text-primary">Viral Feed</span>
+            <span className="text-primary">Competitors</span>
           </nav>
           <h2 className="text-4xl font-extrabold leading-none tracking-tighter text-on-surface md:text-5xl lg:text-6xl">
-            The Luminous Feed.
+            Live competitor feed.
           </h2>
         </div>
         <div className="flex flex-wrap gap-4">
-          <div className="flex items-center gap-3 rounded-lg bg-surface-container-high px-4 py-2">
-            <span className="text-xs font-medium text-zinc-500">Outlier Threshold</span>
-            <span className="font-bold text-primary">3.5x</span>
-          </div>
-          <button
-            type="button"
-            className="flex items-center gap-2 rounded-lg border border-outline-variant/10 bg-surface-bright px-6 py-2 text-sm font-semibold"
-          >
-            <ListFilter className="h-4 w-4" aria-hidden />
-            Refine Signal
-          </button>
+          {baseline ? (
+            <div className="flex items-center gap-3 rounded-lg bg-surface-container-high px-4 py-2">
+              <span className="text-xs font-medium text-zinc-500">Median views (baseline)</span>
+              <span className="font-bold text-primary">
+                {baseline.median_views?.toLocaleString() ?? "—"}
+              </span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3 rounded-lg bg-surface-container-high px-4 py-2">
+              <span className="text-xs font-medium text-zinc-500">Baseline</span>
+              <span className="font-bold text-zinc-400">Not loaded</span>
+            </div>
+          )}
         </div>
       </header>
 
+      {!compRes.ok ? (
+        <div className="mb-8 rounded-xl border border-amber-900/40 bg-amber-950/20 p-4 text-sm text-amber-200/90">
+          <p className="font-semibold">Backend unreachable or misconfigured</p>
+          <p className="mt-1 text-zinc-400">{compRes.error}</p>
+          <p className="mt-2 text-xs text-zinc-500">
+            Start the API: <code className="rounded bg-zinc-900 px-1">cd backend && uvicorn main:app --port 8000</code>
+            . Set{" "}
+            <code className="rounded bg-zinc-900 px-1">NEXT_PUBLIC_API_URL</code> and run{" "}
+            <code className="rounded bg-zinc-900 px-1">python migrate.py</code> after Supabase setup.
+          </p>
+        </div>
+      ) : null}
+
+      <section className="mb-10">
+        <DiscoverPanel apiBase={apiBase} orgSlug={orgSlug} clientSlug={clientSlug} />
+      </section>
+
       <section className="mb-12 grid grid-cols-1 gap-6 lg:grid-cols-12">
         <div className="relative col-span-1 overflow-hidden rounded-xl bg-surface-container lg:col-span-4">
-          <div className="relative aspect-[9/16] max-h-[520px] bg-zinc-900">
-            <Image
-              src="https://lh3.googleusercontent.com/aida-public/AB6AXuCVHRlC1M24rc2g0Bn-Vm0IpkNy97krpoeWZXk7Emnh9CNYH8LfPDwpGq0RcY8NdxTuOdJht1gnSk7c6oU85HLojklYZySijtDRNADcDOzY-uJCxWT8xgocNw7eltt0_8eCxmJA7aJch_78tPYyN14mRWzkuH9oup1PiTrJ1CeUy3f2r_AoqasyrPzIibBEkLw4LPmfA64kzoXSo2igH6UePU3nx-H-otg4Z0XfdnlqohSdxONfVjV-rP9gUohVLMimpLnxu-O3ht9P"
-              alt=""
-              fill
-              className="object-cover opacity-60"
-              sizes="(max-width: 1024px) 100vw, 33vw"
-            />
-            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
-            <div className="absolute inset-x-4 bottom-6 space-y-3">
-              <div className="flex items-center gap-2">
-                <div className="h-8 w-8 overflow-hidden rounded-full border border-white/20 bg-zinc-400">
-                  <Image
-                    src="https://lh3.googleusercontent.com/aida-public/AB6AXuBs6CeSyQsshmhGlZMwP88rT91bqwv04_e-jPWSZRxeT94RQrhStWM-MENN3MU_ApjPDxYs-AKfavNAbtV005X_0UJRPlWlir0_qjXuXNuKFcWVdFfTTd0nUIZnxOGNC1rq3AUei7w3WnMWhKlXzALnYVZHcbmEfKoOEwQCHLAm70ebxMmwcZE6RHkG_zYufJIybic4BbVe7AH5M4TVE-Hu5N6K2vZY6vY_-FVshpjrQBo27hTeU_0dgNmcCKc6MfWvIGE0UAFW-9xg"
-                    alt=""
-                    width={32}
-                    height={32}
-                    className="h-full w-full object-cover"
-                  />
-                </div>
-                <span className="text-xs font-bold text-white">@neuro_growth</span>
-              </div>
-              <p className="line-clamp-2 text-xs text-white/90">
-                The psychological reason your hooks are failing in the first 0.5 seconds of viewing...
+          <div className="relative flex aspect-[9/16] max-h-[520px] flex-col justify-end bg-zinc-900 p-6">
+            <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent" />
+            <div className="relative space-y-3">
+              <p className="text-xs font-bold uppercase tracking-widest text-amber-400/90">
+                Data source
+              </p>
+              <p className="text-sm text-white/90">
+                Ranked competitors from Supabase (composite score when baseline exists, otherwise
+                relevance from discovery).
               </p>
               <div className="flex gap-3 text-[10px] text-white/60">
                 <span className="flex items-center gap-1">
-                  <Heart className="h-3 w-3" aria-hidden /> 42.1k
+                  <Heart className="h-3 w-3" aria-hidden />
+                  {competitors.length} accounts
                 </span>
                 <span className="flex items-center gap-1">
-                  <MessageCircle className="h-3 w-3" aria-hidden /> 1.2k
+                  <MessageCircle className="h-3 w-3" aria-hidden />
+                  Client: {clientSlug}
                 </span>
               </div>
             </div>
           </div>
           <div className="absolute right-4 top-4 rounded-full bg-primary-container/90 px-3 py-1 text-[10px] font-extrabold text-on-primary-container backdrop-blur-md">
-            OUTLIER: 8.4X
+            API: LIVE
           </div>
         </div>
 
         <div className="col-span-1 space-y-6 lg:col-span-8">
           <div className="rounded-xl bg-surface-container p-6 md:p-8">
             <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
-              <h3 className="text-xl font-bold tracking-tight text-on-surface">
-                Emerging Patterns
-              </h3>
+              <h3 className="text-xl font-bold tracking-tight text-on-surface">Competitors</h3>
               <span className="rounded-full bg-surface-container-high px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-zinc-400">
-                24H Window
+                {competitors.length} loaded
               </span>
             </div>
             <div className="space-y-4">
-              {rows.map((row) => (
-                <div
-                  key={row.id}
-                  className="group grid cursor-pointer grid-cols-1 items-center gap-4 rounded-xl bg-surface-container-low p-4 transition-colors hover:border hover:border-outline-variant/10 hover:bg-surface-container-high md:grid-cols-12"
-                >
-                  <div className="flex items-center gap-4 md:col-span-5">
-                    <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-lg bg-zinc-800">
-                      <Image
-                        src={row.thumb}
-                        alt=""
-                        fill
-                        className="object-cover"
-                        sizes="48px"
-                      />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-[11px] font-bold uppercase tracking-tighter text-zinc-500">
-                        {row.label}
-                      </p>
-                      <h4 className="text-sm font-semibold text-on-surface">{row.title}</h4>
-                    </div>
-                  </div>
-                  <div className="text-center md:col-span-2">
-                    <p className="mb-1 text-[10px] text-zinc-500">Outlier Ratio</p>
-                    <span className="text-lg font-bold text-amber-400">{row.outlier}</span>
-                  </div>
-                  <div className="md:col-span-3">
-                    <p className="mb-1 text-[10px] uppercase tracking-widest text-zinc-500">
-                      AI Analysis
-                    </p>
-                    <div className="flex items-center gap-1">
-                      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
-                      <span className="truncate text-[11px] font-medium text-on-surface">
-                        {row.pattern}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="flex justify-end md:col-span-2">
-                    <button
-                      type="button"
-                      className="flex h-8 w-8 items-center justify-center rounded-full bg-zinc-800 transition-colors group-hover:bg-primary-container"
-                      aria-label="Open"
-                    >
-                      <ChevronRight className="h-4 w-4 text-on-surface group-hover:text-on-primary-container" />
-                    </button>
-                  </div>
-                </div>
-              ))}
+              {competitors.length === 0 ? (
+                <p className="text-sm text-zinc-500">
+                  No competitors yet. Run discovery above or migrate from{" "}
+                  <code className="rounded bg-zinc-900 px-1">current-competitors.json</code>.
+                </p>
+              ) : (
+                competitors.map((row) => <CompetitorRowView key={row.id} row={row} />)
+              )}
             </div>
           </div>
 
@@ -179,29 +186,27 @@ export default function IntelligencePage() {
                 <Sparkles className="h-6 w-6" aria-hidden />
               </div>
               <div className="space-y-4">
-                <h3 className="text-lg font-bold text-on-surface">Intelligence Breakdown</h3>
+                <h3 className="text-lg font-bold text-on-surface">Intelligence breakdown</h3>
                 <p className="max-w-xl text-sm leading-relaxed text-zinc-400">
-                  Content tagged with{" "}
-                  <span className="font-semibold text-primary">Cognitive Dissonance</span> is
-                  currently outperforming the niche average by 412%. High-velocity thumbnails
-                  featuring monochrome backgrounds with high-contrast amber text overlays show the
-                  strongest retention rates.
+                  Tier 1–3 competitors are prioritized for pattern extraction. Refresh baseline
+                  periodically so composite scores stay meaningful vs. your own account median
+                  views.
                 </p>
                 <div className="flex flex-wrap gap-6 pt-2">
                   <div>
                     <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-zinc-500">
-                      Suggested Hook
+                      API base
                     </span>
                     <p className="rounded bg-surface-container px-3 py-1 font-mono text-xs">
-                      &quot;Everything you know about [X] is wrong.&quot;
+                      {apiBase}
                     </p>
                   </div>
                   <div>
                     <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-zinc-500">
-                      Visual Weight
+                      Org slug
                     </span>
                     <p className="rounded bg-surface-container px-3 py-1 font-mono text-xs">
-                      Heavy Left Alignment
+                      {orgSlug}
                     </p>
                   </div>
                 </div>
@@ -212,72 +217,37 @@ export default function IntelligencePage() {
       </section>
 
       <section className="mt-16 md:mt-20">
-        <h3 className="mb-8 text-2xl font-extrabold tracking-tight text-on-surface">
-          Content Trajectories.
-        </h3>
+        <h3 className="mb-8 text-2xl font-extrabold tracking-tight text-on-surface">Next steps.</h3>
         <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
           <div className="rounded-xl border border-outline-variant/5 bg-surface-container-low p-6">
-            <div className="mb-6 flex justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
-                Growth Velocity
-              </span>
-              <span className="text-xs font-bold text-emerald-400">+24%</span>
-            </div>
-            <div className="mb-4 flex h-16 items-end gap-1">
-              {[30, 45, 35, 60, 50, 85, 100].map((h, i) => (
-                <div
-                  key={i}
-                  className={`flex-1 rounded-sm ${i >= 5 ? "bg-primary" : "bg-zinc-800"}`}
-                  style={{ height: `${h}%` }}
-                />
-              ))}
-            </div>
-            <p className="mb-1 text-sm font-semibold text-on-surface">Direct Response</p>
-            <p className="text-[11px] italic text-zinc-500">Trending upward in Tier 1 regions</p>
-          </div>
-
-          <div className="rounded-xl border border-outline-variant/5 bg-surface-container-low p-6">
-            <div className="mb-6 flex justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
-                Retention Arc
-              </span>
-              <span className="text-xs font-bold text-primary">Stable</span>
-            </div>
-            <div className="mb-4 flex h-16 items-center justify-center">
-              <BarChart3 className="h-10 w-10 text-zinc-700" aria-hidden />
-            </div>
-            <p className="mb-1 text-sm font-semibold text-on-surface">Narrative Bridge</p>
-            <p className="text-[11px] italic text-zinc-500">Drop-off occurs at 0:12 mark</p>
-          </div>
-
-          <div className="rounded-xl border border-outline-variant/5 bg-surface-container-low p-6">
-            <div className="mb-6 flex justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
-                Sentiment
-              </span>
-              <span className="text-xs font-bold text-primary">92%</span>
-            </div>
-            <div className="mb-4 flex h-16 items-center justify-center text-4xl text-zinc-700">
-              🙂
-            </div>
-            <p className="mb-1 text-sm font-semibold text-on-surface">Trust Score</p>
-            <p className="text-[11px] italic text-zinc-500">
-              Authority-based content peaking
+            <p className="mb-1 text-sm font-semibold text-on-surface">Baseline</p>
+            <p className="text-[11px] text-zinc-500">
+              POST <code className="text-zinc-400">/baseline/refresh</code> via API or add a button
+              later.
             </p>
           </div>
-
+          <div className="rounded-xl border border-outline-variant/5 bg-surface-container-low p-6">
+            <p className="mb-1 text-sm font-semibold text-on-surface">Worker</p>
+            <p className="text-[11px] text-zinc-500">
+              Keep <code className="text-zinc-400">python worker.py</code> running for queued jobs.
+            </p>
+          </div>
+          <div className="rounded-xl border border-outline-variant/5 bg-surface-container-low p-6">
+            <p className="mb-1 text-sm font-semibold text-on-surface">Scraped reels</p>
+            <p className="text-[11px] text-zinc-500">Phase 2: viral reel feed from scraped_reels.</p>
+          </div>
           <div className="flex flex-col justify-between rounded-xl bg-primary-container p-6">
             <p className="text-xs font-extrabold uppercase tracking-widest text-on-primary-container">
               Actionable
             </p>
             <h4 className="font-bold leading-tight text-on-primary-container">
-              Generate script based on this signal?
+              Generate scripts from these signals?
             </h4>
             <Link
               href="/generate"
               className="mt-4 w-full rounded-lg bg-on-primary-container py-2 text-center text-xs font-bold uppercase text-primary-container transition-opacity hover:opacity-90"
             >
-              Initialize Factory
+              Open Generate
             </Link>
           </div>
         </div>

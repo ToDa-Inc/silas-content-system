@@ -1,0 +1,38 @@
+from typing import Any, List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class ClientCreate(BaseModel):
+    slug: str
+    name: str
+    instagram_handle: Optional[str] = None
+    language: str = "de"
+    niche_config: List[Any] = Field(default_factory=list)
+    icp: dict = Field(default_factory=dict)
+    products: dict = Field(default_factory=dict)
+
+
+class ClientUpdate(BaseModel):
+    name: Optional[str] = None
+    instagram_handle: Optional[str] = None
+    language: Optional[str] = None
+    niche_config: Optional[List[Any]] = None
+    icp: Optional[dict] = None
+    products: Optional[dict] = None
+    is_active: Optional[bool] = None
+
+
+class ClientOut(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    org_id: str
+    slug: str
+    name: str
+    instagram_handle: Optional[str]
+    language: str
+    niche_config: List[Any]
+    icp: dict
+    products: dict
+    is_active: bool

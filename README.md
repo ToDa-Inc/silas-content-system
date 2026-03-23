@@ -59,6 +59,11 @@ silas-content-system/
 │   ├── src/app/                       # Routes: /dashboard, /generate, /intelligence, …
 │   └── README.md
 │
+├── backend/                           # **Phase 1 API** — FastAPI + Supabase + worker
+│   ├── README.md                      # Runbook (uvicorn, worker, migrate)
+│   ├── sql/                           # Phase 1 schema + RLS (run in Supabase)
+│   └── migrate.py                     # JSON → Supabase one-time import
+│
 ├── video-production/                  # B-roll + caption generation
 │   └── broll-caption-editor/          # Remotion-based caption overlay tool
 │       ├── src/                       # React/Remotion components

@@ -37,6 +37,10 @@ npm-debug.log*
 *.swp
 *.swo
 
+# Python backend
+backend/.venv/
+backend/.env
+
 # Misc
 .cache/
 dist/
