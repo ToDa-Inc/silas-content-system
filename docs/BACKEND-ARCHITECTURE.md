@@ -1,7 +1,7 @@
 # Backend Architecture — FastAPI + Supabase
 
-**Status:** Reference design — to be implemented  
-**Last updated:** 2026-03-23  
+**Status:** Reference design — to be implemented
+**Last updated:** 2026-03-23
 **Decision:** FastAPI (Python) + Supabase (Postgres + Auth + RLS)
 
 ---
@@ -90,28 +90,74 @@ FOR UPDATE SKIP LOCKED;
 
 ---
 
+## Outlier detection logic (Phase 1)
+
+Outlier detection is a **Phase 1** concern — it is computed at scrape time, not analysis time.
+
+### Who is an outlier (Phase 1 — quantitative)
+
+```
+outlier_ratio = reel.views / competitor.avg_views
+
+is_outlier = outlier_ratio >= 10.0
+```
+
+A post is an outlier if it performed **10x or more** above its account's average views. This is stored directly on the `scraped_reels` row.
+
+- `outlier_ratio = 1.0` → typical post for that account
+- `outlier_ratio = 5.0` → strong post
+- `outlier_ratio = 10.0+` → **outlier** (study this)
+- `outlier_ratio = 50.0+` → **viral breakout** (highest priority)
+
+### Why it is an outlier (Phase 2 — qualitative, Claude)
+
+Phase 2 runs Claude against each outlier using the 5-criteria scoring system from `docs/CRITERIA.md`:
+
+| # | Criterion | What it measures |
+|---|-----------|-----------------|
+| 1 | Instant Hook | Attention in 0–2 seconds |
+| 2 | High Relatability | "That happened to me" factor |
+| 3 | Cognitive Tension | Curiosity or disagreement trigger |
+| 4 | Clear Value | Insight, script, framework, or validation |
+| 5 | Comment Trigger | Discussion and share potential |
+
+Total score 1–50 → replicability rating:
+- **40–50** → Highly Replicable (blueprint found)
+- **30–39** → Strong Pattern (adapt for niche)
+- **20–29** → Moderate
+- **<20** → Weak
+
+This scoring is stored in `reel_analyses` (Phase 2 table).
+
+---
+
 ## Phase 1 API endpoints (what to build first)
 
 ```
 # Clients
-GET    /api/v1/clients                          list all clients (sidebar selector)
-POST   /api/v1/clients                          create new client
-GET    /api/v1/clients/{slug}                   get client + config
-PUT    /api/v1/clients/{slug}                   update niche_config / icp / products
+GET    /api/v1/clients                               list all clients (sidebar selector)
+POST   /api/v1/clients                               create new client
+GET    /api/v1/clients/{slug}                        get client + config
+PUT    /api/v1/clients/{slug}                        update niche_config / icp / products
 
-# Competitors (Intelligence page)
-GET    /api/v1/clients/{slug}/competitors       ranked list from DB
-POST   /api/v1/clients/{slug}/competitors/discover   trigger discovery job → returns { job_id }
+# Competitors — Discovery
+GET    /api/v1/clients/{slug}/competitors            ranked competitor list from DB
+POST   /api/v1/clients/{slug}/competitors/discover   trigger discovery job → { job_id }
+
+# Competitors — Reel Scraping (Phase 1B — outlier detection)
+POST   /api/v1/clients/{slug}/reels/scrape           scrape reels from all BLUEPRINT/STRONG competitors → { job_id }
+GET    /api/v1/clients/{slug}/reels                  list scraped reels ordered by outlier_ratio DESC
+                                                     supports filter: ?outlier_only=true
 
 # Baseline
-GET    /api/v1/clients/{slug}/baseline          latest non-expired baseline
-POST   /api/v1/clients/{slug}/baseline/refresh  trigger re-scrape job
+GET    /api/v1/clients/{slug}/baseline               latest non-expired baseline
+POST   /api/v1/clients/{slug}/baseline/refresh       trigger re-scrape job → { job_id }
 
 # Jobs (polling)
-GET    /api/v1/jobs/{job_id}                    status + result of any background job
+GET    /api/v1/jobs/{job_id}                         status + result of any background job
 ```
 
-That is all Phase 1 needs. Six endpoints.
+That is all Phase 1 needs. **Eight endpoints.**
 
 ---
 
@@ -185,8 +231,8 @@ CREATE TABLE client_baselines (
   avg_views       integer,
   median_views    integer,
   max_views       integer,
-  p90_views       integer,   -- blueprint threshold
-  p10_views       integer,   -- peer threshold
+  p90_views       integer,   -- blueprint threshold (top 10% of client's reels)
+  p10_views       integer,   -- peer threshold (bottom 10%)
   avg_likes       integer,
   reels_analyzed  integer,
   scraped_at      timestamptz DEFAULT now(),
@@ -202,10 +248,17 @@ CREATE TABLE background_jobs (
   org_id        uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   client_id     uuid REFERENCES clients(id),
   job_type      text NOT NULL,
-  -- job_type values:
-  --   competitor_discovery | baseline_scrape | profile_scrape
-  --   ai_analysis | niche_patterns | hook_generation | script_generation
-  --   image_render | video_render
+  -- job_type values (Phase 1):
+  --   competitor_discovery  → discovers + scores accounts via Apify + Gemini
+  --   baseline_scrape       → scrapes client's own reels to derive thresholds
+  --   profile_scrape        → scrapes reels from BLUEPRINT/STRONG competitors
+  -- job_type values (Phase 2+):
+  --   ai_analysis           → Claude scores outlier reels (5-criteria)
+  --   niche_patterns        → aggregates patterns across analyzed reels
+  --   hook_generation       → generates hooks from patterns
+  --   script_generation     → generates talking head scripts
+  --   image_render          → gpt-image-1 background generation
+  --   video_render          → ffmpeg / Remotion composition
   payload       jsonb NOT NULL DEFAULT '{}',
   status        text NOT NULL DEFAULT 'queued',  -- queued | running | completed | failed
   result        jsonb,
@@ -234,13 +287,13 @@ CREATE TABLE competitors (
   language          text,
   content_style     text,        -- educator | motivational | brand | mixed
   topics            text[],
-  reasoning         text,        -- Gemini's explanation
-  relevance_score   integer,     -- 0-100
-  performance_score integer,     -- 0-100
+  reasoning         text,        -- Gemini's explanation of why it's relevant
+  relevance_score   integer,     -- 0-100 (Gemini)
+  performance_score integer,     -- 0-100 (derived from client baseline thresholds)
   language_bonus    integer DEFAULT 0,
-  composite_score   integer,
+  composite_score   integer,     -- 50% relevance + 40% performance + 10% language
   tier              integer,     -- 1=BLUEPRINT 2=STRONG 3=PEER 4=SKIP
-  tier_label        text,
+  tier_label        text,        -- "BLUEPRINT" | "STRONG" | "PEER" | "SKIP"
   discovery_job_id  uuid REFERENCES background_jobs(id),
   last_evaluated_at timestamptz DEFAULT now(),
   created_at        timestamptz DEFAULT now(),
@@ -250,10 +303,12 @@ CREATE TABLE competitors (
 CREATE INDEX idx_competitors_client ON competitors(client_id, tier, composite_score DESC);
 
 -- ═══════════════════════════════════════════════════════
--- PHASE 2: Intelligence — Scraped Content
+-- PHASE 1: Scraped Reels + Outlier Detection
 -- ═══════════════════════════════════════════════════════
+-- NOTE: Scraped reels belong in Phase 1 because outlier detection
+-- (identifying WHO is an outlier by views ratio) is a Phase 1B deliverable.
+-- The WHY analysis (Claude 5-criteria scoring) is Phase 2.
 
--- Raw scraped reels. Stores what Apify returned. No AI analysis here.
 CREATE TABLE scraped_reels (
   id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   client_id           uuid NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
@@ -263,52 +318,88 @@ CREATE TABLE scraped_reels (
   post_url            text,
   thumbnail_url       text,
   account_username    text NOT NULL,
-  account_avg_views   integer,
+  account_avg_views   integer,           -- competitor's avg views at time of scrape
   views               integer,
   likes               integer,
   comments            integer,
   saves               integer,
   shares              integer,
-  outlier_ratio       numeric(8,2),  -- views / account_avg_views
-  hook_text           text,
+  outlier_ratio       numeric(8,2),      -- views / account_avg_views
+  -- outlier_ratio >= 10.0 = outlier (10x above account average)
+  -- outlier_ratio >= 50.0 = viral breakout (highest priority)
+  is_outlier          boolean GENERATED ALWAYS AS (outlier_ratio >= 10.0) STORED,
+  hook_text           text,              -- first line / visible text overlay
   caption             text,
   hashtags            text[],
   posted_at           timestamptz,
-  format              text,          -- reel | image | carousel
-  source              text,          -- profile | hashtag | url_paste
+  format              text,              -- reel | image | carousel
+  source              text,              -- profile | hashtag | url_paste
   niche               text,
   is_bookmarked       boolean DEFAULT false,
   created_at          timestamptz DEFAULT now(),
   UNIQUE (client_id, post_url)
 );
 
-CREATE INDEX idx_scraped_reels_client ON scraped_reels(client_id, outlier_ratio DESC);
+-- Primary query: show outliers ranked by how much they exceeded the account avg
+CREATE INDEX idx_scraped_reels_outlier   ON scraped_reels(client_id, is_outlier, outlier_ratio DESC);
+CREATE INDEX idx_scraped_reels_client    ON scraped_reels(client_id, outlier_ratio DESC);
 
--- AI analysis of a reel. Separate table because:
---   1. Generated at a different time than scraping (async)
+-- ═══════════════════════════════════════════════════════
+-- PHASE 2: Why Analysis (Claude 5-criteria scoring)
+-- ═══════════════════════════════════════════════════════
+-- Separate table because:
+--   1. Generated at a different time from scraping (async, after outlier detected)
 --   2. Can be regenerated without re-scraping
---   3. Different access pattern (generation reads this, scraping doesn't)
+--   3. Different access pattern (generation pipeline reads this, scraper doesn't)
+
 CREATE TABLE reel_analyses (
-  id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  reel_id               uuid NOT NULL REFERENCES scraped_reels(id) ON DELETE CASCADE,
-  analysis_job_id       uuid REFERENCES background_jobs(id),
-  hook_type             text,    -- conflict | pov | curiosity | red_flag | situational
-  emotional_trigger     text,    -- fear | validation | anger | recognition
-  content_angle         text,
-  caption_structure     text,
-  why_it_worked         text,
-  suggested_adaptations jsonb,
-  model_used            text,
-  created_at            timestamptz DEFAULT now(),
-  UNIQUE (reel_id)     -- one analysis per reel; upsert to regenerate
+  id                      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  reel_id                 uuid NOT NULL REFERENCES scraped_reels(id) ON DELETE CASCADE,
+  analysis_job_id         uuid REFERENCES background_jobs(id),
+
+  -- 5-criteria scoring (docs/CRITERIA.md — each 1-10, total 50)
+  instant_hook_score      integer CHECK (instant_hook_score BETWEEN 1 AND 10),
+  relatability_score      integer CHECK (relatability_score BETWEEN 1 AND 10),
+  cognitive_tension_score integer CHECK (cognitive_tension_score BETWEEN 1 AND 10),
+  clear_value_score       integer CHECK (clear_value_score BETWEEN 1 AND 10),
+  comment_trigger_score   integer CHECK (comment_trigger_score BETWEEN 1 AND 10),
+  total_score             integer GENERATED ALWAYS AS (
+    COALESCE(instant_hook_score, 0) +
+    COALESCE(relatability_score, 0) +
+    COALESCE(cognitive_tension_score, 0) +
+    COALESCE(clear_value_score, 0) +
+    COALESCE(comment_trigger_score, 0)
+  ) STORED,
+  -- 40-50: Highly Replicable | 30-39: Strong Pattern | 20-29: Moderate | <20: Weak
+  replicability_rating    text GENERATED ALWAYS AS (
+    CASE
+      WHEN (COALESCE(instant_hook_score,0)+COALESCE(relatability_score,0)+COALESCE(cognitive_tension_score,0)+COALESCE(clear_value_score,0)+COALESCE(comment_trigger_score,0)) >= 40 THEN 'highly_replicable'
+      WHEN (COALESCE(instant_hook_score,0)+COALESCE(relatability_score,0)+COALESCE(cognitive_tension_score,0)+COALESCE(clear_value_score,0)+COALESCE(comment_trigger_score,0)) >= 30 THEN 'strong_pattern'
+      WHEN (COALESCE(instant_hook_score,0)+COALESCE(relatability_score,0)+COALESCE(cognitive_tension_score,0)+COALESCE(clear_value_score,0)+COALESCE(comment_trigger_score,0)) >= 20 THEN 'moderate'
+      ELSE 'weak'
+    END
+  ) STORED,
+
+  -- Qualitative breakdown (Claude's reasoning per criterion)
+  hook_type               text,    -- conflict | pov | curiosity | red_flag | situational
+  emotional_trigger       text,    -- fear | validation | anger | recognition
+  content_angle           text,    -- red_flags | what_to_say | hidden_psychology | corporate_reality | situational
+  caption_structure       text,    -- story | list | framework | script
+  why_it_worked           text,    -- 2-3 sentence summary of the winning formula
+  replicable_elements     jsonb,   -- { hook: "...", value: "...", format: "..." }
+  suggested_adaptations   jsonb,   -- ideas for adapting to client's niche/language
+
+  model_used              text,    -- which Claude model ran this
+  created_at              timestamptz DEFAULT now(),
+  UNIQUE (reel_id)         -- one analysis per reel; upsert to regenerate
 );
 
--- Aggregated niche patterns per client/niche
+-- Aggregated niche patterns per client/niche (generated from reel_analyses)
 CREATE TABLE niche_patterns (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   client_id       uuid NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
   niche           text NOT NULL,
-  patterns        jsonb NOT NULL,
+  patterns        jsonb NOT NULL,   -- aggregated hook types, triggers, angles
   reels_analyzed  integer,
   generated_at    timestamptz DEFAULT now(),
   UNIQUE (client_id, niche)   -- upsert on each run
@@ -469,35 +560,37 @@ Write a one-time Python script: read JSONs → insert into Supabase via `supabas
 
 ---
 
-## FastAPI project structure (when ready to build)
+## FastAPI project structure
 
 ```
 backend/
-├── main.py                   # FastAPI app + router registration
-├── worker.py                 # Background job processor (runs separately)
+├── main.py                       # FastAPI app + router registration
+├── worker.py                     # Background job processor (runs separately)
 ├── core/
-│   ├── config.py             # Settings via pydantic-settings (env vars)
-│   ├── database.py           # Supabase client init
-│   └── auth.py               # JWT validation from Supabase Auth
+│   ├── config.py                 # Settings via pydantic-settings (env vars)
+│   ├── database.py               # Supabase client init
+│   └── auth.py                   # JWT validation from Supabase Auth
 ├── routers/
-│   ├── clients.py            # /api/v1/clients/...
-│   ├── intelligence.py       # /api/v1/clients/{slug}/competitors + discover
-│   ├── generate.py           # /api/v1/clients/{slug}/hooks + scripts
-│   ├── queue.py              # /api/v1/clients/{slug}/content-pieces
-│   └── jobs.py               # /api/v1/jobs/{job_id}
+│   ├── clients.py                # GET/POST/PUT /api/v1/clients/...
+│   ├── intelligence.py           # competitors + discover + reels + scrape
+│   ├── generate.py               # hooks + scripts + captions
+│   ├── queue.py                  # content-pieces approval queue
+│   └── jobs.py                   # GET /api/v1/jobs/{job_id}
 ├── services/
-│   ├── apify.py              # Apify API wrapper (port of competitor-discovery.js)
-│   ├── gemini.py             # OpenRouter + Gemini calls (relevance scoring)
-│   ├── claude.py             # Anthropic SDK (analysis + generation)
-│   └── openai_images.py      # gpt-image-1.5 (thumbnails + backgrounds)
+│   ├── apify.py                  # Apify API wrapper — account search + reel scraping
+│   ├── gemini.py                 # OpenRouter + Gemini — competitor relevance scoring
+│   ├── claude.py                 # Anthropic SDK — 5-criteria analysis + generation
+│   └── openai_images.py          # gpt-image-1 — background image generation
 ├── jobs/
-│   ├── competitor_discovery.py  # job_type: competitor_discovery
-│   ├── baseline_scrape.py       # job_type: baseline_scrape
-│   ├── ai_analysis.py           # job_type: ai_analysis
-│   └── hook_generation.py       # job_type: hook_generation
+│   ├── competitor_discovery.py   # job_type: competitor_discovery (port of competitor-discovery.js)
+│   ├── baseline_scrape.py        # job_type: baseline_scrape (port of competitor-eval.js baseline step)
+│   ├── profile_scrape.py         # job_type: profile_scrape (scrape reels from BLUEPRINT/STRONG accounts)
+│   ├── ai_analysis.py            # job_type: ai_analysis (Claude 5-criteria scoring per outlier)
+│   └── hook_generation.py        # job_type: hook_generation
 └── models/
     ├── client.py
     ├── competitor.py
+    ├── reel.py
     ├── job.py
     └── content.py
 ```
@@ -518,29 +611,67 @@ backend/
 ## Build order
 
 ```
-Sprint 1 (Phase 1):
-  ☐ Supabase project + Phase 1 schema + RLS policies
-  ☐ Migration script: JSON → Supabase
-  ☐ FastAPI skeleton + Supabase client + auth middleware
-  ☐ GET /clients + GET /clients/{slug}/competitors (read from DB)
-  ☐ POST /clients/{slug}/competitors/discover (background job)
-  ☐ Worker: competitor_discovery job (port of competitor-discovery.js)
-  ☐ Worker: baseline_scrape job
-  ☐ Wire Next.js intelligence page to real API
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SPRINT 1 — Phase 1 complete (target: today)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Sprint 2 (Phase 2):
-  ☐ Phase 2 schema (scraped_reels, reel_analyses, niche_patterns)
-  ☐ Worker: profile scrape job (competitor posts)
-  ☐ Worker: ai_analysis job (Claude analyzes each reel)
-  ☐ Intelligence viral feed page wired to real scraped_reels data
+  Infrastructure
+  ☐ Create Supabase project
+  ☐ Run Phase 1 SQL schema (Identity + Clients + Background Jobs + Competitors + Scraped Reels)
+  ☐ Apply RLS policies to all Phase 1 tables
+  ☐ FastAPI skeleton: main.py + core/ (config, database, auth)
 
-Sprint 3 (Phase 3):
-  ☐ Phase 3 schema (generation_runs, hooks, scripts, captions)
-  ☐ Worker: hook_generation + script_generation jobs
+  Data
+  ☐ Migration script: JSON → Supabase (clients, baseline, current-competitors)
+  ☐ Verify Conny's competitors + baseline are live in DB
+
+  API
+  ☐ GET  /clients + GET /clients/{slug}
+  ☐ GET  /clients/{slug}/competitors
+  ☐ POST /clients/{slug}/competitors/discover (queues competitor_discovery job)
+  ☐ POST /clients/{slug}/reels/scrape (queues profile_scrape job)
+  ☐ GET  /clients/{slug}/reels?outlier_only=true
+  ☐ GET  /clients/{slug}/baseline
+  ☐ GET  /jobs/{job_id}
+
+  Workers (port Node.js scripts to Python)
+  ☐ competitor_discovery job (port of competitor-discovery.js)
+  ☐ baseline_scrape job (port of baseline logic in competitor-eval.js)
+  ☐ profile_scrape job (scrapes last 30 reels per BLUEPRINT/STRONG competitor,
+                        computes outlier_ratio, sets is_outlier)
+
+  Dashboard wire-up
+  ☐ Intelligence page reads from /clients/{slug}/competitors (real DB data)
+  ☐ Intelligence page reads from /clients/{slug}/reels (real scraped reels)
+  ☐ Outlier badge shown for is_outlier = true posts
+  ☐ Outlier ratio displayed per post (e.g. "23x")
+  ☐ "Discover" button triggers job + polls until complete
+  ☐ "Scrape Reels" button triggers job + polls until complete
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SPRINT 2 — Phase 2: WHY analysis
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ☐ Run Phase 2 SQL (reel_analyses, niche_patterns)
+  ☐ ai_analysis job: Claude scores each outlier reel using 5-criteria rubric
+  ☐ GET /clients/{slug}/reels/{reel_id}/analysis
+  ☐ POST /clients/{slug}/reels/analyze (queues ai_analysis for all unanalyzed outliers)
+  ☐ niche_patterns job: aggregate patterns across analyzed reels
+  ☐ Intelligence feed page shows analysis cards (score, hook type, why it worked)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SPRINT 3 — Phase 3: Generation
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ☐ Run Phase 3 SQL (generation_runs, hooks, scripts, captions)
+  ☐ hook_generation + script_generation jobs
   ☐ Generate page wired to real API
 
-Sprint 4+ (Phase 4/5):
-  ☐ Phase 4/5 schema (content_pieces, publications, post_performance)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SPRINT 4+ — Phase 4/5: Production
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ☐ Phase 4/5 SQL (content_pieces, publications, post_performance)
   ☐ Video render jobs (ffmpeg / Remotion)
   ☐ Approval queue + Postiz integration
 ```
