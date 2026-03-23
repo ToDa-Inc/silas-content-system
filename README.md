@@ -52,8 +52,12 @@ silas-content-system/
 ├── dashboard/                         # Legacy static HTML (reference)
 │   ├── index.html                     # Main dashboard
 │   ├── mockup.html                    # Design mockup
-│   └── ARCHITECTURE.md               # Dashboard architecture
-├── dashboard_code.md                  # Exported HTML prototype (Stitch/AI) — migrate to React in ../content-machine/
+│   └── ARCHITECTURE.md                # Dashboard architecture
+├── dashboard_code.md                  # Exported HTML prototype (Stitch/AI) — UI reference only
+├── content-machine/                   # **Next.js dashboard** (Silas Prism) — App Router, Tailwind v4
+│   ├── package.json
+│   ├── src/app/                       # Routes: /dashboard, /generate, /intelligence, …
+│   └── README.md
 │
 ├── video-production/                  # B-roll + caption generation
 │   └── broll-caption-editor/          # Remotion-based caption overlay tool
@@ -82,6 +86,18 @@ silas-content-system/
         ├── INTEGRATION.md
         └── tweet.md
 ```
+
+---
+
+## Dashboard (Next.js)
+
+```bash
+cd silas-content-system
+npm install --prefix content-machine
+npm run dashboard
+```
+
+Opens [http://localhost:3000](http://localhost:3000) → `/dashboard`. See `content-machine/README.md`.
 
 ---
 
@@ -127,7 +143,7 @@ node scripts/analyze.js --url "https://www.instagram.com/reel/XXXXX/" --full
 | 3. Video Analysis | ✅ Working | analyze.js + vision + transcribe |
 | 4. Hook/Script Generation | ⬜ Not started | — |
 | 5. B-roll + Caption Creation | 🟡 Prototype | video-production/broll-caption-editor/ |
-| 6. Dashboard | 🟡 Mockup | dashboard/index.html |
+| 6. Dashboard | 🟡 Next.js UI | `content-machine/` (`npm run dev` from that folder, or `npm run dashboard` from repo root) |
 | 7. Scheduling (Postiz) | ⬜ Not started | — |
 
 ---

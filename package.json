@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "description": "Instagram Reels content automation — scrape, analyze, generate, produce",
   "scripts": {
+    "dashboard": "npm --prefix content-machine run dev",
+    "dashboard:build": "npm --prefix content-machine run build",
     "scrape": "node scripts/scraper.js",
     "discover": "node scripts/competitor-discovery.js",
     "analyze": "node scripts/analyze.js",
