@@ -89,15 +89,35 @@ silas-content-system/
 
 ---
 
-## Dashboard (Next.js)
+## Starting apps (explicit scripts — no generic `dev` at root)
+
+The repo has **multiple** entry points, so the root `package.json` uses **named** scripts only:
+
+| What | From repo root |
+|------|----------------|
+| **Next.js dashboard** (`content-machine/`) | `npm run dashboard` (after `npm install --prefix content-machine`) |
+| **B-roll Remotion studio** | `npm run broll:studio` (after `npm install --prefix video-production/broll-caption-editor`) |
+| **Pipeline CLI** | `npm run scrape`, `npm run analyze`, etc. |
+
+Dashboard URL: [http://localhost:3000](http://localhost:3000) → `/dashboard`. Details: `content-machine/README.md`.
+
+### If `content-machine` looks empty on GitHub
+
+**Common cause:** Git recorded `content-machine` as a **submodule** (broken / unpopulated). Then `git add content-machine/` stages **nothing**, and inside that folder you get `fatal: in unpopulated submodule 'content-machine'`.
+
+**Fix:** follow **[docs/FIX-CONTENT-MACHINE-SUBMODULE.md](docs/FIX-CONTENT-MACHINE-SUBMODULE.md)** — remove the submodule entry, then add the folder as normal files.
+
+**If it is not a submodule**, commit source like this (ignored: `node_modules/`, `.next/` only):
 
 ```bash
 cd silas-content-system
-npm install --prefix content-machine
-npm run dashboard
+git add content-machine/
+git status   # expect package.json, src/, public/, configs
+git commit -m "Add Next.js dashboard (content-machine)"
+git push
 ```
 
-Opens [http://localhost:3000](http://localhost:3000) → `/dashboard`. See `content-machine/README.md`.
+If `git status` still shows nothing after the submodule fix, the files are missing on disk.
 
 ---
 
@@ -143,7 +163,7 @@ node scripts/analyze.js --url "https://www.instagram.com/reel/XXXXX/" --full
 | 3. Video Analysis | ✅ Working | analyze.js + vision + transcribe |
 | 4. Hook/Script Generation | ⬜ Not started | — |
 | 5. B-roll + Caption Creation | 🟡 Prototype | video-production/broll-caption-editor/ |
-| 6. Dashboard | 🟡 Next.js UI | `content-machine/` (`npm run dev` from that folder, or `npm run dashboard` from repo root) |
+| 6. Dashboard | 🟡 Next.js UI | `content-machine/` — `npm run dashboard` from repo root |
 | 7. Scheduling (Postiz) | ⬜ Not started | — |
 
 ---
