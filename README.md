@@ -101,23 +101,16 @@ The repo has **multiple** entry points, so the root `package.json` uses **named*
 
 Dashboard URL: [http://localhost:3000](http://localhost:3000) → `/dashboard`. Details: `content-machine/README.md`.
 
-### If `content-machine` looks empty on GitHub
+### Dashboard not showing on GitHub?
 
-**Common cause:** Git recorded `content-machine` as a **submodule** (broken / unpopulated). Then `git add content-machine/` stages **nothing**, and inside that folder you get `fatal: in unpopulated submodule 'content-machine'`.
-
-**Fix:** follow **[docs/FIX-CONTENT-MACHINE-SUBMODULE.md](docs/FIX-CONTENT-MACHINE-SUBMODULE.md)** — remove the submodule entry, then add the folder as normal files.
-
-**If it is not a submodule**, commit source like this (ignored: `node_modules/`, `.next/` only):
+Only `node_modules/` and `.next/` under `content-machine/` are ignored. Commit the rest:
 
 ```bash
-cd silas-content-system
 git add content-machine/
-git status   # expect package.json, src/, public/, configs
-git commit -m "Add Next.js dashboard (content-machine)"
-git push
+git commit -m "Add or update dashboard" && git push
 ```
 
-If `git status` still shows nothing after the submodule fix, the files are missing on disk.
+If `git add content-machine/` stages nothing but files exist on disk, the path was likely added as a **submodule** by mistake: `git rm --cached content-machine`, remove any `content-machine/.git`, then `git add content-machine/` again.
 
 ---
 
