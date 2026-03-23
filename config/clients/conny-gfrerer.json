@@ -1,0 +1,90 @@
+{
+  "client_id": "conny-gfrerer",
+  "name": "Conny Gfrerer",
+  "instagram": "connygfrerer",
+  "language": "de",
+  "niches": [
+    {
+      "id": "workplace-communication",
+      "name": "Workplace Communication",
+      "description": "How professionals handle difficult conversations at work",
+      "keywords": [
+        "workplace communication", "difficult conversations", "toxic workplace",
+        "boundaries at work", "office politics", "difficult boss", "manipulation at work"
+      ],
+      "keywords_de": [
+        "Kommunikation Arbeitsplatz", "schwierige Gespräche", "toxischer Arbeitsplatz",
+        "Grenzen setzen Arbeit", "schwieriger Chef", "Manipulation Arbeit"
+      ],
+      "content_angles": [
+        "What to say when your boss pressures you",
+        "How to respond to passive-aggressive colleagues",
+        "How to set boundaries at work without burning bridges",
+        "Professional responses to disrespect",
+        "Leadership communication mistakes"
+      ]
+    },
+    {
+      "id": "workplace-psychology",
+      "name": "Workplace Psychology",
+      "description": "Hidden dynamics and power structures in organizations",
+      "keywords": [
+        "workplace psychology", "toxic leadership", "narcissistic boss",
+        "power dynamics", "psychological safety", "red flags at work"
+      ],
+      "keywords_de": [
+        "toxische Führung", "narzisstischer Chef", "Machtdynamik Arbeit",
+        "psychologische Sicherheit", "Warnsignale Arbeit"
+      ],
+      "content_angles": [
+        "Red flags smart employees notice early",
+        "Signs your boss is insecure",
+        "Why competent employees stay quiet",
+        "How manipulation works at work",
+        "Why high performers leave companies"
+      ]
+    },
+    {
+      "id": "personal-authority",
+      "name": "Personal Authority & Boundaries",
+      "description": "Inner confidence + external communication skills",
+      "keywords": [
+        "boundaries at work", "self leadership", "personal authority",
+        "confidence at work", "assertive communication", "self respect"
+      ],
+      "keywords_de": [
+        "Grenzen setzen", "Selbstführung", "persönliche Autorität",
+        "Selbstbewusstsein Arbeit", "assertive Kommunikation"
+      ],
+      "content_angles": [
+        "Stop being too nice at work",
+        "Why confident people speak less but clearer",
+        "The difference between nice and kind",
+        "What strong communicators do differently"
+      ]
+    }
+  ],
+  "competitor_seeds": [
+    "eloisegagnon_strategist",
+    "thebigapplered",
+    "corporateclarity.career",
+    "heyworkfriend"
+  ],
+  "icp": {
+    "target": "Professionals dealing with difficult workplace dynamics",
+    "age_range": "28-45",
+    "pain_points": [
+      "Toxic or insecure boss",
+      "Being overlooked despite strong work",
+      "Unable to set boundaries without conflict",
+      "Passive-aggressive colleagues",
+      "Feeling politically disadvantaged at work"
+    ],
+    "desires": [
+      "Be heard and respected at work",
+      "Set boundaries without losing relationships",
+      "Communicate with authority and calm",
+      "Understand workplace dynamics before being affected"
+    ]
+  }
+}

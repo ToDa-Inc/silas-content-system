@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { font-family: Arial, sans-serif; font-size: 11pt; line-height: 1.6; max-width: 750px; margin: 40px auto; color: #222; }
+    h1 { font-size: 18pt; font-weight: bold; margin-bottom: 4px; }
+    h2 { font-size: 14pt; font-weight: bold; margin-top: 32px; margin-bottom: 8px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+    h3 { font-size: 12pt; font-weight: bold; margin-top: 24px; margin-bottom: 6px; }
+    p { margin: 6px 0 12px 0; }
+    ul, ol { margin: 6px 0 12px 16px; padding: 0; }
+    li { margin-bottom: 5px; }
+    table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 10pt; }
+    th { background-color: #f0f0f0; font-weight: bold; text-align: left; padding: 8px 10px; border: 1px solid #ccc; }
+    td { padding: 7px 10px; border: 1px solid #ccc; vertical-align: top; }
+    .meta { color: #555; font-size: 10pt; margin-bottom: 2px; }
+    .verifiable { background-color: #f9f9f9; border-left: 3px solid #aaa; padding: 8px 12px; margin: 12px 0; font-style: italic; }
+    .highlight { background-color: #fffbe6; border-left: 3px solid #f0c040; padding: 8px 12px; margin: 12px 0; }
+    .yes { color: #2a7a2a; font-weight: bold; }
+    .no { color: #b00; font-weight: bold; }
+    .future { color: #888; font-weight: bold; }
+    hr { border: none; border-top: 1px solid #ddd; margin: 28px 0; }
+    .footer { color: #888; font-size: 9pt; margin-top: 40px; text-align: center; }
+  </style>
+</head>
+<body>
+
+  <h1>Content Automation System — Project Proposal</h1>
+  <p class="meta"><strong>Prepared by:</strong> Zark Growth Limited</p>
+  <p class="meta"><strong>Date:</strong> March 2026</p>
+  <p class="meta"><strong>Version:</strong> 2.1</p>
+
+  <hr>
+
+  <h2>What We're Building</h2>
+  <p>A content intelligence and production system for Instagram Reels — built for info product creators managing multiple clients and niches.</p>
+  <p>The system does the 80%: research, pattern analysis, content strategy, hook and script generation, video processing (including multiple layout formats), and thumbnail creation. You do the 20%: review and approve content in the dashboard, then upload to Instagram and add trending audio.</p>
+  <p>The existing B-roll workflow is preserved. The system takes your B-roll, generates the text overlays, burns them into the video programmatically, and outputs a ready-to-upload file. From any viral outlier (scraped or pasted URL), the AI extracts structure and intent — then you choose <strong>how</strong> to execute it using up to <strong>five preset video formats</strong> (layout pipelines, not five separate AI products).</p>
+  <p>Built for one client at launch. Multi-client from day one.</p>
+
+  <hr>
+
+  <h2>Deliverables by Week</h2>
+
+  <h3>Week 1 — Intelligence Layer + Dashboard</h3>
+  <p><strong>What gets delivered:</strong></p>
+  <ul>
+    <li>Web dashboard live and accessible from any browser — no installation required</li>
+    <li>Competitor profile scraper: pulls top-performing Reels from up to 10 accounts per client on demand, ranked by engagement score</li>
+    <li>Outlier detection: flags posts performing 5–10x above an account's average, with exact outlier ratio shown per post</li>
+    <li>Manual viral reference input: paste any public Reel URL and the system scrapes, analyzes, and adds it to the intelligence layer — instant research on any post you find interesting</li>
+    <li>AI analysis per outlier: hook type, emotional trigger used, caption structure, why it likely performed — specific to each post, not generic observations</li>
+    <li>Niche patterns document per client: aggregated across all analyzed posts, updated automatically on every new scrape or manual input</li>
+    <li>First client fully configured: niche keywords, competitor accounts, ICP, products, tone of voice, pain points, personal stories</li>
+  </ul>
+  <div class="verifiable">
+    <strong>Verifiable at end of Week 1:</strong> Dashboard is live. Run a scrape or paste a Reel URL. Get back a ranked feed of viral posts with AI analysis per post and an updated patterns document showing what's working in the niche right now.
+  </div>
+
+  <h3>Week 2 — Content Generation</h3>
+  <p><strong>What gets delivered:</strong></p>
+  <ul>
+    <li>Outlier-to-content flow: pick a viral reference (from scrape or pasted URL). AI summarizes what made it work; you then generate hooks, captions, and scripts <strong>informed by that specific outlier</strong> — not only generic niche patterns</li>
+    <li>Hook generator: 10–20 hook options per run, derived from niche patterns + client context + (optional) selected outlier analysis</li>
+    <li>Caption generator: full Instagram caption per selected hook — mini-story structure, relatable opener, insight, keyword CTA, max 5 hashtags — written in the client's voice</li>
+    <li>Talking head script generator: complete 60-second script structured as hook → situation → 3 insights → conclusion → CTA, adapted to the creator's tone of voice as configured in their profile</li>
+    <li>IG Story text generator: short punchy story text variations based on the same content angle</li>
+    <li>All outputs reviewable and editable in the dashboard before any production step</li>
+  </ul>
+  <div class="verifiable">
+    <strong>Verifiable at end of Week 2:</strong> Generate a batch of hooks from real niche data. Select one. Get back a complete caption, a talking head script, and story text — all usable without editing, all in the client's voice.
+  </div>
+
+  <h3>Week 3 — Video Processing + Format Presets + Thumbnail + Post Queue</h3>
+  <p><strong>What gets delivered:</strong></p>
+  <ul>
+    <li><strong>Five output format presets</strong> — predefined layout pipelines (same B-roll + captions, different frame treatment). Examples covered in this build:
+      <ul>
+        <li><strong>Full-frame B-roll (9:16)</strong> — standard Reel: video fills the frame, text overlay on top</li>
+        <li><strong>Static / still-first</strong> — optimized for still or minimal-motion source (single strong frame + text; can pair with carousel flow elsewhere)</li>
+        <li><strong>Letterbox / cinematic</strong> — B-roll scaled with black bars top and bottom; hook text can sit in bars or on picture per preset rules</li>
+        <li><strong>4:5 center in 9:16</strong> — pillarboxed look: content centered with side bars (common feed aesthetic)</li>
+        <li><strong>Hook-first / minimal on-video text</strong> — lighter on-screen copy; fuller story lives in caption (reduces clutter on busy B-roll)</li>
+      </ul>
+      After analyzing an outlier, the system suggests a <strong>recommended format</strong> based on structure (you can always override). Switching format re-runs the same assets through a different template — not a full re-shoot.
+    </li>
+    <li>B-roll video processing: upload your existing B-roll (pre-cut). The system burns the generated text overlay onto the video and exports a ready-to-upload .mp4 per selected format</li>
+    <li>Text overlay parameters configurable per client: default position, font size, line breaks, style — applied consistently; per-post overrides where needed</li>
+    <li><strong>Revision prompt box:</strong> type natural-language instructions (e.g. "shorter hook", "move text higher", "bolder outline", "two lines only") — system updates overlay copy and/or styling and <strong>re-exports the video</strong>. This covers the same class of edits as tweaking text in Instagram, but with <strong>consistent brand rules, version history, and batch-friendly workflow</strong> across many clients. It does <strong>not</strong> replace Instagram for a one-word tweak on a single post — it wins on volume, consistency, and repeatability.</li>
+    <li>Thumbnail / cover image generator: AI-generated cover images per Reel (gpt-image-1.5, photorealistic, portrait format) — for the Reel cover on the profile grid</li>
+    <li>Post queue: video preview + caption + hashtags + thumbnail. Approve, reject, revision prompt, or regenerate thumbnail</li>
+    <li>Download package per post: video file + caption + hashtags — post manually in Instagram (add trending audio), typically under ~2 minutes</li>
+  </ul>
+  <div class="verifiable">
+    <strong>Verifiable at end of Week 3:</strong> From a chosen outlier, generate hooks and caption, pick a format preset (or accept the recommendation), upload B-roll, export video with burned-in text, optionally use the revision prompt to iterate, generate thumbnail, download package. Ready to post.
+  </div>
+
+  <h3>Week 4 — Auto-Learning Loop + Multi-Client + Handover</h3>
+  <p><strong>What gets delivered:</strong></p>
+  <ul>
+    <li>Performance tracking: enter or connect published post metrics (views, likes, comments, saves) — tracked per post per client in the dashboard</li>
+    <li>Auto-learning loop: posts that hit above-threshold performance are added to the winning examples pool — future generation runs are weighted toward what actually worked for that specific client's audience</li>
+    <li>Approval signal learning: approve/reject decisions on hooks and content train the system's understanding of preferences over time</li>
+    <li>Diagnostic framework: posts automatically classified (scale it / adjust hook / adjust CTA / retire) based on view and engagement thresholds</li>
+    <li>Second client live: configured in under 10 minutes — own niche, competitors, ICP, tone, products</li>
+    <li>Handover: complete walkthrough of every part of the system, documented — fully independently operable from day one</li>
+  </ul>
+  <div class="verifiable">
+    <strong>Verifiable at end of Week 4:</strong> Second client added from scratch live during handover. Full system running for both. Auto-learning loop active — generation quality improves measurably after 3–4 weeks of performance data.
+  </div>
+
+  <hr>
+
+  <h2>Questions — Answered</h2>
+  <p>The following answers every question raised prior to this proposal.</p>
+
+  <table>
+    <tr>
+      <th style="width:40%">Question</th>
+      <th style="width:15%">Status</th>
+      <th>Detail</th>
+    </tr>
+    <tr>
+      <td>Changing text / caption</td>
+      <td><span class="yes">YES</span></td>
+      <td>Edit in dashboard or use the <strong>revision prompt box</strong> — system regenerates overlay and re-exports video</td>
+    </tr>
+    <tr>
+      <td>Multiple video looks from one outlier (formats)</td>
+      <td><span class="yes">YES</span></td>
+      <td>Up to <strong>five preset formats</strong> (layout pipelines). AI suggests a recommended format after outlier analysis; you can switch format and re-export without re-shooting</td>
+    </tr>
+    <tr>
+      <td>Adjusting or replacing B-roll</td>
+      <td><span class="yes">YES</span></td>
+      <td>Upload a different B-roll file, system re-processes with same text overlay</td>
+    </tr>
+    <tr>
+      <td>Editing B-roll cuts / scenes</td>
+      <td><span class="no">OUT OF SCOPE</span></td>
+      <td>Video editing is not included — B-roll must be pre-cut before uploading</td>
+    </tr>
+    <tr>
+      <td>Changing text position / size</td>
+      <td><span class="yes">YES</span></td>
+      <td>Overlay parameters are configurable per client and adjustable per post</td>
+    </tr>
+    <tr>
+      <td>Video format (fullscreen, letterbox, static, etc.)</td>
+      <td><span class="yes">YES</span></td>
+      <td>Covered by the <strong>five format presets</strong> (9:16 full-frame, static/still-first, letterbox, 4:5-in-9:16, hook-first minimal). True landscape 16:9 as primary output can be added if needed; Reels target remains 9:16</td>
+    </tr>
+    <tr>
+      <td>Adjusting timing of text overlays</td>
+      <td><span class="yes">YES</span></td>
+      <td>Text overlay start/end timing configurable per post</td>
+    </tr>
+    <tr>
+      <td>Continuous client data input (new offers, messaging, feedback)</td>
+      <td><span class="yes">YES</span></td>
+      <td>Client profile is always editable — changes feed into generation immediately</td>
+    </tr>
+    <tr>
+      <td>Research scope — multi-platform</td>
+      <td><span class="future">FUTURE PHASE</span></td>
+      <td>Instagram Phase 1. TikTok, Twitter, Reddit as source inputs in a later phase — architecture supports it</td>
+    </tr>
+    <tr>
+      <td>Performance tracking + learning loop</td>
+      <td><span class="yes">YES</span></td>
+      <td>Tracks views, hooks, CTAs. Winning patterns automatically weighted in future generation runs</td>
+    </tr>
+    <tr>
+      <td>Client database (pain points, ICP, stories, positioning)</td>
+      <td><span class="yes">YES</span></td>
+      <td>Full client profile stored per client: pain points, ICP, personal stories, tone of voice, products, offers — this drives everything the system generates</td>
+    </tr>
+    <tr>
+      <td>Covers / thumbnails</td>
+      <td><span class="yes">YES</span></td>
+      <td>AI-generated thumbnail images (photorealistic, portrait format) generated per Reel from the dashboard</td>
+    </tr>
+    <tr>
+      <td>How does the system determine strong hooks / captions</td>
+      <td><span class="yes">YES</span></td>
+      <td>Driven by scraped patterns + client profile. No constant prompts needed — system runs from configured context. Manual viral reference input can also guide it at any time.</td>
+    </tr>
+    <tr>
+      <td>Talking head scripts adapted to creator's voice</td>
+      <td><span class="yes">YES</span></td>
+      <td>Tone of voice, style, and messaging configured in client profile — all scripts written to match</td>
+    </tr>
+    <tr>
+      <td>Carousel posts</td>
+      <td><span class="yes">YES</span></td>
+      <td>Multiple slides generated with text overlays — same generation and processing flow as single Reels</td>
+    </tr>
+    <tr>
+      <td>Manual input of a viral Reel URL</td>
+      <td><span class="yes">YES</span></td>
+      <td>Paste any public Reel URL — system scrapes, analyzes, adds to intelligence layer, and generates new content based on it</td>
+    </tr>
+    <tr>
+      <td>Client onboarding — who sets them up</td>
+      <td><span class="yes">YOU</span></td>
+      <td>Full onboarding via dashboard in under 10 minutes — no involvement from our team required</td>
+    </tr>
+    <tr>
+      <td>IG Story text</td>
+      <td><span class="yes">YES</span></td>
+      <td>Short story text variations generated from the same content angle as the Reel</td>
+    </tr>
+  </table>
+
+  <hr>
+
+  <h2>What the System Does NOT Do</h2>
+  <ul>
+    <li><strong>Does not edit B-roll</strong> — video cutting, scene editing, and transitions are out of scope; B-roll must be ready before uploading</li>
+    <li><strong>Does not post to Instagram automatically</strong> — Instagram's API does not support Reel scheduling with audio selection; all posting is manual (download package, upload to Instagram, add trending audio, publish)</li>
+    <li><strong>Does not record video</strong> — talking head scripts are generated; the creator films themselves</li>
+    <li><strong>Does not manage DMs or comments</strong> — content creation and preparation only</li>
+    <li><strong>Does not cover TikTok or YouTube as output platforms</strong> — Instagram only in this version</li>
+    <li><strong>Does not make content decisions autonomously</strong> — all posts require approval before anything is downloaded or published</li>
+  </ul>
+
+  <hr>
+
+  <h2>What We Need From You to Start</h2>
+  <ol>
+    <li><strong>First client details</strong> — product/offer (what is being sold, price point), content language (German or English), target posting frequency per week</li>
+    <li><strong>API accounts</strong> — Apify, Anthropic (Claude), and OpenAI accounts created with credentials shared before Week 1 testing</li>
+  </ol>
+
+  <hr>
+
+  <h2>Investment</h2>
+
+  <table>
+    <tr>
+      <th>What's Included</th>
+      <th>Price</th>
+    </tr>
+    <tr>
+      <td>Full system: intelligence layer + outlier-driven generation + <strong>five video format presets</strong> + B-roll burn-in + <strong>revision prompt box</strong> + thumbnail generation + auto-learning loop + multi-client dashboard + performance tracking</td>
+      <td><strong>€7,000</strong></td>
+    </tr>
+  </table>
+
+  <p><strong>Payment terms:</strong></p>
+  <ul>
+    <li>50% (€3,500) on project start</li>
+    <li>50% (€3,500) on delivery — defined as: full pipeline running end-to-end for the first client, auto-learning loop active, second client added live during handover session</li>
+  </ul>
+
+  <hr>
+
+  <h2>Running Costs (Your Accounts)</h2>
+  <p>These are billed directly to your API accounts. Your ongoing operational cost, not ours.</p>
+
+  <table>
+    <tr>
+      <th>Service</th>
+      <th>Estimated Monthly Cost</th>
+      <th>Notes</th>
+    </tr>
+    <tr>
+      <td>OpenAI (thumbnail generation)</td>
+      <td>~€3–8/month</td>
+      <td>~€0.25–0.50 per thumbnail at 5 posts/week</td>
+    </tr>
+    <tr>
+      <td>Anthropic (analysis + generation)</td>
+      <td>~€5–10/month</td>
+      <td>Per analysis batch and generation run</td>
+    </tr>
+    <tr>
+      <td>Apify (scraping)</td>
+      <td>Covered by Zark Growth for first 2 months</td>
+      <td>Transfers to your account after Month 2 — ~€5–10/month at this volume</td>
+    </tr>
+  </table>
+  <p>At 5 posts/week per client, total running cost is approximately <strong>€10–20/month per client</strong>.</p>
+
+  <hr>
+
+  <h2>Timeline</h2>
+
+  <table>
+    <tr>
+      <th>Week</th>
+      <th>Deliverable</th>
+      <th>End-of-Week Demo</th>
+    </tr>
+    <tr>
+      <td>1</td>
+      <td>Dashboard + Scraper + Manual URL Input + AI Analysis</td>
+      <td>Live viral feed with per-post analysis and patterns document</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>Hook generator + Caption generator + Talking head scripts + Story text</td>
+      <td>Full content package generated from real niche data, ready to use</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>Format presets + B-roll burn-in + Revision prompts + Thumbnail + Post queue + Download</td>
+      <td>Pick format from outlier flow, export video, iterate via prompt box, download ready to post</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>Auto-learning loop + Performance tracking + Multi-client + Handover</td>
+      <td>Full system live, second client configured, handover complete</td>
+    </tr>
+  </table>
+
+  <p><strong>Hard deadline: 30 days from project start.</strong><br>
+  Weekly progress demo every Friday — you see working software each week, no big reveal at the end.</p>
+
+  <hr>
+
+  <h2>Ownership</h2>
+  <p>The system — code, data, and configurations — is fully yours on delivery. No ongoing dependency on Zark Growth Limited to operate it.</p>
+  <p>Future development (multi-platform research, automated publishing, deeper analytics) is treated as a separate scope.</p>
+
+  <hr>
+
+  <p class="footer">Zark Growth Limited — March 2026</p>
+
+</body>
+</html>

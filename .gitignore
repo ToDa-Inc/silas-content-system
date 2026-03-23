@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+config/.env
+
+# Data — scraped content and evaluated results (client-sensitive)
+data/
+
+# Next.js build output
+content-machine/.next/
+content-machine/out/
+content-machine/.vercel
+
+# Remotion / video processing
+video-production/broll-caption-editor/node_modules/
+video-production/broll-caption-editor/.remotion/
+video-production/broll-caption-editor/out/
+
+# OS
+.DS_Store
+*.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Misc
+.cache/
+dist/
+build/
+assets/*.mp4
+assets/*.mov
