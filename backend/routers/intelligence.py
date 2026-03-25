@@ -12,8 +12,9 @@ from jobs.baseline_scrape import run_baseline_scrape
 from jobs.client_auto_profile import run_client_auto_profile
 from jobs.competitor_discovery import run_competitor_discovery
 from jobs.profile_scrape import run_profile_scrape
-from models.competitor import CompetitorOut, DiscoverBody
+from models.competitor import CompetitorAddBody, CompetitorOut, CompetitorPreviewBody, DiscoverBody
 from models.reel import ScrapedReelOut
+from services.competitor_manual import add_manual_competitor, preview_manual_competitor
 from services.job_queue import fail_abandoned_queued_jobs, has_active_job
 from services.scrape_cycle import find_stale_competitors
 
@@ -35,6 +36,45 @@ def _fetch_job_row(supabase: Client, job_id: str) -> dict:
     if not res.data:
         raise HTTPException(status_code=500, detail="Job row missing after run")
     return res.data
+
+
+@router.post("/clients/{slug}/competitors/preview")
+def preview_competitor(
+    slug: str,
+    body: CompetitorPreviewBody,
+    org_id: Annotated[str, Depends(require_org_access)],
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Dict[str, Any]:
+    """Scrape profile + ~20 reels, AI similarity — informational only (docs/COMPETITOR-FLOW-SIMPLE.md)."""
+    try:
+        return preview_manual_competitor(settings, client_id=client_id, raw_input=body.input)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/clients/{slug}/competitors/add")
+def add_competitor_manual(
+    slug: str,
+    body: CompetitorAddBody,
+    org_id: Annotated[str, Depends(require_org_access)],
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Dict[str, Any]:
+    """Save competitor after human confirmation; re-scrapes on save. No relevance threshold."""
+    try:
+        return add_manual_competitor(
+            settings,
+            client_id=client_id,
+            raw_input=body.input,
+            added_by=body.added_by,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/clients/{slug}/competitors", response_model=list[CompetitorOut])

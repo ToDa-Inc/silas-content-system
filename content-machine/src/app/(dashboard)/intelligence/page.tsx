@@ -13,6 +13,7 @@ import { AddUrlInput } from "./components/add-url-input";
 import { AutoProfileButton } from "./components/auto-profile-button";
 import { BaselineButton } from "./components/baseline-button";
 import { CompetitorsList } from "./components/competitors-list";
+import { AddCompetitorButton } from "./components/add-competitor-button";
 import { DiscoverButton } from "./components/discover-button";
 import { ScrapeReelsButton } from "./components/scrape-reels-button";
 
@@ -103,6 +104,12 @@ export default async function IntelligencePage() {
             disabledHint={syncDisabledHint}
           />
           <AutoProfileButton
+            clientSlug={clientSlug}
+            orgSlug={orgSlug}
+            disabled={syncDisabled}
+            disabledHint={syncDisabledHint}
+          />
+          <AddCompetitorButton
             clientSlug={clientSlug}
             orgSlug={orgSlug}
             disabled={syncDisabled}

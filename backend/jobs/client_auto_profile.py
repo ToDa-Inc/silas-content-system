@@ -82,14 +82,16 @@ RECENT CAPTIONS ({len(captions)} reels):
 
 3. icp: target, age_range, pain_points (array), desires (array).
 
-4. competitor_seeds: 5-10 Instagram usernames (no @) of likely similar creators.
+4. competitor_seeds: 5-10 Instagram usernames (no @) of likely similar creators (same as manually adding competitors you already know).
 
-5. content_style: educator | storyteller | motivational | mixed | entertainer
-6. primary_language: short label e.g. German / English
+5. Per niche, **topic hashtags** for Instagram discovery (no # symbol): hashtags (4-8 EN), hashtags_de (3-6 DE if relevant). These are TOPIC tags used in posts, not bio identity phrases.
+
+6. content_style: educator | storyteller | motivational | mixed | entertainer
+7. primary_language: short label e.g. German / English
 
 RESPOND IN THIS EXACT JSON FORMAT (no markdown):
 {{
-  "niches": [{{"id": "...", "name": "...", "description": "...", "keywords": [], "keywords_de": [], "content_angles": []}}],
+  "niches": [{{"id": "...", "name": "...", "description": "...", "keywords": [], "keywords_de": [], "content_angles": [], "hashtags": [], "hashtags_de": []}}],
   "icp": {{"target": "...", "age_range": "...", "pain_points": [], "desires": []}},
   "competitor_seeds": ["username1"],
   "content_style": "educator",

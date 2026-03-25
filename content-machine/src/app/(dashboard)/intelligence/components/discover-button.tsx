@@ -97,8 +97,8 @@ export function DiscoverButton({ clientSlug, orgSlug, disabled, disabledHint }: 
         {busy ? "Discovering…" : "Discover competitors"}
       </button>
       <p className="text-[11px] leading-snug text-app-fg-subtle">
-        Find accounts in your niche (Apify + AI scoring). After <strong>Refresh baseline</strong>, run{" "}
-        <strong>Auto-profile</strong> first for better seed keywords.
+        Bio search + topic hashtags from <strong>Auto-profile</strong> (reel search). Run once after onboarding;
+        use <strong>Add competitor</strong> for accounts you already know.
       </p>
       {status ? (
         <p className="max-w-[260px] text-[11px] text-app-fg-muted">{status}</p>

@@ -50,3 +50,14 @@ def run_actor(token: str, actor_id: str, body: dict) -> list:
 # Actor IDs (same as Node scripts)
 SEARCH_ACTOR = "DrF9mzPPEuVizVF4l"
 REEL_ACTOR = "xMc5Ga1oCONPmWJIa"
+# Sasky — topic/hashtag-style reel search → usernames (docs/VIRAL-DISCOVERY-SPEC.md)
+KEYWORD_REEL_ACTOR = "4QFjEpnGE1PNEnQF2"
+
+
+def run_keyword_reel_search(token: str, keyword: str, max_items: int = 50) -> list:
+    """Instagram reel search by topic keyword / hashtag phrase; returns items with user_name, reel_url, etc."""
+    return run_actor(
+        token,
+        KEYWORD_REEL_ACTOR,
+        {"keyword": keyword.strip(), "maxItems": max_items},
+    )

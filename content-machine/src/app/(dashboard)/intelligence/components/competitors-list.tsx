@@ -57,6 +57,15 @@ export function CompetitorsList({ competitors, baseline }: Props) {
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
               <span className="w-8 shrink-0 text-[11px] text-app-fg-subtle">#{rank}</span>
               <span className="font-semibold text-app-fg">@{row.username}</span>
+              {row.added_by ? (
+                <span className="rounded bg-emerald-500/20 px-1.5 py-0 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
+                  Added · {row.added_by}
+                </span>
+              ) : (
+                <span className="rounded bg-zinc-400/15 px-1.5 py-0 text-[10px] text-app-fg-subtle">
+                  Discovered
+                </span>
+              )}
               <span className="text-app-fg-muted">
                 {row.avg_views != null ? `${row.avg_views.toLocaleString()} avg views` : "—"}
               </span>

@@ -73,6 +73,8 @@ export type CompetitorRow = {
   composite_score: number | null;
   tier: number | null;
   tier_label: string | null;
+  /** Free text when added via UI; null = found by automated discovery */
+  added_by?: string | null;
 };
 
 export type BaselineRow = {

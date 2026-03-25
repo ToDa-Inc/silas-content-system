@@ -23,6 +23,18 @@ class CompetitorOut(BaseModel):
     composite_score: Optional[int]
     tier: Optional[int]
     tier_label: Optional[str]
+    added_by: Optional[str] = None
+
+
+class CompetitorPreviewBody(BaseModel):
+    """Paste @handle or Instagram profile URL."""
+
+    input: str = Field(..., description="Username, @username, or instagram.com/… URL")
+
+
+class CompetitorAddBody(BaseModel):
+    input: str = Field(..., description="Same as preview — re-scraped on save")
+    added_by: Optional[str] = Field(None, max_length=200)
 
 
 class DiscoverBody(BaseModel):

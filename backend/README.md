@@ -9,6 +9,7 @@ FastAPI service + background worker for clients, competitors, baselines, and job
   - **New empty project:** paste **[sql/phase1_all_in_one.sql](sql/phase1_all_in_one.sql)** once (schema + RLS + `profiles.api_key` trigger + auth signup hook).
   - **Already have Phase 1 tables:** add anything missing by copying the matching blocks from `phase1_all_in_one.sql`, then run **[sql/phase1b_scrape_pipeline.sql](sql/phase1b_scrape_pipeline.sql)** if you need `scraped_reels` + `upsert_scraped_reels_batch`.
   - Optional split: [01_phase1_schema.sql](sql/01_phase1_schema.sql) + [02_phase1_rls.sql](sql/02_phase1_rls.sql).
+  - **Manual competitors:** run **[sql/phase1c_competitors_added_by.sql](sql/phase1c_competitors_added_by.sql)** once to add `competitors.added_by` (who pasted the handle in the UI).
 
 **Signup without email confirmation (local dev):** Authentication → Email → disable **Confirm email**. **Site URL** `http://localhost:3000`.
 

@@ -28,7 +28,21 @@ const contentApiBase =
 const tailwindPkg = path.join(appRoot, "node_modules", "tailwindcss");
 const tailwindPostcss = path.join(appRoot, "node_modules", "@tailwindcss", "postcss");
 
+const backendOrigin =
+  process.env.CONTENT_API_URL ||
+  process.env.NEXT_PUBLIC_CONTENT_API_URL ||
+  process.env.NEXT_PUBLIC_API_URL ||
+  "http://127.0.0.1:8787";
+
 const nextConfig: NextConfig = {
+  async rewrites() {
+    return [
+      {
+        source: "/api/backend/:path*",
+        destination: `${backendOrigin.replace(/\/$/, "")}/:path*`,
+      },
+    ];
+  },
   env: {
     NEXT_PUBLIC_SUPABASE_URL: supabaseUrl,
     NEXT_PUBLIC_SUPABASE_ANON_KEY: supabaseAnon,

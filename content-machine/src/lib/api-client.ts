@@ -1,6 +1,21 @@
 "use client";
 
 import { getContentApiBase } from "@/lib/env";
+
+/** FastAPI `detail` is a string (400) or validation array (422). */
+export function formatFastApiError(json: unknown, fallback: string): string {
+  if (!json || typeof json !== "object") return fallback;
+  const detail = (json as { detail?: unknown }).detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail) && detail.length > 0) {
+    const first = detail[0];
+    if (first && typeof first === "object" && "msg" in first) {
+      const msg = (first as { msg?: unknown }).msg;
+      if (typeof msg === "string") return msg;
+    }
+  }
+  return fallback;
+}
 import { createClient } from "@/lib/supabase/client";
 import { resolveTenancy } from "@/lib/tenancy";
 
