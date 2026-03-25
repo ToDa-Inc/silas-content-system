@@ -133,6 +133,18 @@ git commit -m "Add or update dashboard" && git push
 
 If `git add content-machine/` stages nothing but files exist on disk, the path was likely added as a **submodule** by mistake: `git rm --cached content-machine`, remove any `content-machine/.git`, then `git add content-machine/` again.
 
+### Vercel (`404 NOT_FOUND` / empty deploy)
+
+The Next.js app is in **`content-machine/`**, not the repo root. If **Root Directory** stays `.`, Vercel has no `next build` there and the deployment can show a platform **404**.
+
+**Fix:** Vercel → **Project → Settings → General → Root Directory** → **`content-machine`** → Save. Leave **Install Command** and **Build Command** as defaults (`npm install`, `npm run build`). Redeploy (Deployments → … → Redeploy).
+
+`content-machine/vercel.json` sets the **Next.js** framework preset for that app.
+
+**If the deploy succeeds in logs but the site shows `404 NOT_FOUND` (Vercel error page):** Next.js 16 defaults to **Turbopack** for `next build`; some Vercel pipelines still mis-handle that output. This repo uses **`next build --webpack`** in `content-machine/package.json` so production matches the classic bundler Vercel expects. Push, redeploy, then open the **Visit** URL on that exact deployment (not an old bookmark).
+
+**Environment variables** (Production and Preview): mirror your local `.env` — at minimum **`SUPABASE_URL`**, **`SUPABASE_ANON_KEY`**, **`SUPABASE_SERVICE_ROLE_KEY`** (server routes), and **`CONTENT_API_URL`** (public URL of your FastAPI API, not `localhost`). Supabase → **Authentication → URL configuration**: add your Vercel URL (`https://…vercel.app`) to **Site URL** and **Redirect URLs**.
+
 ---
 
 ## Quick Start

@@ -6,9 +6,10 @@ import { fileURLToPath } from "url";
 const appRoot = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.join(appRoot, "..");
 
-// Same cascade as the Python API: root .env → config/.env → app overrides.
-dotenv.config({ path: path.join(repoRoot, ".env") });
+// Match FastAPI load order: backend/.env → config/.env → repo `.env` → app overrides (later wins).
+dotenv.config({ path: path.join(repoRoot, "backend", ".env") });
 dotenv.config({ path: path.join(repoRoot, "config", ".env"), override: true });
+dotenv.config({ path: path.join(repoRoot, ".env"), override: true });
 dotenv.config({ path: path.join(appRoot, ".env.local"), override: true });
 
 // Next only inlines NEXT_PUBLIC_* from .env files into the browser. We keep a single
