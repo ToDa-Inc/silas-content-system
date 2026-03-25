@@ -9,8 +9,10 @@ import { createClient } from "@/lib/supabase/server";
 import { getContentApiBase } from "@/lib/env";
 import { resolveTenancy, type ResolvedTenancy } from "@/lib/tenancy";
 import { ACTIVE_CLIENT_SLUG_COOKIE } from "@/lib/workspace-cookie";
+import type { ReelAnalysisSummary } from "@/lib/reel-types";
 
 export { getContentApiBase } from "@/lib/env";
+export type { ReelAnalysisDetail, ReelAnalysisSummary } from "@/lib/reel-types";
 
 export function getApiBase(): string {
   return getContentApiBase();
@@ -75,6 +77,9 @@ export type CompetitorRow = {
   tier_label: string | null;
   /** Free text when added via UI; null = found by automated discovery */
   added_by?: string | null;
+  /** Set when row came from automated discovery; null = added manually (paste) */
+  discovery_job_id?: string | null;
+  last_scraped_at?: string | null;
 };
 
 export type BaselineRow = {
@@ -86,6 +91,21 @@ export type BaselineRow = {
   reels_analyzed: number | null;
   scraped_at: string | null;
   expires_at: string | null;
+};
+
+/** Active client row from `GET /api/v1/clients/{slug}` — niche_config drives discovery copy. */
+export type ClientRow = {
+  id: string;
+  org_id: string;
+  slug: string;
+  name: string;
+  instagram_handle: string | null;
+  language: string;
+  niche_config: unknown[];
+  icp: Record<string, unknown>;
+  products: Record<string, unknown>;
+  is_active: boolean;
+  outlier_ratio_threshold?: number | null;
 };
 
 export type ScrapedReelRow = {
@@ -108,6 +128,8 @@ export type ScrapedReelRow = {
   posted_at: string | null;
   first_seen_at: string | null;
   last_updated_at: string | null;
+  source?: string | null;
+  analysis?: ReelAnalysisSummary | null;
 };
 
 export type ScrapeQueueStats = {
@@ -152,6 +174,45 @@ export async function fetchCompetitors(): Promise<{
     return {
       ok: false,
       data: [],
+      error: e instanceof Error ? e.message : "fetch failed",
+    };
+  }
+}
+
+export async function fetchClient(): Promise<{
+  ok: boolean;
+  data: ClientRow | null;
+  error?: string;
+}> {
+  const base = getContentApiBase();
+  try {
+    const { headers, clientSlug } = await getCachedServerApiContext();
+    if (!clientSlug) {
+      return {
+        ok: false,
+        data: null,
+        error: "No client in your workspace.",
+      };
+    }
+    const res = await fetch(`${base}/api/v1/clients/${clientSlug}`, {
+      headers: { ...headers },
+      cache: "no-store",
+    });
+    if (res.status === 404) {
+      return { ok: false, data: null, error: "Client not found" };
+    }
+    if (!res.ok) {
+      return {
+        ok: false,
+        data: null,
+        error: `${res.status} ${await res.text()}`,
+      };
+    }
+    return { ok: true, data: await res.json() };
+  } catch (e) {
+    return {
+      ok: false,
+      data: null,
       error: e instanceof Error ? e.message : "fetch failed",
     };
   }
@@ -212,7 +273,7 @@ export async function fetchOwnReels(): Promise<{
       };
     }
     const res = await fetch(
-      `${base}/api/v1/clients/${clientSlug}/reels?own_reels_only=true`,
+      `${base}/api/v1/clients/${clientSlug}/reels?own_reels_only=true&include_analysis=true`,
       {
         headers: { ...headers },
         cache: "no-store",
@@ -235,13 +296,99 @@ export async function fetchOwnReels(): Promise<{
   }
 }
 
-export async function fetchScrapedReels(outlierOnly: boolean): Promise<{
+/** GET /api/v1/clients/{slug}/stats — averages for your own reels (see INTELLIGENCE-GUIDE.md). */
+export type IntelligenceStatsRow = {
+  average_views_last_30_reels: number | null;
+  average_likes_last_30_reels: number | null;
+  total_own_reels: number;
+  avg_views_change_vs_prior_week_pct: number | null;
+};
+
+export async function fetchIntelligenceStats(): Promise<{
+  ok: boolean;
+  data: IntelligenceStatsRow | null;
+  error?: string;
+}> {
+  const base = getContentApiBase();
+  try {
+    const { headers, clientSlug } = await getCachedServerApiContext();
+    if (!clientSlug) {
+      return { ok: false, data: null, error: "No client in your workspace." };
+    }
+    const res = await fetch(`${base}/api/v1/clients/${clientSlug}/stats`, {
+      headers: { ...headers },
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      return {
+        ok: false,
+        data: null,
+        error: `${res.status} ${await res.text()}`,
+      };
+    }
+    return { ok: true, data: await res.json() };
+  } catch (e) {
+    return {
+      ok: false,
+      data: null,
+      error: e instanceof Error ? e.message : "fetch failed",
+    };
+  }
+}
+
+export type IntelligenceActivityRow = {
+  since: string;
+  new_breakout_reels: ScrapedReelRow[];
+  own_reel_growth: { reel_id: string; views_gained: number; views_now: number }[];
+  is_quiet: boolean;
+};
+
+export async function fetchIntelligenceActivity(sinceIso?: string): Promise<{
+  ok: boolean;
+  data: IntelligenceActivityRow | null;
+  error?: string;
+}> {
+  const base = getContentApiBase();
+  try {
+    const { headers, clientSlug } = await getCachedServerApiContext();
+    if (!clientSlug) {
+      return { ok: false, data: null, error: "No client in your workspace." };
+    }
+    const q = sinceIso ? `?since=${encodeURIComponent(sinceIso)}` : "";
+    const res = await fetch(`${base}/api/v1/clients/${clientSlug}/activity${q}`, {
+      headers: { ...headers },
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      return {
+        ok: false,
+        data: null,
+        error: `${res.status} ${await res.text()}`,
+      };
+    }
+    return { ok: true, data: await res.json() };
+  } catch (e) {
+    return {
+      ok: false,
+      data: null,
+      error: e instanceof Error ? e.message : "fetch failed",
+    };
+  }
+}
+
+export async function fetchScrapedReels(
+  outlierOnly: boolean,
+  includeAnalysis = true,
+): Promise<{
   ok: boolean;
   data: ScrapedReelRow[];
   error?: string;
 }> {
   const base = getContentApiBase();
-  const q = outlierOnly ? "?outlier_only=true" : "";
+  const params = new URLSearchParams();
+  if (outlierOnly) params.set("outlier_only", "true");
+  if (includeAnalysis) params.set("include_analysis", "true");
+  const q = params.toString() ? `?${params.toString()}` : "";
   try {
     const { headers, clientSlug } = await getCachedServerApiContext();
     if (!clientSlug) {

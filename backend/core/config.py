@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     )
     openrouter_api_key: str = ""
     openrouter_model: str = "google/gemini-2.0-flash-001"
+    openrouter_reel_analyze_model: str = Field(
+        default="google/gemini-3-flash-preview",
+        description="OpenRouter model id for single-reel MP4 analysis.",
+    )
 
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 

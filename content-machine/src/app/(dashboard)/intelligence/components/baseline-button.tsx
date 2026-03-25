@@ -3,13 +3,15 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { BarChart3, Loader2 } from "lucide-react";
-import { clientApiHeaders, getContentApiBase } from "@/lib/api-client";
+import { clientApiHeaders, contentApiFetch, getContentApiBase } from "@/lib/api-client";
 
 type Props = {
   clientSlug: string;
   orgSlug: string;
   disabled?: boolean;
   disabledHint?: string | null;
+  /** Icon-only square toolbar style — tooltip carries the description. */
+  compact?: boolean;
 };
 
 type BaselineRefreshResult = {
@@ -22,7 +24,7 @@ type BaselineRefreshResult = {
   };
 };
 
-export function BaselineButton({ clientSlug, orgSlug, disabled, disabledHint }: Props) {
+export function BaselineButton({ clientSlug, orgSlug, disabled, disabledHint, compact }: Props) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -43,7 +45,7 @@ export function BaselineButton({ clientSlug, orgSlug, disabled, disabledHint }: 
     const headersBase = await clientApiHeaders({ orgSlug });
 
     try {
-      const b = await fetch(`${apiBase}/api/v1/clients/${clientSlug}/baseline/refresh`, {
+      const b = await contentApiFetch(`${apiBase}/api/v1/clients/${clientSlug}/baseline/refresh`, {
         method: "POST",
         headers: headersBase,
       });
@@ -71,6 +73,31 @@ export function BaselineButton({ clientSlug, orgSlug, disabled, disabledHint }: 
     } finally {
       setBusy(false);
     }
+  }
+
+  const label = busy ? "Refreshing…" : "Refresh my reels";
+
+  if (compact) {
+    return (
+      <div className="flex flex-col items-center gap-1">
+        <button
+          type="button"
+          disabled={busy || disabled || !clientSlug.trim() || !orgSlug.trim()}
+          title={
+            disabledHint ??
+            "Pull your latest reels from Instagram and update baseline stats (median, percentiles)."
+          }
+          aria-label={label}
+          onClick={() => void runBaseline()}
+          className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-app-secondary-btn-border bg-app-secondary-btn-bg text-app-secondary-btn-fg transition-colors hover:bg-zinc-200 dark:hover:bg-white/[0.14] disabled:opacity-50"
+        >
+          {busy ? <Loader2 className="h-5 w-5 animate-spin" aria-hidden /> : <BarChart3 className="h-5 w-5" aria-hidden />}
+        </button>
+        {status ? (
+          <p className="max-w-[140px] text-center text-[10px] text-app-fg-muted">{status}</p>
+        ) : null}
+      </div>
+    );
   }
 
   return (

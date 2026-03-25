@@ -10,6 +10,7 @@ from core.database import get_supabase_for_settings
 from core.id_generator import generate_baseline_id
 from services.apify import REEL_ACTOR, run_actor
 from services.client_own_reels import upsert_client_own_reels
+from services.reel_snapshots import insert_snapshots_for_scrape_job
 from services.competitor_tier_backfill import backfill_competitor_tiers
 
 
@@ -96,6 +97,7 @@ def run_baseline_scrape(settings: Settings, job: Dict[str, Any]) -> None:
         videos=videos,
         account_avg_views=int(row["median_views"] or 0),
     )
+    insert_snapshots_for_scrape_job(supabase, client_id=client_id, scrape_job_id=job_id)
     backfilled = backfill_competitor_tiers(supabase, client_id, cl_lang)
 
     supabase.table("background_jobs").update(

@@ -10,6 +10,8 @@ FastAPI service + background worker for clients, competitors, baselines, and job
   - **Already have Phase 1 tables:** add anything missing by copying the matching blocks from `phase1_all_in_one.sql`, then run **[sql/phase1b_scrape_pipeline.sql](sql/phase1b_scrape_pipeline.sql)** if you need `scraped_reels` + `upsert_scraped_reels_batch`.
   - Optional split: [01_phase1_schema.sql](sql/01_phase1_schema.sql) + [02_phase1_rls.sql](sql/02_phase1_rls.sql).
   - **Manual competitors:** run **[sql/phase1c_competitors_added_by.sql](sql/phase1c_competitors_added_by.sql)** once to add `competitors.added_by` (who pasted the handle in the UI).
+  - **Saved reel analyses (Analyze by URL history):** run **[sql/phase2_reel_analyses.sql](sql/phase2_reel_analyses.sql)** once. This creates `reel_analyses` (stable key `(client_id, post_url)`) and links optional `reel_id` → `scraped_reels`. If you used the old `client_reel_analyses` migration, drop that table first, then run this file. List via `GET /api/v1/clients/{slug}/reel-analyses`.
+  - **Reel metric history (growth / snapshots):** run **[sql/phase3_reel_snapshots.sql](sql/phase3_reel_snapshots.sql)** once. Creates `reel_snapshots` (append-only views/likes/comments per sync). Required for `GET …/activity` own-reel growth and historical deltas.
 
 **Signup without email confirmation (local dev):** Authentication → Email → disable **Confirm email**. **Site URL** `http://localhost:3000`.
 

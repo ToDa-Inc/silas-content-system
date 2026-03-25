@@ -470,7 +470,7 @@ def run_competitor_discovery(settings: Settings, job: Dict[str, Any]) -> None:
 
         existing = (
             supabase.table("competitors")
-            .select("id, added_by")
+            .select("id")
             .eq("client_id", client_id)
             .eq("username", account["username"])
             .limit(1)
@@ -478,8 +478,6 @@ def run_competitor_discovery(settings: Settings, job: Dict[str, Any]) -> None:
         )
         if existing.data:
             row["id"] = existing.data[0]["id"]
-            if existing.data[0].get("added_by"):
-                row["added_by"] = existing.data[0]["added_by"]
         else:
             row["id"] = generate_competitor_id()
 

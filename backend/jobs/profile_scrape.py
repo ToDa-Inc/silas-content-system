@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from core.config import Settings
 from core.database import get_supabase_for_settings
 from services.apify import REEL_ACTOR, run_actor
+from services.reel_snapshots import insert_snapshots_for_scrape_job
 from services.reel_thumbnail_url import reel_thumbnail_url_from_apify_item
 
 
@@ -107,10 +108,13 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
     threshold = float(clres.data[0].get("outlier_ratio_threshold") or 10.0)
     account_avg = int(comp.get("avg_views") or 0)
 
+    raw_limit = int(payload.get("results_limit") or payload.get("limit") or 30)
+    results_limit = max(1, min(50, raw_limit))
+
     items = run_actor(
         settings.apify_api_token,
         REEL_ACTOR,
-        {"username": [username], "resultsLimit": 30},
+        {"username": [username], "resultsLimit": results_limit},
     )
     videos = _reel_items(items)
 
@@ -167,6 +171,7 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
                 "p_items": batch,
             },
         ).execute()
+        insert_snapshots_for_scrape_job(supabase, client_id=client_id, scrape_job_id=job_id)
 
     supabase.table("competitors").update({"last_scraped_at": done_at.isoformat()}).eq("id", competitor_id).execute()
 

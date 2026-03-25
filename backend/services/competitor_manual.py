@@ -8,15 +8,6 @@ from typing import Any, Dict, Optional
 from core.config import Settings
 from core.database import get_supabase_for_settings
 from core.id_generator import generate_competitor_id
-from jobs.competitor_discovery import (
-    _build_niche_profile,
-    _build_relevance_prompt,
-    _latest_valid_baseline,
-    _scrape_account_posts,
-)
-from services.competitor_scoring import evaluate_competitor
-from services.instagram_account_lookup import fetch_instagram_user_by_username
-from services.openrouter import analyze_relevance
 
 
 def _instagram_url_is_post_or_reel_only(t: str) -> bool:
@@ -65,15 +56,26 @@ def _client_cfg_from_row(client: dict) -> dict:
     }
 
 
-def preview_manual_competitor(
+def _find_competitor_for_client(supabase: Any, client_id: str, canon: str) -> Optional[dict]:
+    """Case-insensitive match on username (legacy rows may differ in casing)."""
+    res = (
+        supabase.table("competitors")
+        .select("id, username, relevance_score, avg_views")
+        .eq("client_id", client_id)
+        .execute()
+    )
+    for r in res.data or []:
+        if (r.get("username") or "").lower() == canon:
+            return r
+    return None
+
+
+def _manual_canon_and_client(
     settings: Settings,
-    *,
     client_id: str,
     raw_input: str,
-) -> Dict[str, Any]:
-    if not settings.apify_api_token or not settings.openrouter_api_key:
-        raise RuntimeError("APIFY_API_TOKEN and OPENROUTER_API_KEY required")
-
+) -> tuple[str, dict, Any]:
+    """Parse handle, load client, return (lowercase username, client row, supabase)."""
     username = parse_instagram_username(raw_input)
     if not username:
         if _instagram_url_is_post_or_reel_only(raw_input):
@@ -83,6 +85,7 @@ def preview_manual_competitor(
             )
         raise ValueError("Could not parse an Instagram username from input")
 
+    canon = username.strip().lower()
     supabase = get_supabase_for_settings(settings)
     crow = supabase.table("clients").select("*").eq("id", client_id).limit(1).execute()
     if not crow.data:
@@ -90,84 +93,44 @@ def preview_manual_competitor(
     client = crow.data[0]
     cfg = _client_cfg_from_row(client)
     excl = cfg["instagram"].lower()
+    if excl and canon == excl:
+        raise ValueError("That is your creator's own Instagram handle — add a different account.")
 
-    account = fetch_instagram_user_by_username(settings.apify_api_token, username, exclude_username=excl)
-    if not account:
-        raise ValueError(f"Instagram account @{username} not found or not searchable")
+    return canon, client, supabase
 
-    canon = (account.get("username") or username).strip()
-    existing = (
-        supabase.table("competitors")
-        .select("id, username, added_by, relevance_score, avg_views")
-        .eq("client_id", client_id)
-        .eq("username", canon)
-        .limit(1)
-        .execute()
-    )
-    if existing.data:
-        row = existing.data[0]
+
+def preview_manual_competitor(
+    settings: Settings,
+    *,
+    client_id: str,
+    raw_input: str,
+) -> Dict[str, Any]:
+    """Lightweight preview: parsed handle + duplicate check only (no Apify / LLM)."""
+    canon, _, supabase = _manual_canon_and_client(settings, client_id, raw_input)
+
+    existing = _find_competitor_for_client(supabase, client_id, canon)
+    if existing:
         return {
             "already_tracked": True,
-            "username": row.get("username"),
-            "added_by": row.get("added_by"),
-            "relevance_score": row.get("relevance_score"),
-            "avg_views": row.get("avg_views"),
+            "username": existing.get("username"),
+            "added_by": None,
+            "relevance_score": existing.get("relevance_score"),
+            "avg_views": existing.get("avg_views"),
             "message": "This account is already in your competitor list.",
         }
 
-    account["_client_lang"] = cfg["language"]
-    posts = _scrape_account_posts(settings.apify_api_token, account["username"], 20, account.get("_latestPosts"))
-    if len(posts) < 1:
-        raise ValueError("Not enough public posts to preview this account")
-
-    total_views = sum(p["views"] for p in posts)
-    avg_views = round(total_views / len(posts))
-    avg_likes = round(sum(p["likes"] for p in posts) / len(posts))
-
-    niche_profile = _build_niche_profile(cfg)
-    prompt = _build_relevance_prompt(niche_profile, account, posts[:8])
-    analysis = analyze_relevance(settings.openrouter_api_key, prompt, settings.openrouter_model)
-    rel_score = int(analysis.get("relevance_score") or 0)
-
-    disc: Dict[str, Any] = {
-        "username": account["username"],
-        "profileUrl": account["profileUrl"],
-        "followers": account["followers"],
-        "avgViews": avg_views,
-        "avgLikes": avg_likes,
-        "relevance": analysis,
-    }
-
-    baseline_row = _latest_valid_baseline(supabase, client_id)
-    baseline_for_eval = None
-    if baseline_row:
-        baseline_for_eval = {
-            "p90_views": baseline_row.get("p90_views") or 0,
-            "median_views": baseline_row.get("median_views") or 0,
-            "p10_views": baseline_row.get("p10_views") or 0,
-        }
-
-    scored: Optional[Dict[str, Any]] = None
-    if baseline_for_eval:
-        scored = evaluate_competitor(disc, baseline_for_eval, cfg["language"])
-
     return {
         "already_tracked": False,
-        "username": account["username"],
-        "profile_url": account["profileUrl"],
-        "followers": account["followers"],
-        "avg_views": avg_views,
-        "avg_likes": avg_likes,
-        "relevance_score": rel_score,
-        "reasoning": analysis.get("reasoning"),
-        "topics": analysis.get("primary_topics") or [],
-        "language": analysis.get("language"),
-        "content_style": analysis.get("content_style"),
-        "composite_score": scored["composite_score"] if scored else None,
-        "tier": scored["tier"] if scored else None,
-        "tier_label": scored["tier_label"] if scored else None,
-        "performance_score": scored["performance_score"] if scored else None,
-        "language_bonus": scored["language_bonus"] if scored else None,
+        "username": canon,
+        "profile_url": f"https://www.instagram.com/{canon}/",
+        "followers": None,
+        "avg_views": None,
+        "avg_likes": None,
+        "relevance_score": None,
+        "reasoning": None,
+        "composite_score": None,
+        "tier_label": None,
+        "message": "Add to tracking saves this account. Run Discover or scrape to fill scores and reels.",
     }
 
 
@@ -178,107 +141,50 @@ def add_manual_competitor(
     raw_input: str,
     added_by: Optional[str],
 ) -> Dict[str, Any]:
-    """Re-scrape and save — no relevance threshold; human already confirmed in UI."""
-    preview = preview_manual_competitor(settings, client_id=client_id, raw_input=raw_input)
-    if preview.get("already_tracked"):
-        return preview
+    """Insert a minimal competitors row — no scraping or AI on add."""
+    canon, _, supabase = _manual_canon_and_client(settings, client_id, raw_input)
 
-    if not settings.apify_api_token or not settings.openrouter_api_key:
-        raise RuntimeError("APIFY_API_TOKEN and OPENROUTER_API_KEY required")
-
-    supabase = get_supabase_for_settings(settings)
-    crow = supabase.table("clients").select("*").eq("id", client_id).limit(1).execute()
-    if not crow.data:
-        raise RuntimeError("Client not found")
-    client = crow.data[0]
-    cfg = _client_cfg_from_row(client)
-    username = preview["username"]
-
-    account = fetch_instagram_user_by_username(settings.apify_api_token, username, exclude_username=cfg["instagram"])
-    if not account:
-        raise ValueError("Account disappeared — try again")
-
-    account["_client_lang"] = cfg["language"]
-    posts = _scrape_account_posts(settings.apify_api_token, account["username"], 20, account.get("_latestPosts"))
-    if len(posts) < 1:
-        raise ValueError("Not enough posts to save")
-
-    total_views = sum(p["views"] for p in posts)
-    avg_views = round(total_views / len(posts))
-    avg_likes = round(sum(p["likes"] for p in posts) / len(posts))
-
-    niche_profile = _build_niche_profile(cfg)
-    prompt = _build_relevance_prompt(niche_profile, account, posts[:8])
-    analysis = analyze_relevance(settings.openrouter_api_key, prompt, settings.openrouter_model)
-    rel_score = int(analysis.get("relevance_score") or 0)
-
-    disc: Dict[str, Any] = {
-        "username": account["username"],
-        "profileUrl": account["profileUrl"],
-        "followers": account["followers"],
-        "avgViews": avg_views,
-        "avgLikes": avg_likes,
-        "relevance": analysis,
-    }
-
-    baseline_row = _latest_valid_baseline(supabase, client_id)
-    baseline_for_eval = None
-    if baseline_row:
-        baseline_for_eval = {
-            "p90_views": baseline_row.get("p90_views") or 0,
-            "median_views": baseline_row.get("median_views") or 0,
-            "p10_views": baseline_row.get("p10_views") or 0,
+    existing = _find_competitor_for_client(supabase, client_id, canon)
+    if existing:
+        return {
+            "already_tracked": True,
+            "username": existing.get("username"),
+            "added_by": None,
+            "relevance_score": existing.get("relevance_score"),
+            "avg_views": existing.get("avg_views"),
+            "message": "This account is already in your competitor list.",
         }
 
     row: Dict[str, Any] = {
+        "id": generate_competitor_id(),
         "client_id": client_id,
-        "username": account["username"],
-        "profile_url": account["profileUrl"],
-        "followers": account["followers"],
-        "avg_views": avg_views,
-        "avg_likes": avg_likes,
-        "language": analysis.get("language"),
-        "content_style": analysis.get("content_style"),
-        "topics": analysis.get("primary_topics") or [],
-        "reasoning": analysis.get("reasoning"),
-        "relevance_score": rel_score,
+        "username": canon,
+        "profile_url": f"https://www.instagram.com/{canon}/",
+        "followers": None,
+        "avg_views": None,
+        "avg_likes": None,
+        "language": None,
+        "content_style": None,
+        "topics": [],
+        "reasoning": None,
+        "relevance_score": None,
+        "performance_score": None,
+        "language_bonus": 0,
+        "composite_score": None,
+        "tier": None,
+        "tier_label": None,
         "discovery_job_id": None,
-        "added_by": (added_by or "").strip() or None,
     }
+    # Persist added_by only after running backend/sql/phase1c_competitors_added_by.sql on Supabase.
+    ab = (added_by or "").strip() or None
 
-    if baseline_for_eval:
-        scored = evaluate_competitor(disc, baseline_for_eval, cfg["language"])
-        row.update(
-            {
-                "performance_score": scored["performance_score"],
-                "language_bonus": scored["language_bonus"],
-                "composite_score": scored["composite_score"],
-                "tier": scored["tier"],
-                "tier_label": scored["tier_label"],
-            }
-        )
-
-    existing = (
-        supabase.table("competitors")
-        .select("id, added_by")
-        .eq("client_id", client_id)
-        .eq("username", account["username"])
-        .limit(1)
-        .execute()
-    )
-    if existing.data:
-        row["id"] = existing.data[0]["id"]
-        if existing.data[0].get("added_by") and not row.get("added_by"):
-            row["added_by"] = existing.data[0]["added_by"]
-    else:
-        row["id"] = generate_competitor_id()
-
-    supabase.table("competitors").upsert(row, on_conflict="client_id,username").execute()
+    supabase.table("competitors").insert(row).execute()
 
     return {
         "saved": True,
-        "username": account["username"],
-        "added_by": row.get("added_by"),
-        "relevance_score": rel_score,
-        "composite_score": row.get("composite_score"),
+        "competitor_id": row["id"],
+        "username": canon,
+        "added_by": ab,
+        "relevance_score": None,
+        "composite_score": None,
     }

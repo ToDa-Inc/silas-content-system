@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Loader2, Plus } from "lucide-react";
-import { clientApiHeaders, getContentApiBase } from "@/lib/api-client";
+import { clientApiHeaders, contentApiFetch, getContentApiBase } from "@/lib/api-client";
 import { slugify } from "@/lib/slug";
 import { useToast } from "@/components/ui/toast-provider";
 import { cn } from "@/lib/cn";
@@ -65,7 +65,7 @@ export function SidebarClientPanel({ clients, activeSlug, orgSlug }: Props) {
     try {
       const apiBase = getContentApiBase();
       const ig = instagram.trim().replace(/^@/, "") || undefined;
-      const r = await fetch(`${apiBase}/api/v1/clients`, {
+      const r = await contentApiFetch(`${apiBase}/api/v1/clients`, {
         method: "POST",
         headers: {
           ...(await clientApiHeaders({ orgSlug })),

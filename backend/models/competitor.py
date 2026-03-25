@@ -24,6 +24,7 @@ class CompetitorOut(BaseModel):
     tier: Optional[int]
     tier_label: Optional[str]
     added_by: Optional[str] = None
+    discovery_job_id: Optional[str] = None
 
 
 class CompetitorPreviewBody(BaseModel):
@@ -35,6 +36,12 @@ class CompetitorPreviewBody(BaseModel):
 class CompetitorAddBody(BaseModel):
     input: str = Field(..., description="Same as preview — re-scraped on save")
     added_by: Optional[str] = Field(None, max_length=200)
+
+
+class ScrapeCompetitorReelsBody(BaseModel):
+    """Apify reel batch size for one competitor (profile_scrape)."""
+
+    limit: int = Field(default=15, ge=1, le=50, description="Max reels to fetch from Apify for this account")
 
 
 class DiscoverBody(BaseModel):
