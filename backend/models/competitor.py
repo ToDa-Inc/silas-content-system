@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CompetitorOut(BaseModel):
@@ -26,7 +26,14 @@ class CompetitorOut(BaseModel):
 
 
 class DiscoverBody(BaseModel):
+    """Matches scripts: competitor-discovery.js (single keyword) + competitor-batch-discover.js (keywords / --lang)."""
+
     keyword: Optional[str] = None
+    keywords: Optional[List[str]] = None
+    keyword_mode: str = Field(
+        default="all",
+        description='Which niche keywords to use: "all" (keywords_de + keywords), "de", "en" — like batch script --lang',
+    )
     limit: int = 15
     threshold: int = 60
     posts_per_account: int = 8

@@ -2,113 +2,106 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { Loader2, Radar } from "lucide-react";
+import { Loader2, Search } from "lucide-react";
+import { clientApiHeaders, getContentApiBase } from "@/lib/api-client";
 
 type Props = {
-  apiBase: string;
-  orgSlug: string;
   clientSlug: string;
+  orgSlug: string;
+  disabled?: boolean;
+  disabledHint?: string | null;
 };
 
-/** Client-side discover + job polling for Intelligence page. */
-export function DiscoverPanel({ apiBase, orgSlug, clientSlug }: Props) {
+type DiscoverResult = {
+  job_id?: string;
+  status?: string;
+  result?: {
+    keywords_planned?: string[];
+    competitors_saved?: number;
+    evaluated?: number;
+    accounts_discovered?: number;
+    message?: string;
+  };
+};
+
+export function DiscoverButton({ clientSlug, orgSlug, disabled, disabledHint }: Props) {
   const router = useRouter();
-  const [keyword, setKeyword] = useState("");
-  const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
 
-  async function pollJob(jobId: string) {
-    const max = 120;
-    for (let i = 0; i < max; i++) {
-      const r = await fetch(`${apiBase}/api/v1/jobs/${jobId}`, {
-        headers: { "X-Org-Slug": orgSlug },
-      });
-      if (!r.ok) {
-        setStatus(`Job status error: ${r.status}`);
-        return;
-      }
-      const j = await r.json();
-      if (j.status === "completed") {
-        setStatus(
-          `Done — saved ${j.result?.competitors_saved ?? "?"} competitors (evaluated ${j.result?.evaluated ?? "?"}).`,
-        );
-        router.refresh();
-        return;
-      }
-      if (j.status === "failed") {
-        setStatus(j.error_message || "Job failed");
-        return;
-      }
-      setStatus(`Job ${j.status}… (${i + 1}/${max})`);
-      await new Promise((r2) => setTimeout(r2, 3000));
-    }
-    setStatus("Timed out waiting for job — check worker logs.");
-  }
-
-  async function onDiscover() {
-    setBusy(true);
-    setStatus("Queueing discovery…");
-    try {
-      const body: Record<string, unknown> = {};
-      if (keyword.trim()) body.keyword = keyword.trim();
-      const r = await fetch(
-        `${apiBase}/api/v1/clients/${clientSlug}/competitors/discover`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Org-Slug": orgSlug,
-          },
-          body: JSON.stringify(body),
-        },
+  async function runDiscover() {
+    if (disabled || !clientSlug.trim() || !orgSlug.trim()) {
+      setStatus(
+        disabledHint?.trim() ||
+          (!orgSlug.trim()
+            ? "No organization context — refresh the page or sign in again."
+            : "Add or select a creator (client) in the header first."),
       );
-      if (!r.ok) {
-        setStatus(await r.text());
+      return;
+    }
+    setBusy(true);
+    setStatus("Searching niche keywords…");
+    const apiBase = getContentApiBase();
+    const headersBase = await clientApiHeaders({ orgSlug });
+
+    try {
+      const d = await fetch(`${apiBase}/api/v1/clients/${clientSlug}/competitors/discover`, {
+        method: "POST",
+        headers: { ...headersBase, "Content-Type": "application/json" },
+        body: JSON.stringify({ keyword_mode: "all" }),
+      });
+      if (d.status === 409) {
+        setStatus("Discovery already running — please wait.");
         return;
       }
-      const { job_id } = await r.json();
-      setStatus("Job queued — polling…");
-      await pollJob(job_id);
+      if (!d.ok) {
+        const err = await d.text();
+        setStatus(err ? `Error: ${err.slice(0, 200)}` : "Something went wrong — try again.");
+        return;
+      }
+      const json = (await d.json()) as DiscoverResult;
+      const planned = json.result?.keywords_planned;
+      const kwPrefix = planned?.length ? `Searched: ${planned.join(", ")}. ` : "";
+      const saved = json.result?.competitors_saved ?? 0;
+      const evaluated = json.result?.evaluated ?? 0;
+      const discovered = json.result?.accounts_discovered;
+      const msg = json.result?.message;
+      if (msg) {
+        setStatus(`${kwPrefix}${msg}`);
+      } else {
+        const bits = [
+          `${saved} competitor${saved === 1 ? "" : "s"} saved`,
+          evaluated != null && evaluated > 0 ? `${evaluated} evaluated` : null,
+          discovered != null ? `${discovered} accounts found` : null,
+        ].filter(Boolean);
+        setStatus(`${kwPrefix}Done — ${bits.join(", ")}.`);
+      }
+      router.refresh();
+    } catch {
+      setStatus("Something went wrong — try again.");
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <div className="rounded-xl border border-outline-variant/10 bg-surface-container-low p-6">
-      <div className="mb-4 flex items-center gap-2">
-        <Radar className="h-5 w-5 text-primary" aria-hidden />
-        <h3 className="text-lg font-bold text-on-surface">Competitor discovery</h3>
-      </div>
-      <p className="mb-4 text-sm text-zinc-400">
-        Runs Apify + OpenRouter (worker must be running). Leave keyword empty to use the first
-        niche keyword from the client config.
+    <div className="flex flex-col gap-1">
+      <button
+        type="button"
+        disabled={busy || disabled || !clientSlug.trim() || !orgSlug.trim()}
+        title={disabledHint ?? undefined}
+        onClick={() => void runDiscover()}
+        className="inline-flex items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-zinc-950 disabled:opacity-50"
+      >
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Search className="h-4 w-4" aria-hidden />}
+        {busy ? "Discovering…" : "Discover competitors"}
+      </button>
+      <p className="text-[11px] leading-snug text-app-fg-subtle">
+        Find accounts in your niche (Apify + AI scoring). After <strong>Refresh baseline</strong>, run{" "}
+        <strong>Auto-profile</strong> first for better seed keywords.
       </p>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-        <label className="flex-1 text-sm">
-          <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-zinc-500">
-            Keyword (optional)
-          </span>
-          <input
-            type="text"
-            value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
-            placeholder="e.g. toxic workplace"
-            className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600"
-          />
-        </label>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => void onDiscover()}
-          className="flex items-center justify-center gap-2 rounded-lg bg-primary-container px-6 py-2.5 text-sm font-bold text-on-primary-container disabled:opacity-50"
-        >
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
-          {busy ? "Running…" : "Run discovery"}
-        </button>
-      </div>
       {status ? (
-        <p className="mt-4 whitespace-pre-wrap font-mono text-xs text-zinc-400">{status}</p>
+        <p className="max-w-[260px] text-[11px] text-app-fg-muted">{status}</p>
       ) : null}
     </div>
   );

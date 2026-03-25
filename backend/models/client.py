@@ -21,6 +21,7 @@ class ClientUpdate(BaseModel):
     icp: Optional[dict] = None
     products: Optional[dict] = None
     is_active: Optional[bool] = None
+    outlier_ratio_threshold: Optional[float] = None
 
 
 class ClientOut(BaseModel):
@@ -36,3 +37,4 @@ class ClientOut(BaseModel):
     icp: dict
     products: dict
     is_active: bool
+    outlier_ratio_threshold: Optional[float] = None

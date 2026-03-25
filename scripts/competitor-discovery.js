@@ -327,7 +327,7 @@ async function analyzeRelevance(nicheProfile, accountData, captions) {
         'Authorization': `Bearer ${OPENROUTER_KEY}`,
         'Content-Type': 'application/json',
         'HTTP-Referer': 'https://silas-content-system.local',
-        'X-Title': 'Silas Content System'
+        'X-Title': 'Content Machine'
       }
     };
 

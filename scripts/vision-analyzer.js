@@ -97,7 +97,7 @@ function callOpenRouter(prompt, imageBase64 = null) {
         'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
         'Content-Type': 'application/json',
         'HTTP-Referer': 'https://openclaw.dev',
-        'X-Title': 'Content System Silas'
+        'X-Title': 'Content Machine'
       }
     };
 

@@ -1,9 +1,42 @@
 import { DashboardShell } from "@/components/dashboard/dashboard-shell";
+import { getCachedServerApiContext } from "@/lib/api";
+import { createClient } from "@/lib/supabase/server";
 
-export default function DashboardLayout({
+export default async function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  return <DashboardShell>{children}</DashboardShell>;
+  const ctx = await getCachedServerApiContext();
+  let clients: { slug: string; name: string }[] = [];
+
+  if (ctx.user) {
+    const supabase = await createClient();
+    const { data: mem } = await supabase
+      .from("organization_members")
+      .select("org_id")
+      .eq("user_id", ctx.user.id)
+      .order("joined_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (mem?.org_id) {
+      const { data: rows } = await supabase
+        .from("clients")
+        .select("slug, name")
+        .eq("org_id", mem.org_id)
+        .order("name", { ascending: true });
+      clients = rows ?? [];
+    }
+  }
+
+  return (
+    <DashboardShell
+      clients={clients}
+      activeClientSlug={ctx.clientSlug}
+      orgLabel={ctx.tenancy?.orgSlug ?? ""}
+    >
+      {children}
+    </DashboardShell>
+  );
 }

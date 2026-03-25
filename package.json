@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "description": "Instagram Reels content automation — scrape, analyze, generate, produce",
   "scripts": {
+    "dev:api": "cd backend && python3 -m uvicorn main:app --reload --host 127.0.0.1 --port 8787",
+    "dev:all": "concurrently -n api,ui -c blue,green \"npm run dev:api\" \"npm run dashboard\"",
     "dashboard": "npm --prefix content-machine run dev",
     "dashboard:build": "npm --prefix content-machine run build",
     "broll:studio": "npm --prefix video-production/broll-caption-editor run dev",
@@ -17,5 +19,8 @@
   "dependencies": {
     "dotenv": "^16.4.0",
     "openai": "^4.0.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
   }
 }

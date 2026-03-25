@@ -1,6 +1,6 @@
-# Silas Content System
+# Content system (monorepo)
 
-AI-powered content automation pipeline for Instagram Reels. Built for Silas to manage content for info product creators (first client: Conny Gfrerer).
+AI-powered content automation pipeline for Instagram Reels — multi-client dashboard and workers (example client config: Conny Gfrerer).
 
 ---
 
@@ -10,9 +10,11 @@ AI-powered content automation pipeline for Instagram Reels. Built for Silas to m
 silas-content-system/
 ├── README.md                          # This file
 ├── package.json
+├── .env.example                       # Env template — copy to `.env` at repo root (API + worker + dashboard)
+├── .env                               # Your secrets (gitignored — create from `.env.example`)
 │
 ├── config/                            # Configuration
-│   ├── .env                           # API keys (gitignored)
+│   ├── .env                           # Optional: legacy keys for Node scripts (gitignored)
 │   └── clients/                       # Per-client niche profiles
 │       └── conny-gfrerer.json         # Conny's niches, ICP, keywords
 │
@@ -54,12 +56,12 @@ silas-content-system/
 │   ├── mockup.html                    # Design mockup
 │   └── ARCHITECTURE.md                # Dashboard architecture
 ├── dashboard_code.md                  # Exported HTML prototype (Stitch/AI) — UI reference only
-├── content-machine/                   # **Next.js dashboard** (Silas Prism) — App Router, Tailwind v4
+├── content-machine/                   # **Next.js dashboard** (Prism) — App Router, Tailwind v4
 │   ├── package.json
 │   ├── src/app/                       # Routes: /dashboard, /generate, /intelligence, …
 │   └── README.md
 │
-├── backend/                           # **Phase 1 API** — FastAPI + Supabase + worker
+├── backend/                           # **Phase 1 API** — FastAPI + Supabase + worker (default port **8787**)
 │   ├── README.md                      # Runbook (uvicorn, worker, migrate)
 │   ├── sql/                           # Phase 1 schema + RLS (run in Supabase)
 │   └── migrate.py                     # JSON → Supabase one-time import
@@ -96,15 +98,29 @@ silas-content-system/
 
 ## Starting apps (explicit scripts — no generic `dev` at root)
 
+**Full stack (what you usually want):** the **backend** (FastAPI on **8787**) and the **frontend** (Next on **3000**) are two processes. Running only `npm run dev` inside `content-machine/` starts the **dashboard UI**; pages that call the API (e.g. Intelligence) need the API up too.
+
+From **repo root** `silas-content-system/`:
+
+```bash
+npm run dev:all
+```
+
+That runs **API + dashboard** together. Alternatively, two terminals: `npm run dev:api` and `npm run dashboard`.
+
 The repo has **multiple** entry points, so the root `package.json` uses **named** scripts only:
 
 | What | From repo root |
 |------|----------------|
-| **Next.js dashboard** (`content-machine/`) | `npm run dashboard` (after `npm install --prefix content-machine`) |
+| **FastAPI** (`backend/`, port **8787**) | `npm run dev:api` (after `npm install` at root for `concurrently`, plus backend venv + deps) |
+| **Dashboard + API together** | `npm run dev:all` |
+| **Next.js dashboard only** | `npm run dashboard` (or `cd content-machine && npm run dev` — same thing; **no API**) |
 | **B-roll Remotion studio** | `npm run broll:studio` (after `npm install --prefix video-production/broll-caption-editor`) |
 | **Pipeline CLI** | `npm run scrape`, `npm run analyze`, etc. |
 
 Dashboard URL: [http://localhost:3000](http://localhost:3000) → `/dashboard`. Details: `content-machine/README.md`.
+
+**Environment:** `cp .env.example .env` at the repo root (or use `config/.env` — already loaded by the API and by Next via `next.config`). Use **`SUPABASE_URL` + `SUPABASE_ANON_KEY`** (no `NEXT_PUBLIC_*` in `.env`); the dashboard maps them for the browser. Optional overrides: `backend/.env`, `content-machine/.env.local`.
 
 ### Dashboard not showing on GitHub?
 

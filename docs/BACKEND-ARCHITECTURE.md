@@ -21,11 +21,11 @@ auth.users (Supabase Auth)
     ↓
 profiles           — extends auth.users with display_name etc.
     ↓
-organizations      — the billing/tenant unit. Silas's agency = 1 org.
+organizations      — the billing/tenant unit (one agency = one org).
     ↓
 organization_members — who belongs to which org + their role
     ↓
-clients            — Conny is a client of Silas's org
+clients            — e.g. one creator brand per row under that org
     ↓
 everything else    — scoped through client_id → org_id
 ```
@@ -142,22 +142,25 @@ PUT    /api/v1/clients/{slug}                        update niche_config / icp /
 
 # Competitors — Discovery
 GET    /api/v1/clients/{slug}/competitors            ranked competitor list from DB
-POST   /api/v1/clients/{slug}/competitors/discover   trigger discovery job → { job_id }
+POST   /api/v1/clients/{slug}/competitors/discover   run discovery inline → { job_id, status, result } (also writes background_jobs)
 
 # Competitors — Reel Scraping (Phase 1B — outlier detection)
-POST   /api/v1/clients/{slug}/reels/scrape           scrape reels from all BLUEPRINT/STRONG competitors → { job_id }
+POST   /api/v1/clients/{slug}/reels/scrape           run profile_scrape inline per stale competitor (tiers 1–3) → { competitors_scraped, reels_processed, skipped_fresh, ... } (cron/worker still uses enqueue → jobs_queued)
 GET    /api/v1/clients/{slug}/reels                  list scraped reels ordered by outlier_ratio DESC
                                                      supports filter: ?outlier_only=true
 
+# Cron (service role / X-Cron-Secret — not for browser clients)
+POST   /api/v1/cron/scrape-cycle                     enqueue stale profile_scrape jobs across all active clients
+
 # Baseline
 GET    /api/v1/clients/{slug}/baseline               latest non-expired baseline
-POST   /api/v1/clients/{slug}/baseline/refresh       trigger re-scrape job → { job_id }
+POST   /api/v1/clients/{slug}/baseline/refresh       run baseline scrape inline → { job_id, status, result }
 
-# Jobs (polling)
+# Jobs (history / optional polling)
 GET    /api/v1/jobs/{job_id}                         status + result of any background job
 ```
 
-That is all Phase 1 needs. **Eight endpoints.**
+Phase 1 core is **nine HTTP endpoints** (plus optional cron).
 
 ---
 
@@ -194,17 +197,6 @@ CREATE TABLE organization_members (
   UNIQUE (org_id, user_id)
 );
 
-CREATE TABLE invitations (
-  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  org_id      uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-  email       text NOT NULL,
-  role        text DEFAULT 'member',
-  token       text UNIQUE NOT NULL,
-  expires_at  timestamptz NOT NULL,
-  accepted_at timestamptz,
-  created_at  timestamptz DEFAULT now()
-);
-
 -- ═══════════════════════════════════════════════════════
 -- PHASE 1: Client Management
 -- ═══════════════════════════════════════════════════════
@@ -220,6 +212,7 @@ CREATE TABLE clients (
   icp               jsonb NOT NULL DEFAULT '{}',
   products          jsonb NOT NULL DEFAULT '{}',
   is_active         boolean DEFAULT true,
+  outlier_ratio_threshold numeric DEFAULT 10.0 NOT NULL,  -- views ratio vs account avg; worker sets is_outlier
   created_at        timestamptz DEFAULT now(),
   updated_at        timestamptz DEFAULT now(),
   UNIQUE (org_id, slug)
@@ -296,6 +289,7 @@ CREATE TABLE competitors (
   tier_label        text,        -- "BLUEPRINT" | "STRONG" | "PEER" | "SKIP"
   discovery_job_id  uuid REFERENCES background_jobs(id),
   last_evaluated_at timestamptz DEFAULT now(),
+  last_scraped_at   timestamptz,   -- set when profile_scrape completes; cron uses for staleness
   created_at        timestamptz DEFAULT now(),
   UNIQUE (client_id, username)
 );
@@ -325,9 +319,8 @@ CREATE TABLE scraped_reels (
   saves               integer,
   shares              integer,
   outlier_ratio       numeric(8,2),      -- views / account_avg_views
-  -- outlier_ratio >= 10.0 = outlier (10x above account average)
-  -- outlier_ratio >= 50.0 = viral breakout (highest priority)
-  is_outlier          boolean GENERATED ALWAYS AS (outlier_ratio >= 10.0) STORED,
+  -- is_outlier: set in Python using clients.outlier_ratio_threshold (default 10.0)
+  is_outlier          boolean DEFAULT false,
   hook_text           text,              -- first line / visible text overlay
   caption             text,
   hashtags            text[],
@@ -336,13 +329,16 @@ CREATE TABLE scraped_reels (
   source              text,              -- profile | hashtag | url_paste
   niche               text,
   is_bookmarked       boolean DEFAULT false,
+  first_seen_at       timestamptz DEFAULT now(),
+  last_updated_at     timestamptz DEFAULT now(),
   created_at          timestamptz DEFAULT now(),
   UNIQUE (client_id, post_url)
 );
 
 -- Primary query: show outliers ranked by how much they exceeded the account avg
-CREATE INDEX idx_scraped_reels_outlier   ON scraped_reels(client_id, is_outlier, outlier_ratio DESC);
+CREATE INDEX idx_scraped_reels_outlier   ON scraped_reels(client_id, is_outlier, outlier_ratio DESC NULLS LAST);
 CREATE INDEX idx_scraped_reels_client    ON scraped_reels(client_id, outlier_ratio DESC);
+-- Writes use RPC upsert_scraped_reels_batch(...): INSERT ... ON CONFLICT DO UPDATE only when metrics change
 
 -- ═══════════════════════════════════════════════════════
 -- PHASE 2: Why Analysis (Claude 5-criteria scoring)
@@ -569,7 +565,7 @@ backend/
 ├── core/
 │   ├── config.py                 # Settings via pydantic-settings (env vars)
 │   ├── database.py               # Supabase client init
-│   └── auth.py                   # JWT validation from Supabase Auth
+│   └── deps.py                   # X-Api-Key / profiles.api_key + org membership
 ├── routers/
 │   ├── clients.py                # GET/POST/PUT /api/v1/clients/...
 │   ├── intelligence.py           # competitors + discover + reels + scrape
@@ -629,7 +625,8 @@ SPRINT 1 — Phase 1 complete (target: today)
   ☐ GET  /clients + GET /clients/{slug}
   ☐ GET  /clients/{slug}/competitors
   ☐ POST /clients/{slug}/competitors/discover (queues competitor_discovery job)
-  ☐ POST /clients/{slug}/reels/scrape (queues profile_scrape job)
+  ☐ POST /clients/{slug}/reels/scrape (enqueue profile_scrape per stale competitor)
+  ☐ POST /api/v1/cron/scrape-cycle (X-Cron-Secret; all clients)
   ☐ GET  /clients/{slug}/reels?outlier_only=true
   ☐ GET  /clients/{slug}/baseline
   ☐ GET  /jobs/{job_id}
@@ -637,8 +634,7 @@ SPRINT 1 — Phase 1 complete (target: today)
   Workers (port Node.js scripts to Python)
   ☐ competitor_discovery job (port of competitor-discovery.js)
   ☐ baseline_scrape job (port of baseline logic in competitor-eval.js)
-  ☐ profile_scrape job (scrapes last 30 reels per BLUEPRINT/STRONG competitor,
-                        computes outlier_ratio, sets is_outlier)
+  ☐ profile_scrape job (Apify 30 reels / competitor; upsert via upsert_scraped_reels_batch; updates last_scraped_at)
 
   Dashboard wire-up
   ☐ Intelligence page reads from /clients/{slug}/competitors (real DB data)

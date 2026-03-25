@@ -4,7 +4,7 @@ One-time migration: JSON on disk → Supabase Phase 1 tables.
 
 Usage (from repo root):
   cd backend && pip install -r requirements.txt
-  cp .env.example .env   # fill SUPABASE_* and DEFAULT_ORG_SLUG
+  cp ../.env.example ../.env   # repo root — fill SUPABASE_* and MIGRATE_* / DEFAULT_ORG_SLUG for this script
   python migrate.py
 
 Reads:
@@ -24,6 +24,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 from supabase import create_client
 
+from core.id_generator import (
+    generate_baseline_id,
+    generate_client_id,
+    generate_competitor_id,
+    generate_org_id,
+)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CLIENT_SLUG = "conny-gfrerer"
 
@@ -36,12 +43,20 @@ def load_json(path: Path):
 
 
 def main() -> None:
-    load_dotenv(Path(__file__).parent / ".env")
-    load_dotenv(REPO_ROOT / "config" / ".env")
+    load_dotenv(REPO_ROOT / ".env")
+    load_dotenv(Path(__file__).parent / ".env", override=True)
+    load_dotenv(REPO_ROOT / "config" / ".env", override=True)
+    load_dotenv(REPO_ROOT / ".env", override=True)  # last wins — same as core.config.Settings
 
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-    org_slug = os.environ.get("DEFAULT_ORG_SLUG", "silas-agency")
+    org_slug = os.environ.get("DEFAULT_ORG_SLUG") or os.environ.get("MIGRATE_ORG_SLUG")
+    if not org_slug:
+        print(
+            "Set DEFAULT_ORG_SLUG or MIGRATE_ORG_SLUG to your organizations.slug (same as X-Org-Slug).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     if not url or not key:
         print("Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in backend/.env", file=sys.stderr)
@@ -57,7 +72,14 @@ def main() -> None:
     else:
         ins = (
             supabase.table("organizations")
-            .insert({"name": "Silas Agency", "slug": org_slug, "plan": "agency"})
+            .insert(
+                {
+                    "id": generate_org_id(),
+                    "name": os.environ.get("MIGRATE_DEFAULT_ORG_NAME", "Agency"),
+                    "slug": org_slug,
+                    "plan": "agency",
+                }
+            )
             .execute()
         )
         org_id = ins.data[0]["id"]
@@ -101,7 +123,11 @@ def main() -> None:
         supabase.table("clients").update(client_row).eq("id", client_id).execute()
         print(f"Updated client: {slug} ({client_id})")
     else:
-        ins = supabase.table("clients").insert(client_row).execute()
+        ins = (
+            supabase.table("clients")
+            .insert({**client_row, "id": generate_client_id()})
+            .execute()
+        )
         client_id = ins.data[0]["id"]
         print(f"Inserted client: {slug} ({client_id})")
 
@@ -119,6 +145,7 @@ def main() -> None:
         expires_at = scraped_dt + timedelta(days=7)
 
         bl_row = {
+            "id": generate_baseline_id(),
             "client_id": client_id,
             "avg_views": views.get("avg"),
             "median_views": views.get("median"),
@@ -170,6 +197,18 @@ def main() -> None:
             }
             if not comp_row["username"]:
                 continue
+            existing_c = (
+                supabase.table("competitors")
+                .select("id")
+                .eq("client_id", client_id)
+                .eq("username", comp_row["username"])
+                .limit(1)
+                .execute()
+            )
+            if existing_c.data:
+                comp_row["id"] = existing_c.data[0]["id"]
+            else:
+                comp_row["id"] = generate_competitor_id()
             supabase.table("competitors").upsert(comp_row, on_conflict="client_id,username").execute()
 
         print(f"Migrated {len(merged)} competitors from {cc_path}")

@@ -7,7 +7,10 @@ from typing import Any, Dict
 
 from core.config import Settings
 from core.database import get_supabase_for_settings
+from core.id_generator import generate_baseline_id
 from services.apify import REEL_ACTOR, run_actor
+from services.client_own_reels import upsert_client_own_reels
+from services.competitor_tier_backfill import backfill_competitor_tiers
 
 
 def _avg(arr: list[int]) -> int:
@@ -65,6 +68,7 @@ def run_baseline_scrape(settings: Settings, job: Dict[str, Any]) -> None:
     expires_at = scraped_at + timedelta(days=7)
 
     row = {
+        "id": generate_baseline_id(),
         "client_id": client_id,
         "avg_views": _avg(views),
         "median_views": _median(views),
@@ -79,14 +83,40 @@ def run_baseline_scrape(settings: Settings, job: Dict[str, Any]) -> None:
 
     supabase.table("client_baselines").insert(row).execute()
 
+    cl_lang = "de"
+    cl = supabase.table("clients").select("language").eq("id", client_id).limit(1).execute()
+    if cl.data:
+        cl_lang = str(cl.data[0].get("language") or "de")
+
+    own_count = upsert_client_own_reels(
+        supabase,
+        client_id=client_id,
+        job_id=job_id,
+        ig_username=ig.replace("@", "").strip(),
+        videos=videos,
+        account_avg_views=int(row["median_views"] or 0),
+    )
+    backfilled = backfill_competitor_tiers(supabase, client_id, cl_lang)
+
     supabase.table("background_jobs").update(
         {
             "status": "completed",
             "completed_at": scraped_at.isoformat(),
             "result": {
+                "pipeline": "baseline_scrape",
+                "apify": {
+                    "reel_actor": REEL_ACTOR,
+                    "input": {
+                        "username": [ig.replace("@", "").strip()],
+                        "resultsLimit": 30,
+                    },
+                    "reference": "scripts/competitor-eval.js scrapeBaseline — same REEL_ACTOR as services/apify.py",
+                },
                 "reels_analyzed": len(videos),
                 "median_views": row["median_views"],
                 "avg_views": row["avg_views"],
+                "own_reels_stored": own_count,
+                "competitors_tier_backfilled": backfilled,
             },
         }
     ).eq("id", job_id).execute()

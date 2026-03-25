@@ -4,7 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from supabase import Client
 
 from core.database import get_supabase
-from core.deps import resolve_org_id
+from core.id_generator import generate_client_id
+from core.deps import require_org_access
 from models.client import ClientCreate, ClientOut, ClientUpdate
 
 router = APIRouter(prefix="/api/v1/clients", tags=["clients"])
@@ -12,7 +13,7 @@ router = APIRouter(prefix="/api/v1/clients", tags=["clients"])
 
 @router.get("", response_model=list[ClientOut])
 def list_clients(
-    org_id: Annotated[str, Depends(resolve_org_id)],
+    org_id: Annotated[str, Depends(require_org_access)],
     supabase: Annotated[Client, Depends(get_supabase)],
 ) -> list[dict]:
     res = supabase.table("clients").select("*").eq("org_id", org_id).order("name").execute()
@@ -22,10 +23,11 @@ def list_clients(
 @router.post("", response_model=ClientOut, status_code=status.HTTP_201_CREATED)
 def create_client(
     body: ClientCreate,
-    org_id: Annotated[str, Depends(resolve_org_id)],
+    org_id: Annotated[str, Depends(require_org_access)],
     supabase: Annotated[Client, Depends(get_supabase)],
 ) -> dict:
     row = {
+        "id": generate_client_id(),
         "org_id": org_id,
         "slug": body.slug,
         "name": body.name,
@@ -45,7 +47,7 @@ def create_client(
 @router.get("/{slug}", response_model=ClientOut)
 def get_client(
     slug: str,
-    org_id: Annotated[str, Depends(resolve_org_id)],
+    org_id: Annotated[str, Depends(require_org_access)],
     supabase: Annotated[Client, Depends(get_supabase)],
 ) -> dict:
     res = (
@@ -65,7 +67,7 @@ def get_client(
 def update_client(
     slug: str,
     body: ClientUpdate,
-    org_id: Annotated[str, Depends(resolve_org_id)],
+    org_id: Annotated[str, Depends(require_org_access)],
     supabase: Annotated[Client, Depends(get_supabase)],
 ) -> dict:
     res = (

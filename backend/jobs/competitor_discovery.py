@@ -8,7 +8,9 @@ from typing import Any, Dict, List, Optional
 
 from core.config import Settings
 from core.database import get_supabase_for_settings
+from core.id_generator import generate_competitor_id
 from services.apify import REEL_ACTOR, SEARCH_ACTOR, run_actor
+from services.instagram_account_lookup import fetch_instagram_user_by_username
 from services.competitor_scoring import evaluate_competitor
 from services.openrouter import analyze_relevance
 
@@ -190,6 +192,39 @@ def _pick_default_keyword(niche_config: List) -> str:
     return str(n0.get("name") or "content creator")
 
 
+def _collect_keywords(niches: List, payload: Dict[str, Any]) -> List[str]:
+    """Same idea as scripts/competitor-batch-discover.js (--keywords / --lang)."""
+    raw = payload.get("keywords")
+    if isinstance(raw, list) and len(raw) > 0:
+        out = [str(x).strip() for x in raw if str(x).strip()]
+        if out:
+            return out
+    one = payload.get("keyword")
+    if one and str(one).strip():
+        return [str(one).strip()]
+    mode = str(payload.get("keyword_mode") or "all").lower()
+    if mode not in ("all", "de", "en"):
+        mode = "all"
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for n in niches or []:
+        if mode in ("all", "de"):
+            for k in n.get("keywords_de") or []:
+                s = str(k).strip()
+                if s and s not in seen:
+                    seen.add(s)
+                    ordered.append(s)
+        if mode in ("all", "en"):
+            for k in n.get("keywords") or []:
+                s = str(k).strip()
+                if s and s not in seen:
+                    seen.add(s)
+                    ordered.append(s)
+    if not ordered:
+        return [_pick_default_keyword(niches)]
+    return ordered
+
+
 def _latest_valid_baseline(supabase, client_id: str) -> Optional[dict]:
     res = (
         supabase.table("client_baselines")
@@ -244,34 +279,94 @@ def run_competitor_discovery(settings: Settings, job: Dict[str, Any]) -> None:
         "icp": client.get("icp") or {},
     }
 
-    keyword = payload.get("keyword") or _pick_default_keyword(cfg["niches"])
     limit = int(payload.get("limit") or 15)
     threshold = int(payload.get("threshold") or 60)
     posts_per = int(payload.get("posts_per_account") or 8)
+    keywords_list = _collect_keywords(cfg["niches"], payload)
 
-    niche_profile = _build_niche_profile(cfg)
-    accounts = _discover_by_keyword(
-        settings.apify_api_token,
-        keyword,
-        limit,
-        cfg["instagram"],
-    )
+    products = client.get("products") or {}
+    raw_seeds = products.get("competitor_seeds") if isinstance(products, dict) else []
+    if not isinstance(raw_seeds, list):
+        raw_seeds = []
+    seed_usernames = [str(s).strip().lstrip("@") for s in raw_seeds if str(s).strip()]
+
+    search_input_shape = {"search": "<keyword>", "searchType": "user", "resultsLimit": limit * 2}
+    progress: Dict[str, Any] = {
+        "pipeline": "competitor_discovery",
+        "phase": "searching",
+        "apify": {
+            "search_actor": SEARCH_ACTOR,
+            "reel_actor": REEL_ACTOR,
+            "reference": "services/apify.py — same actor IDs as scripts/competitor-discovery.js",
+        },
+        "openrouter_model": settings.openrouter_model,
+        "keywords_planned": keywords_list,
+        "competitor_seeds": seed_usernames,
+        "params": {
+            "limit": limit,
+            "threshold": threshold,
+            "posts_per_account": posts_per,
+            "apify_user_search_input": search_input_shape,
+            "apify_reel_scrape_input": {"username": ["<instagram_username>"], "resultsLimit": posts_per},
+        },
+        "seed_runs": [],
+        "keyword_runs": [],
+    }
+    supabase.table("background_jobs").update({"result": progress}).eq("id", job_id).execute()
+
+    seen_usernames: set[str] = set()
+    accounts: List[dict] = []
+    excl = cfg["instagram"]
+    for su in seed_usernames:
+        acc = fetch_instagram_user_by_username(settings.apify_api_token, su, exclude_username=excl)
+        found = False
+        if acc:
+            u = (acc.get("username") or "").lower()
+            if u and u not in seen_usernames:
+                seen_usernames.add(u)
+                accounts.append(acc)
+                found = True
+        progress["seed_runs"].append({"username": su, "resolved": found})
+        supabase.table("background_jobs").update({"result": dict(progress)}).eq("id", job_id).execute()
+
+    for kw in keywords_list:
+        batch = _discover_by_keyword(
+            settings.apify_api_token,
+            kw,
+            limit,
+            cfg["instagram"],
+        )
+        for a in batch:
+            u = (a.get("username") or "").lower()
+            if u and u not in seen_usernames:
+                seen_usernames.add(u)
+                accounts.append(a)
+        progress["keyword_runs"].append(
+            {
+                "keyword": kw,
+                "apify_search_input": {"search": kw, "searchType": "user", "resultsLimit": limit * 2},
+                "accounts_returned_this_keyword": len(batch),
+                "unique_accounts_merged_so_far": len(accounts),
+            }
+        )
+        progress["phase"] = "evaluating" if accounts else "searching"
+        supabase.table("background_jobs").update({"result": dict(progress)}).eq("id", job_id).execute()
 
     if not accounts:
+        progress["phase"] = "completed"
+        progress["message"] = "No accounts found for any keyword"
+        progress["evaluated"] = 0
+        progress["competitors_saved"] = 0
         supabase.table("background_jobs").update(
             {
                 "status": "completed",
                 "completed_at": datetime.now(timezone.utc).isoformat(),
-                "result": {
-                    "keyword": keyword,
-                    "accounts_discovered": 0,
-                    "evaluated": 0,
-                    "competitors_saved": 0,
-                    "message": "No accounts found for keyword",
-                },
+                "result": progress,
             }
         ).eq("id", job_id).execute()
         return
+
+    niche_profile = _build_niche_profile(cfg)
 
     baseline_row = _latest_valid_baseline(supabase, client_id)
     baseline_for_eval = None
@@ -350,20 +445,33 @@ def run_competitor_discovery(settings: Settings, job: Dict[str, Any]) -> None:
                 }
             )
 
+        existing = (
+            supabase.table("competitors")
+            .select("id")
+            .eq("client_id", client_id)
+            .eq("username", account["username"])
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            row["id"] = existing.data[0]["id"]
+        else:
+            row["id"] = generate_competitor_id()
+
         supabase.table("competitors").upsert(row, on_conflict="client_id,username").execute()
         saved += 1
         time.sleep(1)
+
+    progress["phase"] = "completed"
+    progress["accounts_discovered"] = len(accounts)
+    progress["evaluated"] = evaluated
+    progress["competitors_saved"] = saved
+    progress["cost_usd_approx"] = round(cost_hint, 4)
 
     supabase.table("background_jobs").update(
         {
             "status": "completed",
             "completed_at": datetime.now(timezone.utc).isoformat(),
-            "result": {
-                "keyword": keyword,
-                "accounts_discovered": len(accounts),
-                "evaluated": evaluated,
-                "competitors_saved": saved,
-                "cost_usd_approx": round(cost_hint, 4),
-            },
+            "result": progress,
         }
     ).eq("id", job_id).execute()

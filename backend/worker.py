@@ -15,7 +15,9 @@ from typing import Any, Dict, Optional
 from core.config import Settings, get_settings
 from core.database import get_supabase_for_settings
 from jobs.baseline_scrape import run_baseline_scrape
+from jobs.client_auto_profile import run_client_auto_profile
 from jobs.competitor_discovery import run_competitor_discovery
+from jobs.profile_scrape import run_profile_scrape
 
 
 def _fail_job(settings: Settings, job_id: str, message: str) -> None:
@@ -46,6 +48,10 @@ def _process_job_sync(settings: Settings, job: Dict[str, Any]) -> None:
         run_competitor_discovery(settings, job)
     elif jt == "baseline_scrape":
         run_baseline_scrape(settings, job)
+    elif jt == "profile_scrape":
+        run_profile_scrape(settings, job)
+    elif jt == "client_auto_profile":
+        run_client_auto_profile(settings, job)
     else:
         _fail_job(settings, job["id"], f"Unknown job_type: {jt}")
 

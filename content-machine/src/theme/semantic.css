@@ -1,0 +1,99 @@
+/**
+ * Silas — semantic colors for light / dark.
+ * Wired into Tailwind as `text-app-*`, `bg-app-*`, `border-app-*` via @theme in globals.css.
+ * Prefer these over raw zinc-* / amber-* on glass and cards so contrast stays correct in both modes.
+ */
+
+:root {
+  /* Foreground scale (body copy → de-emphasized) */
+  --app-fg: #18181b;
+  --app-fg-secondary: #3f3f46;
+  --app-fg-muted: #52525b;
+  --app-fg-subtle: #71717a;
+  --app-fg-faint: #a1a1aa;
+
+  /* Accent (icons, links on neutral surfaces) */
+  --app-accent: #d97706;
+  --app-accent-bright: #b45309;
+
+  /* Copy / actions on amber-tinted panels (alerts, soft banners) */
+  --app-on-amber-title: #78350f;
+  --app-on-amber-body: #44403c;
+  --app-on-amber-emphasis: #451a03;
+
+  /* Chips & tone toggles (inactive state) */
+  --app-chip-bg: rgb(0 0 0 / 0.06);
+  --app-chip-bg-hover: rgb(0 0 0 / 0.09);
+  --app-chip-fg: #52525b;
+  --app-chip-fg-hover: #27272a;
+
+  /* Icon / ghost buttons on cards */
+  --app-icon-btn-bg: rgb(0 0 0 / 0.08);
+  --app-icon-btn-bg-hover: rgb(0 0 0 / 0.14);
+  --app-icon-btn-fg: #52525b;
+  --app-icon-btn-fg-hover: #d97706;
+
+  /* Pills (glass-pill toolbar) */
+  --app-pill-fg: #3f3f46;
+  --app-pill-fg-hover: #18181b;
+
+  /* Surfaces */
+  --app-card: rgb(255 255 255 / 0.92);
+  --app-card-border: rgb(0 0 0 / 0.08);
+  --app-divider: rgb(0 0 0 / 0.08);
+
+  /* Secondary / outline control (Refresh baseline–style) */
+  --app-secondary-btn-bg: #f4f4f5;
+  --app-secondary-btn-border: #d4d4d8;
+  --app-secondary-btn-fg: #18181b;
+
+  /* Code inline */
+  --app-code-bg: #e4e4e7;
+  --app-code-fg: #18181b;
+
+  /* Warning / empty-state callouts (not error red) */
+  --app-callout-warning-fg: #92400e;
+  --app-callout-warning-code-bg: #e7e5e4;
+}
+
+html.dark {
+  --app-fg: #f4f4f5;
+  --app-fg-secondary: #d4d4d8;
+  --app-fg-muted: #b4b4bd;
+  --app-fg-subtle: #9ca3af;
+  --app-fg-faint: #787887;
+
+  --app-accent: #fbbf24;
+  --app-accent-bright: #fcd34d;
+
+  --app-on-amber-title: #fde68a;
+  --app-on-amber-body: #d4d4d8;
+  --app-on-amber-emphasis: #fef3c7;
+
+  --app-chip-bg: rgb(0 0 0 / 0.25);
+  --app-chip-bg-hover: rgb(255 255 255 / 0.06);
+  --app-chip-fg: #a1a1aa;
+  --app-chip-fg-hover: #e4e4e7;
+
+  --app-icon-btn-bg: rgb(0 0 0 / 0.25);
+  --app-icon-btn-bg-hover: rgb(0 0 0 / 0.4);
+  --app-icon-btn-fg: #a1a1aa;
+  --app-icon-btn-fg-hover: #fcd34d;
+
+  --app-pill-fg: #d4d4d8;
+  --app-pill-fg-hover: #ffffff;
+
+  --app-card: rgb(24 24 27 / 0.85);
+  --app-card-border: rgb(255 255 255 / 0.12);
+  --app-divider: rgb(255 255 255 / 0.1);
+
+  --app-secondary-btn-bg: rgb(255 255 255 / 0.1);
+  --app-secondary-btn-border: rgb(255 255 255 / 0.16);
+  --app-secondary-btn-fg: #f4f4f5;
+
+  --app-code-bg: #27272a;
+  --app-code-fg: #e4e4e7;
+
+  --app-callout-warning-fg: #fde68a;
+  --app-callout-warning-code-bg: #3f3f46;
+}

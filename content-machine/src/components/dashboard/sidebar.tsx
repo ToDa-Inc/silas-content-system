@@ -2,43 +2,59 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Sparkles, Users } from "lucide-react";
+import { Sparkles } from "lucide-react";
+import { useToast } from "@/components/ui/toast-provider";
 import { cn } from "@/lib/cn";
 import { mainNav } from "./nav";
+import { SignOutButton } from "./sign-out-button";
+import { SidebarClientPanel } from "./sidebar-client-panel";
+import { ThemeToggle } from "./theme-toggle";
+import type { ClientOption } from "./client-switcher";
 
 type SidebarProps = {
   onNavigate?: () => void;
-  /** Inside mobile drawer — not fixed, always flex */
+  /** Inside mobile drawer — scrollable column, not sticky */
   embedded?: boolean;
+  clients?: ClientOption[];
+  activeSlug?: string;
+  orgSlug?: string;
 };
 
-export function Sidebar({ onNavigate, embedded }: SidebarProps) {
+export function Sidebar({
+  onNavigate,
+  embedded,
+  clients = [],
+  activeSlug = "",
+  orgSlug = "",
+}: SidebarProps) {
   const pathname = usePathname();
+  const { show } = useToast();
 
   return (
     <aside
       className={cn(
-        "z-40 flex h-screen w-[220px] flex-col border-r border-zinc-800/20 bg-zinc-950 px-4 py-6",
+        "z-40 flex w-[220px] flex-col border-r border-zinc-200/80 bg-white/90 px-4 py-4 backdrop-blur-md dark:border-app-card-border dark:bg-zinc-950/95",
         embedded
-          ? "relative"
-          : "fixed left-0 top-0 hidden md:flex",
+          ? "relative flex h-full min-h-0 flex-col"
+          : "hidden md:sticky md:top-0 md:flex md:h-svh md:shrink-0 md:self-start",
       )}
     >
-      <div className="mb-10 mt-12 flex items-center gap-3 px-2">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg amber-gradient text-on-primary">
-          <Sparkles className="h-4 w-4" aria-hidden />
-        </div>
-        <div>
-          <div className="text-lg font-extrabold leading-none text-zinc-50">
-            Silas Prism
+      <div className="mb-4 flex shrink-0 items-center justify-between gap-2 px-0.5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-500 text-zinc-950">
+            <Sparkles className="h-3.5 w-3.5" aria-hidden />
           </div>
-          <div className="mt-1 text-[10px] uppercase tracking-widest text-zinc-500">
-            Content Automation
-          </div>
+          <span className="truncate text-sm font-semibold text-app-fg">
+            Silas
+          </span>
         </div>
+        <ThemeToggle />
       </div>
 
-      <nav className="flex-1 space-y-1">
+      <nav
+        className="min-h-0 flex-1 space-y-0.5 overflow-y-auto overflow-x-hidden py-1"
+        aria-label="Main navigation"
+      >
         {mainNav.map(({ href, label, icon: Icon }) => {
           const active =
             pathname === href || (href !== "/dashboard" && pathname.startsWith(href));
@@ -46,12 +62,13 @@ export function Sidebar({ onNavigate, embedded }: SidebarProps) {
             <Link
               key={href}
               href={href}
+              prefetch
               onClick={onNavigate}
               className={cn(
-                "flex items-center gap-3 rounded-lg px-4 py-2 text-[13px] font-medium transition-all duration-200",
+                "flex items-center gap-3 rounded-r-lg border-l-2 border-transparent py-2 pl-3 pr-2 text-[13px] font-medium",
                 active
-                  ? "translate-x-0.5 bg-amber-900/10 font-medium text-amber-400"
-                  : "text-zinc-500 hover:translate-x-1 hover:bg-zinc-900",
+                  ? "border-amber-500 bg-amber-500/12 text-amber-400 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
+                  : "text-zinc-600 hover:bg-zinc-200/80 hover:text-zinc-900 dark:text-app-fg-subtle dark:hover:bg-white/[0.06] dark:hover:text-app-fg-secondary",
               )}
             >
               <Icon className="h-[18px] w-[18px] shrink-0" aria-hidden />
@@ -61,20 +78,18 @@ export function Sidebar({ onNavigate, embedded }: SidebarProps) {
         })}
       </nav>
 
-      <div className="mt-auto border-t border-zinc-800/20 pt-6">
+      <div className="mt-auto shrink-0 space-y-1 border-t border-zinc-200 pt-4 dark:border-white/[0.06]">
         <button
           type="button"
-          className="mb-4 w-full rounded-xl bg-primary-container py-2.5 text-[13px] font-bold text-on-primary-container shadow-lg shadow-amber-500/10 transition-opacity hover:opacity-90 active:scale-[0.98]"
+          onClick={() =>
+            show("Projects aren’t multi-tenant yet — everything uses your current workspace.", "success")
+          }
+          className="mb-1 w-full rounded-xl bg-amber-500 py-2.5 text-[13px] font-semibold text-zinc-950 shadow-lg shadow-amber-500/15 transition-opacity hover:opacity-90 active:scale-[0.98]"
         >
-          New Project
+          New project
         </button>
-        <button
-          type="button"
-          className="flex w-full items-center gap-3 rounded-lg px-4 py-2 text-[13px] font-medium text-zinc-500 transition-colors hover:bg-zinc-900"
-        >
-          <Users className="h-[18px] w-[18px] shrink-0" aria-hidden />
-          Client Selector
-        </button>
+        <SidebarClientPanel clients={clients} activeSlug={activeSlug} orgSlug={orgSlug} />
+        <SignOutButton className="w-full justify-start" />
       </div>
     </aside>
   );
