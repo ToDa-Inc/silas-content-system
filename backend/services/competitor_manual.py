@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Dict, Optional
 
@@ -130,8 +131,52 @@ def preview_manual_competitor(
         "reasoning": None,
         "composite_score": None,
         "tier_label": None,
-        "message": "Add to tracking saves this account. Run Discover or scrape to fill scores and reels.",
+        "message": "Add to tracking saves this account. We fetch followers and avg views on save when Apify is configured; run Discover or sync reels for full scoring.",
     }
+
+
+def _enrich_manual_row_from_instagram(
+    settings: Settings,
+    canon_username: str,
+    client: dict,
+    row: Dict[str, Any],
+) -> None:
+    """Fill followers, avg_views, avg_likes via Apify — same pipeline as competitor discovery."""
+    token = (settings.apify_api_token or "").strip()
+    if not token:
+        return
+    cfg = _client_cfg_from_row(client)
+    excl = (cfg.get("instagram") or "").lower().strip("@")
+    try:
+        from jobs.competitor_discovery import _scrape_account_posts
+        from services.instagram_account_lookup import fetch_instagram_user_by_username
+
+        account = fetch_instagram_user_by_username(
+            token,
+            canon_username,
+            exclude_username=excl,
+            enforce_follower_bounds=False,
+        )
+        if not account:
+            return
+        un = (account.get("username") or canon_username).strip()
+        row["profile_url"] = (account.get("profileUrl") or "").strip() or row["profile_url"]
+        row["followers"] = int(account.get("followers") or 0)
+
+        posts = _scrape_account_posts(token, un, 25, account.get("_latestPosts"))
+        if len(posts) < 1:
+            return
+        total_views = sum(int(p.get("views") or 0) for p in posts)
+        total_likes = sum(int(p.get("likes") or 0) for p in posts)
+        n = len(posts)
+        row["avg_views"] = round(total_views / n)
+        row["avg_likes"] = round(total_likes / n)
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Manual competitor metrics enrichment failed for @%s",
+            canon_username,
+            exc_info=True,
+        )
 
 
 def add_manual_competitor(
@@ -141,8 +186,8 @@ def add_manual_competitor(
     raw_input: str,
     added_by: Optional[str],
 ) -> Dict[str, Any]:
-    """Insert a minimal competitors row — no scraping or AI on add."""
-    canon, _, supabase = _manual_canon_and_client(settings, client_id, raw_input)
+    """Insert a competitors row; best-effort Apify fetch for followers and avg views (no LLM)."""
+    canon, client, supabase = _manual_canon_and_client(settings, client_id, raw_input)
 
     existing = _find_competitor_for_client(supabase, client_id, canon)
     if existing:
@@ -178,6 +223,8 @@ def add_manual_competitor(
     # Persist added_by only after running backend/sql/phase1c_competitors_added_by.sql on Supabase.
     ab = (added_by or "").strip() or None
 
+    _enrich_manual_row_from_instagram(settings, canon, client, row)
+
     supabase.table("competitors").insert(row).execute()
 
     return {
@@ -185,6 +232,8 @@ def add_manual_competitor(
         "competitor_id": row["id"],
         "username": canon,
         "added_by": ab,
-        "relevance_score": None,
-        "composite_score": None,
+        "relevance_score": row.get("relevance_score"),
+        "composite_score": row.get("composite_score"),
+        "avg_views": row.get("avg_views"),
+        "followers": row.get("followers"),
     }

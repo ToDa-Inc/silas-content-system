@@ -45,7 +45,8 @@ async function proxyRequest(req: NextRequest, pathSegments: string[]) {
   }
 
   const path = pathSegments.join("/");
-  const target = `${backendBase().replace(/\/$/, "")}/${path}${req.nextUrl.search}`;
+  const base = backendBase().replace(/\/$/, "");
+  const target = `${base}/${path}${req.nextUrl.search}`;
 
   const headers = new Headers();
   for (const [key, value] of req.headers.entries()) {
@@ -59,13 +60,31 @@ async function proxyRequest(req: NextRequest, pathSegments: string[]) {
     body = await req.arrayBuffer();
   }
 
-  const upstream = await undiciFetch(target, {
-    method,
-    headers,
-    body,
-    redirect: "manual",
-    dispatcher: BACKEND_PROXY_AGENT,
-  });
+  let upstream: Awaited<ReturnType<typeof undiciFetch>>;
+  try {
+    upstream = await undiciFetch(target, {
+      method,
+      headers,
+      body,
+      redirect: "manual",
+      dispatcher: BACKEND_PROXY_AGENT,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const isConn =
+      /ECONNREFUSED|ENOTFOUND|ETIMEDOUT|fetch failed|socket/i.test(message);
+    return NextResponse.json(
+      {
+        error: "Upstream API unreachable",
+        detail: message,
+        backendBase: base,
+        hint: isConn
+          ? "Start the FastAPI server (e.g. `npm run dev:api` from repo root) or set CONTENT_API_URL / NEXT_PUBLIC_CONTENT_API_URL."
+          : undefined,
+      },
+      { status: 502 },
+    );
+  }
 
   const res = new NextResponse(upstream.body as unknown as BodyInit, {
     status: upstream.status,

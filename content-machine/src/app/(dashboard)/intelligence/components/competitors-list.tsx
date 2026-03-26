@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { ReelThumbnail } from "@/components/reel-thumbnail";
 import type { BaselineRow, CompetitorRow, ScrapedReelRow } from "@/lib/api";
+import { DeleteCompetitorButton } from "./delete-competitor-button";
 import { ScrapeCompetitorReelsButton } from "./scrape-competitor-reels-button";
 
 type Props = {
@@ -167,13 +168,24 @@ export function CompetitorsList({
             ) : null}
 
             {clientSlug.trim() && orgSlug.trim() ? (
-              <ScrapeCompetitorReelsButton
-                clientSlug={clientSlug}
-                orgSlug={orgSlug}
-                competitorId={row.id}
-                username={row.username}
-                disabled={syncDisabled}
-              />
+              <div className="mt-2 flex flex-wrap items-end justify-between gap-3">
+                <ScrapeCompetitorReelsButton
+                  clientSlug={clientSlug}
+                  orgSlug={orgSlug}
+                  competitorId={row.id}
+                  username={row.username}
+                  disabled={syncDisabled}
+                />
+                <div className="ml-auto shrink-0">
+                  <DeleteCompetitorButton
+                    clientSlug={clientSlug}
+                    orgSlug={orgSlug}
+                    competitorId={row.id}
+                    username={row.username}
+                    disabled={syncDisabled}
+                  />
+                </div>
+              </div>
             ) : null}
           </div>
         );

@@ -1,6 +1,6 @@
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, Dict, List
+from typing import Annotated, Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from supabase import Client
@@ -36,20 +36,27 @@ from services.scrape_cycle import find_stale_competitors
 router = APIRouter(prefix="/api/v1", tags=["intelligence"])
 
 
-def _parse_since(since: str | None) -> datetime:
+def _ensure_utc(dt: datetime) -> datetime:
+    """Postgres / ISO strings often yield naive datetimes; activity compares to UTC-aware `since`."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _parse_since(since: Optional[str]) -> datetime:
     if not since or not since.strip():
         return datetime.now(timezone.utc) - timedelta(hours=24)
     try:
-        return datetime.fromisoformat(since.replace("Z", "+00:00"))
+        return _ensure_utc(datetime.fromisoformat(since.replace("Z", "+00:00")))
     except (ValueError, TypeError):
         return datetime.now(timezone.utc) - timedelta(hours=24)
 
 
-def _dt_from_row(val: Any) -> datetime | None:
+def _dt_from_row(val: Any) -> Optional[datetime]:
     if not val:
         return None
     try:
-        return datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+        return _ensure_utc(datetime.fromisoformat(str(val).replace("Z", "+00:00")))
     except (ValueError, TypeError):
         return None
 
@@ -138,7 +145,7 @@ def _attach_reel_analyses(supabase: Client, client_id: str, reels: list[dict]) -
     for reel in reels:
         rid = reel.get("id")
         pu = _normalize_post_url_key(str(reel.get("post_url") or ""))
-        chosen: dict | None = None
+        chosen: Optional[dict] = None
         if rid and str(rid) in by_reel:
             chosen = by_reel[str(rid)]
         elif pu and pu in by_url:
@@ -283,6 +290,33 @@ def scrape_one_competitor_reels(
         "apify_items": int(res.get("apify_items") or 0),
         "username": res.get("username"),
     }
+
+
+@router.delete("/clients/{slug}/competitors/{competitor_id}")
+def delete_competitor(
+    slug: str,
+    competitor_id: str,
+    org_id: Annotated[str, Depends(require_org_access)],
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+) -> Dict[str, Any]:
+    """Remove competitor row and scraped reels for this account (reel_analyses.reel_id SET NULL)."""
+    cres = (
+        supabase.table("competitors")
+        .select("id, username")
+        .eq("id", competitor_id)
+        .eq("client_id", client_id)
+        .limit(1)
+        .execute()
+    )
+    if not cres.data:
+        raise HTTPException(status_code=404, detail="Competitor not found for this client")
+
+    supabase.table("scraped_reels").delete().eq("competitor_id", competitor_id).eq("client_id", client_id).execute()
+
+    supabase.table("competitors").delete().eq("id", competitor_id).eq("client_id", client_id).execute()
+
+    return {"ok": True, "deleted_id": competitor_id, "username": (cres.data[0] or {}).get("username")}
 
 
 @router.get("/clients/{slug}/competitors", response_model=list[CompetitorOut])
@@ -552,7 +586,7 @@ def sync_all(
     """Sync your reels, then every competitor's reels. See docs/INTELLIGENCE-GUIDE.md."""
     if not settings.apify_api_token:
         raise HTTPException(status_code=503, detail="APIFY_API_TOKEN not configured")
-    baseline: Dict[str, Any] | None = None
+    baseline: Optional[Dict[str, Any]] = None
     try:
         baseline = _run_baseline_refresh(
             org_id=org_id, client_id=client_id, supabase=supabase, settings=settings
@@ -630,7 +664,7 @@ def get_intelligence_activity(
     slug: str,
     client_id: Annotated[str, Depends(resolve_client_id)],
     supabase: Annotated[Client, Depends(get_supabase)],
-    since: str | None = Query(
+    since: Optional[str] = Query(
         None,
         description="ISO8601 lower bound; default last 24h. Client should pass last visit time.",
     ),

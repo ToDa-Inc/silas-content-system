@@ -56,7 +56,7 @@ export function ScrapeCompetitorReelsButton({
   }
 
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2">
       <label className="flex items-center gap-1.5 text-[10px] text-app-fg-subtle">
         <span className="whitespace-nowrap">Reels</span>
         <select

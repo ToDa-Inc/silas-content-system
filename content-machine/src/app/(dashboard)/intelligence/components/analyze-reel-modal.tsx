@@ -16,6 +16,8 @@ type Props = {
   orgSlug: string;
   disabled?: boolean;
   disabledHint?: string | null;
+  /** When opening the modal, pre-fill the URL field (e.g. from a reel row). */
+  initialUrl?: string | null;
 };
 
 function isLikelyInstagramReelUrl(s: string): boolean {
@@ -70,6 +72,7 @@ export function AnalyzeReelModal({
   orgSlug,
   disabled,
   disabledHint,
+  initialUrl,
 }: Props) {
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
@@ -95,8 +98,15 @@ export function AnalyzeReelModal({
       setResult(null);
       setShowFull(false);
       setBusy(false);
+    } else {
+      setUrl(initialUrl?.trim() ?? "");
+      setMsg(null);
+      setPhase(null);
+      setResult(null);
+      setShowFull(false);
+      setBusy(false);
     }
-  }, [open]);
+  }, [open, initialUrl]);
 
   if (!open) {
     return null;
