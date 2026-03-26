@@ -143,7 +143,32 @@ The Next.js app is in **`content-machine/`**, not the repo root. If **Root Direc
 
 **If the deploy succeeds in logs but the site shows `404 NOT_FOUND` (Vercel error page):** Next.js 16 defaults to **Turbopack** for `next build`; some Vercel pipelines still mis-handle that output. This repo uses **`next build --webpack`** in `content-machine/package.json` so production matches the classic bundler Vercel expects. Push, redeploy, then open the **Visit** URL on that exact deployment (not an old bookmark).
 
-**Environment variables** (Production and Preview): mirror your local `.env` — at minimum **`SUPABASE_URL`**, **`SUPABASE_ANON_KEY`**, **`SUPABASE_SERVICE_ROLE_KEY`** (server routes), and **`CONTENT_API_URL`** (public URL of your FastAPI API, not `localhost`). Supabase → **Authentication → URL configuration**: add your Vercel URL (`https://…vercel.app`) to **Site URL** and **Redirect URLs**.
+**Environment variables** (Production and Preview): mirror your local `.env` — at minimum **`SUPABASE_URL`**, **`SUPABASE_ANON_KEY`**, **`SUPABASE_SERVICE_ROLE_KEY`** (server routes), and **`CONTENT_API_URL`** (public URL of your FastAPI API, not `localhost`). Add the same keys for **Preview** if you open preview deployments. You can use **`NEXT_PUBLIC_SUPABASE_URL`** and **`NEXT_PUBLIC_SUPABASE_ANON_KEY`** instead of the `SUPABASE_*` names; they are equivalent for the dashboard.
+
+If the site loads but shows **“Application error” / a digest**, open Vercel → the deployment → **Logs** (or **Runtime Logs**) and search for the error text — often **missing Supabase env** or a failed Supabase query. `next.config` only injects `NEXT_PUBLIC_*` when values exist locally so empty strings from a missing `.env` at build time do not override Vercel’s variables.
+
+**Checklist:** After deploy, open **`https://<your-deployment>/api/health/env`**. If `supabaseConfigured` is `false`, variables are still not on that environment — enable **Preview** (not only Production) for branch/preview URLs, or confirm you edited variables on **this** Vercel project (same Git repo + Root Directory `content-machine`). Build logs will show a **`[content-machine] Supabase env missing during Vercel build`** warning if keys were absent when `next build` ran.
+
+Supabase → **Authentication → URL configuration**: add your Vercel URL (`https://…vercel.app`) to **Site URL** and **Redirect URLs**.
+
+### Railway (Railpack / “No start command detected”)
+
+The **repo root** `package.json` had no `start` script, so Railpack failed. Two supported setups:
+
+**A — Recommended (repo root, no Root Directory change)**  
+1. Use the repo-root **`Dockerfile`** + **`railway.json`** + **`.dockerignore`** (they build `content-machine/` from the monorepo root).  
+2. **`builder`: `DOCKERFILE`** skips Railpack.  
+3. Redeploy after pull.
+
+**B — Subdirectory deploy**  
+1. **Settings → Root Directory** → **`content-machine`**.  
+2. Uses **`content-machine/Dockerfile`** + **`content-machine/railway.json`**.
+
+The root **`package.json`** now also defines **`start`** and **`build`** pointing at `content-machine/` so Railpack can fall back if Docker is not used.
+
+**Variables** (same as Vercel): `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `CONTENT_API_URL`, etc. Enable them for **build** where Railway offers it, so Docker `ARG`s receive values.
+
+Health check: **`/api/health/env`**.
 
 ---
 

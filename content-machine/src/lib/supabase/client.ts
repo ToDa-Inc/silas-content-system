@@ -1,11 +1,12 @@
 import { createBrowserClient } from "@supabase/ssr";
 
 export function createClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const e = process.env;
+  const url = e["NEXT_PUBLIC_SUPABASE_URL"];
+  const key = e["NEXT_PUBLIC_SUPABASE_ANON_KEY"];
   if (!url || !key) {
     throw new Error(
-      "Missing Supabase URL/anon key — set SUPABASE_URL and SUPABASE_ANON_KEY (repo `.env` or `config/.env`). next.config maps them for the browser.",
+      "Missing Supabase URL/anon key. Local: repo `.env` / `backend/.env`. Vercel: Environment Variables + enable Preview if you use preview URLs. GET /api/health/env to verify.",
     );
   }
   return createBrowserClient(url, key);

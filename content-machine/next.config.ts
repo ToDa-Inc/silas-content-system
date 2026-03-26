@@ -14,6 +14,9 @@ dotenv.config({ path: path.join(appRoot, ".env.local"), override: true });
 
 // Next only inlines NEXT_PUBLIC_* from .env files into the browser. We keep a single
 // source of truth (SUPABASE_* / CONTENT_API_URL) and inject public aliases here.
+//
+// IMPORTANT (Vercel): never set `env.NEXT_PUBLIC_*` to "" — Next bakes those literals into
+// the bundle and they override dashboard env vars at runtime. Only add keys we have values for.
 const supabaseUrl =
   process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const supabaseAnon =
@@ -24,19 +27,34 @@ const contentApiBase =
   process.env.NEXT_PUBLIC_API_URL ||
   "";
 
+const publicEnv: Record<string, string> = {};
+if (supabaseUrl) {
+  publicEnv.NEXT_PUBLIC_SUPABASE_URL = supabaseUrl;
+}
+if (supabaseAnon) {
+  publicEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY = supabaseAnon;
+}
+if (contentApiBase) {
+  publicEnv.NEXT_PUBLIC_CONTENT_API_URL = contentApiBase;
+}
+
+if (process.env.VERCEL === "1" && (!supabaseUrl || !supabaseAnon)) {
+  console.warn(
+    "[content-machine] Supabase env missing during Vercel build. Settings → Environment Variables: add SUPABASE_URL + SUPABASE_ANON_KEY (or NEXT_PUBLIC_SUPABASE_URL + NEXT_PUBLIC_SUPABASE_ANON_KEY). Enable Production and Preview, save, redeploy.",
+  );
+}
+
 // Monorepo: parent folder has its own package-lock.json; Turbopack otherwise resolves
 // `@import "tailwindcss"` from monorepo root without tailwind — force app node_modules.
 const tailwindPkg = path.join(appRoot, "node_modules", "tailwindcss");
 const tailwindPostcss = path.join(appRoot, "node_modules", "@tailwindcss", "postcss");
 
 const nextConfig: NextConfig = {
-  env: {
-    NEXT_PUBLIC_SUPABASE_URL: supabaseUrl,
-    NEXT_PUBLIC_SUPABASE_ANON_KEY: supabaseAnon,
-    ...(contentApiBase
-      ? { NEXT_PUBLIC_CONTENT_API_URL: contentApiBase }
-      : {}),
-  },
+  env: publicEnv,
+  // Docker/Railway: minimal server bundle for `node server.js` (see Dockerfile).
+  ...(process.env.DOCKER === "1" ? { output: "standalone" as const } : {}),
+  // Same as turbopack.root — avoids "outputFileTracingRoot and turbopack.root must match" on Vercel.
+  outputFileTracingRoot: appRoot,
   turbopack: {
     root: appRoot,
     resolveAlias: {

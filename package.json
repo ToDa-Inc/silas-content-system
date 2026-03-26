@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "description": "Instagram Reels content automation — scrape, analyze, generate, produce",
   "scripts": {
+    "start": "npm --prefix content-machine run start",
+    "build": "npm ci --prefix content-machine && npm run build --prefix content-machine",
     "dev:api": "cd backend && python3 -m uvicorn main:app --reload --host 127.0.0.1 --port 8787",
     "dev:all": "concurrently -n api,ui -c blue,green \"npm run dev:api\" \"npm run dashboard\"",
     "dashboard": "npm --prefix content-machine run dev",

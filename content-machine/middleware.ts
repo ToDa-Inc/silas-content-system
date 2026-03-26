@@ -16,10 +16,10 @@ function isProtectedPath(pathname: string): boolean {
 
 export async function middleware(request: NextRequest) {
   // Middleware may run on Edge — prefer NEXT_PUBLIC_* (inlined at build). Node falls back to SUPABASE_*.
-  const url =
-    process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "";
+  const e = process.env;
+  const url = e["NEXT_PUBLIC_SUPABASE_URL"] || e["SUPABASE_URL"] || "";
   const key =
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || "";
+    e["NEXT_PUBLIC_SUPABASE_ANON_KEY"] || e["SUPABASE_ANON_KEY"] || "";
 
   if (!url || !key) {
     console.error(

@@ -2,12 +2,10 @@ import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
 function supabasePublicFromEnv(): { url: string; key: string } {
-  // RSC runs on Node: repo-root `.env` is loaded in next.config (dotenv) → SUPABASE_* is set.
-  // NEXT_PUBLIC_* comes from the same source via next.config `env` (client + some server paths).
-  const url =
-    process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-  const key =
-    process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+  // Bracket keys: avoids some bundlers inlining `process.env.FOO` as undefined when FOO is only set on the host (e.g. Vercel).
+  const e = process.env;
+  const url = e["SUPABASE_URL"] || e["NEXT_PUBLIC_SUPABASE_URL"] || "";
+  const key = e["SUPABASE_ANON_KEY"] || e["NEXT_PUBLIC_SUPABASE_ANON_KEY"] || "";
   return { url, key };
 }
 
@@ -16,7 +14,7 @@ export async function createClient() {
   const { url, key } = supabasePublicFromEnv();
   if (!url || !key) {
     throw new Error(
-      "Missing Supabase URL/anon key — set SUPABASE_URL and SUPABASE_ANON_KEY in repo-root `.env` (see `.env.example`).",
+      "Missing Supabase URL or anon key. Local: set SUPABASE_URL + SUPABASE_ANON_KEY in repo `.env` / `backend/.env`. Vercel: Project → Settings → Environment Variables — add the same for Production and Preview (use NEXT_PUBLIC_SUPABASE_URL + NEXT_PUBLIC_SUPABASE_ANON_KEY if you prefer). See repo `.env.example`.",
     );
   }
 
