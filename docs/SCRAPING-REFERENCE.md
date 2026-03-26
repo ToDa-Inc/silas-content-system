@@ -54,8 +54,6 @@ Source: `backend/services/apify.py`
 | `searchType` | Always `"user"` | We search for accounts, not posts or hashtags. Instagram's API matches against bio and display name. |
 | `resultsLimit` | `limit * 2` (default: 30) | Over-fetch because we filter out many accounts in the next step. |
 
-> **⚠️ Keywords MUST be identity keywords** (what creators put in their bio: "leadership coach", "career strategist", "Führungskräfte Coach"), NOT topic keywords (what they post about: "toxic workplace", "boundaries at work"). Topic keywords return near-zero results because nobody writes them in their bio. See [COMPETITOR-DISCOVERY-LOGIC.md](./COMPETITOR-DISCOVERY-LOGIC.md) and [AUTO-PROFILE-SPEC.md](./AUTO-PROFILE-SPEC.md) for the full keyword strategy.
-
 **What Apify returns:** Array of user objects:
 ```json
 {
@@ -124,7 +122,7 @@ From each post we extract: `caption`, `views` (from `videoViewCount` or `videoPl
 For each filtered account, one API call to Gemini:
 
 **Endpoint:** `https://openrouter.ai/api/v1/chat/completions`
-**Model:** `google/gemini-2.0-flash-001` (configurable via `OPENROUTER_MODEL`)
+**Model:** `google/gemini-3-flash-preview` (configurable via `OPENROUTER_MODEL`)
 **Temperature:** 0.1 (near-deterministic)
 **Max tokens:** 512
 

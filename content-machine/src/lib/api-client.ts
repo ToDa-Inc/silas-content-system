@@ -28,7 +28,10 @@ export type ClientApiHeaderOptions = {
 /** DevTools + console: use this instead of raw `fetch` for Content API calls from the browser. */
 export async function contentApiFetch(url: string, init?: RequestInit): Promise<Response> {
   const method = (init?.method ?? "GET").toUpperCase();
-  if (process.env.NODE_ENV === "development") {
+  if (
+    typeof process !== "undefined" &&
+    process.env?.NODE_ENV === "development"
+  ) {
     // Use info (not debug) so Chrome default console levels always show it.
     console.info(`[Content API] ${method}`, url);
   }
