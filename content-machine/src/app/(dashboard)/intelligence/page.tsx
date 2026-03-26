@@ -260,6 +260,7 @@ export default async function IntelligencePage() {
           <CompetitorsList
             competitors={competitors}
             baseline={baseline}
+            scrapedReels={allReels}
             clientSlug={clientSlug}
             orgSlug={orgSlug}
             syncDisabled={syncDisabled}

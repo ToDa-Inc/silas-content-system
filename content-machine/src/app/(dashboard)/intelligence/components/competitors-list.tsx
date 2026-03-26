@@ -9,7 +9,7 @@ import { ScrapeCompetitorReelsButton } from "./scrape-competitor-reels-button";
 type Props = {
   competitors: CompetitorRow[];
   baseline: BaselineRow | null;
-  scrapedReels: ScrapedReelRow[];
+  scrapedReels?: ScrapedReelRow[];
   clientSlug: string;
   orgSlug: string;
   syncDisabled?: boolean;
