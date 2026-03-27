@@ -88,6 +88,8 @@ Or from `backend/`:
 python3 -m uvicorn main:app --reload --host 127.0.0.1 --port 8787
 ```
 
+**One Railway container (API + worker):** from `backend/` set the service **Start Command** to `bash start.sh` and ensure **`PORT`** is unset or left to Railway (the script uses `$PORT`). Set **`CORS_ORIGINS`** to include your Vercel URL (see repo `.env.example`).
+
 ## Run worker (separate terminal)
 
 ```bash
