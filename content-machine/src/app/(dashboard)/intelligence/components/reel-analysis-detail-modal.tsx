@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { ChevronDown, ChevronUp, Loader2, X } from "lucide-react";
 import { fetchReelAnalysisDetail } from "@/lib/api-client";
+import { inlineMd } from "@/lib/inline-markdown";
 import { formatSilasScoreSummary } from "@/lib/silas-score-display";
 import type { ReelAnalysisDetail } from "@/lib/reel-types";
 
@@ -46,7 +47,7 @@ function formatLines(fmt: Record<string, string> | undefined | null): React.Reac
         return (
           <div key={k} className="flex gap-2">
             <dt className="w-28 shrink-0 capitalize text-zinc-500 dark:text-app-fg-muted">{label}</dt>
-            <dd className="min-w-0 flex-1">{v}</dd>
+            <dd className="min-w-0 flex-1">{inlineMd(v)}</dd>
           </div>
         );
       })}
@@ -60,7 +61,7 @@ function replicableList(el: Record<string, string> | null | undefined): React.Re
     <ul className="list-inside list-disc space-y-1">
       {Object.entries(el).map(([k, v]) => (
         <li key={k}>
-          <span className="font-medium capitalize">{k.replace(/_/g, " ")}:</span> {v}
+          <span className="font-medium capitalize">{k.replace(/_/g, " ")}:</span> {inlineMd(v)}
         </li>
       ))}
     </ul>
@@ -250,23 +251,23 @@ export function ReelAnalysisDetailModal({ open, onClose, reelId, clientSlug, org
 
             {hasStructured ? (
               <div className="space-y-2">
-                {why ? <Section title="Summary">{why}</Section> : null}
-                {emotional ? <Section title="Relatability signal">{emotional}</Section> : null}
+                {why ? <Section title="Summary">{inlineMd(why)}</Section> : null}
+                {emotional ? <Section title="Relatability signal">{inlineMd(emotional)}</Section> : null}
                 {hookType || contentAngle || captionStruct ? (
                   <Section title="Format">
                     {hookType ? (
                       <p className="mb-1">
-                        <span className="text-zinc-500 dark:text-app-fg-muted">Hook type:</span> {hookType}
+                        <span className="text-zinc-500 dark:text-app-fg-muted">Hook type:</span> {inlineMd(hookType)}
                       </p>
                     ) : null}
                     {contentAngle ? (
                       <p className="mb-1">
-                        <span className="text-zinc-500 dark:text-app-fg-muted">Type:</span> {contentAngle}
+                        <span className="text-zinc-500 dark:text-app-fg-muted">Type:</span> {inlineMd(contentAngle)}
                       </p>
                     ) : null}
                     {captionStruct ? (
                       <p>
-                        <span className="text-zinc-500 dark:text-app-fg-muted">Caption:</span> {captionStruct}
+                        <span className="text-zinc-500 dark:text-app-fg-muted">Caption:</span> {inlineMd(captionStruct)}
                       </p>
                     ) : null}
                     {!hookType && !contentAngle && !captionStruct && sum?.format
@@ -279,7 +280,7 @@ export function ReelAnalysisDetailModal({ open, onClose, reelId, clientSlug, org
                 {repl && Object.keys(repl).length ? (
                   <Section title="Replicable elements">{replicableList(repl)}</Section>
                 ) : null}
-                {suggest ? <Section title="Suggested adaptation">{suggest}</Section> : null}
+                {suggest ? <Section title="Suggested adaptation">{inlineMd(suggest)}</Section> : null}
               </div>
             ) : null}
 

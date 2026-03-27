@@ -363,10 +363,24 @@ export async function fetchIntelligenceStats(): Promise<{
   }
 }
 
+/** Subset of GET /activity `own_reel_growth[]` — backend may attach reel metadata. */
+export type OwnReelGrowthItem = {
+  reel_id: string;
+  views_gained: number;
+  views_now: number;
+  post_url?: string | null;
+  thumbnail_url?: string | null;
+  hook_text?: string | null;
+  caption?: string | null;
+  account_username?: string | null;
+  likes?: number | null;
+  comments?: number | null;
+};
+
 export type IntelligenceActivityRow = {
   since: string;
   new_breakout_reels: ScrapedReelRow[];
-  own_reel_growth: { reel_id: string; views_gained: number; views_now: number }[];
+  own_reel_growth: OwnReelGrowthItem[];
   is_quiet: boolean;
 };
 

@@ -17,8 +17,8 @@ function NicheKeywordLists({ nicheConfig }: { nicheConfig: unknown[] }) {
   if (!nicheConfig.length) {
     return (
       <p className="text-sm text-zinc-400">
-        No niche profile yet. Run <strong>Re-generate</strong> after you have reels in Intelligence (refresh
-        baseline first).
+        No niche profile yet. Run <strong>Re-generate</strong> after you have reels in Intelligence (use{" "}
+        <strong>Update my reels</strong> on the Dashboard first).
       </p>
     );
   }

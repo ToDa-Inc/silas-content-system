@@ -28,8 +28,11 @@ from models.competitor import (
 from models.reel import (
     AnalyzeReelBulkBody,
     AnalyzeReelUrlBody,
+    MetricPoint,
     ReelAnalysisDetailOut,
     ReelAnalysisOut,
+    ReelMetricsListOut,
+    ReelMetricsSeriesOut,
     ScrapedReelOut,
     TopicSearchBody,
 )
@@ -64,6 +67,76 @@ def _dt_from_row(val: Any) -> Optional[datetime]:
         return _ensure_utc(datetime.fromisoformat(str(val).replace("Z", "+00:00")))
     except (ValueError, TypeError):
         return None
+
+
+def _parse_optional_iso8601(raw: Optional[str]) -> Optional[datetime]:
+    if not raw or not str(raw).strip():
+        return None
+    try:
+        return _ensure_utc(datetime.fromisoformat(str(raw).strip().replace("Z", "+00:00")))
+    except (ValueError, TypeError):
+        return None
+
+
+def _metrics_range_bounds(
+    from_iso: Optional[str], to_iso: Optional[str]
+) -> tuple[Optional[datetime], Optional[datetime]]:
+    a = _parse_optional_iso8601(from_iso)
+    b = _parse_optional_iso8601(to_iso)
+    if a is not None and b is not None and a > b:
+        return b, a
+    return a, b
+
+
+def _snapshot_points_for_reel(
+    supabase: Client,
+    reel_id: str,
+    from_dt: Optional[datetime],
+    to_dt: Optional[datetime],
+) -> List[MetricPoint]:
+    q = (
+        supabase.table("reel_snapshots")
+        .select("scraped_at, views, likes, comments")
+        .eq("reel_id", reel_id)
+        .order("scraped_at", desc=False)
+    )
+    if from_dt is not None:
+        q = q.gte("scraped_at", from_dt.isoformat())
+    if to_dt is not None:
+        q = q.lte("scraped_at", to_dt.isoformat())
+    try:
+        res = q.execute()
+    except Exception:
+        return []
+    out: List[MetricPoint] = []
+    for row in res.data or []:
+        ts = row.get("scraped_at")
+        if ts is None:
+            continue
+        out.append(
+            MetricPoint(
+                scraped_at=str(ts),
+                views=int(row["views"]) if row.get("views") is not None else None,
+                likes=int(row["likes"]) if row.get("likes") is not None else None,
+                comments=int(row["comments"]) if row.get("comments") is not None else None,
+            )
+        )
+    return out
+
+
+def _own_reel_meta(
+    supabase: Client, client_id: str, reel_id: str
+) -> Optional[Dict[str, Any]]:
+    rc = (
+        supabase.table("scraped_reels")
+        .select("id, post_url, thumbnail_url, hook_text")
+        .eq("id", reel_id)
+        .eq("client_id", client_id)
+        .is_("competitor_id", "null")
+        .limit(1)
+        .execute()
+    )
+    return rc.data[0] if rc.data else None
 
 
 def _compute_client_stats(supabase: Client, client_id: str) -> Dict[str, Any]:
@@ -1040,6 +1113,91 @@ def list_reels(
             # Table missing or RLS — return reels without analysis
             pass
     return data
+
+
+_METRICS_MAX_REEL_IDS = 10
+_METRICS_DEFAULT_OWN_LIMIT = 30
+
+
+@router.get("/clients/{slug}/reels/metrics", response_model=ReelMetricsListOut)
+def list_own_reels_metrics(
+    slug: str,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    reel_ids: Optional[str] = Query(
+        None,
+        description="Comma-separated reel ids (max 10). Omit to use up to 30 own reels by posted_at.",
+    ),
+    from_: Optional[str] = Query(None, alias="from", description="ISO8601 lower bound on scraped_at"),
+    to: Optional[str] = Query(None, description="ISO8601 upper bound on scraped_at"),
+) -> ReelMetricsListOut:
+    """Snapshot time series for own reels (competitor_id NULL) — dashboard / compare charts."""
+    from_dt, to_dt = _metrics_range_bounds(from_, to)
+    target_ids: List[str] = []
+    if reel_ids and reel_ids.strip():
+        seen: set[str] = set()
+        for part in reel_ids.split(","):
+            s = part.strip()
+            if s and s not in seen:
+                seen.add(s)
+                target_ids.append(s)
+        if len(target_ids) > _METRICS_MAX_REEL_IDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"reel_ids accepts at most {_METRICS_MAX_REEL_IDS} reel ids",
+            )
+    else:
+        own = (
+            supabase.table("scraped_reels")
+            .select("id")
+            .eq("client_id", client_id)
+            .is_("competitor_id", "null")
+            .order("posted_at", desc=True)
+            .limit(_METRICS_DEFAULT_OWN_LIMIT)
+            .execute()
+        )
+        target_ids = [str(x["id"]) for x in (own.data or [])]
+
+    series: List[ReelMetricsSeriesOut] = []
+    for rid in target_ids:
+        meta = _own_reel_meta(supabase, client_id, rid)
+        if not meta:
+            continue
+        points = _snapshot_points_for_reel(supabase, rid, from_dt, to_dt)
+        series.append(
+            ReelMetricsSeriesOut(
+                reel_id=str(meta["id"]),
+                post_url=meta.get("post_url"),
+                thumbnail_url=meta.get("thumbnail_url"),
+                hook_text=meta.get("hook_text"),
+                points=points,
+            )
+        )
+    return ReelMetricsListOut(reels=series)
+
+
+@router.get("/clients/{slug}/reels/{reel_id}/metrics", response_model=ReelMetricsSeriesOut)
+def get_own_reel_metrics(
+    slug: str,
+    reel_id: str,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    from_: Optional[str] = Query(None, alias="from", description="ISO8601 lower bound on scraped_at"),
+    to: Optional[str] = Query(None, description="ISO8601 upper bound on scraped_at"),
+) -> ReelMetricsSeriesOut:
+    """Snapshot time series for one own reel."""
+    from_dt, to_dt = _metrics_range_bounds(from_, to)
+    meta = _own_reel_meta(supabase, client_id, reel_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Own reel not found for this client")
+    points = _snapshot_points_for_reel(supabase, reel_id, from_dt, to_dt)
+    return ReelMetricsSeriesOut(
+        reel_id=str(meta["id"]),
+        post_url=meta.get("post_url"),
+        thumbnail_url=meta.get("thumbnail_url"),
+        hook_text=meta.get("hook_text"),
+        points=points,
+    )
 
 
 @router.get("/clients/{slug}/reels/{reel_id}/analysis", response_model=ReelAnalysisDetailOut)

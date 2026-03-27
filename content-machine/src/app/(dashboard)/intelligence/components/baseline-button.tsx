@@ -50,7 +50,7 @@ export function BaselineButton({ clientSlug, orgSlug, disabled, disabledHint, co
         headers: headersBase,
       });
       if (b.status === 409) {
-        setStatus("Baseline refresh already running — please wait.");
+        setStatus("An update is already running — please wait.");
         return;
       }
       if (!b.ok) {
@@ -65,7 +65,7 @@ export function BaselineButton({ clientSlug, orgSlug, disabled, disabledHint, co
       setStatus(
         median != null && reels != null
           ? `Done — ${reels} reels analyzed, ${median.toLocaleString()} median views.`
-          : "Baseline updated.",
+          : "Your reels are up to date.",
       );
       router.refresh();
     } catch {
@@ -85,7 +85,7 @@ export function BaselineButton({ clientSlug, orgSlug, disabled, disabledHint, co
           disabled={busy || disabled || !clientSlug.trim() || !orgSlug.trim()}
           title={
             disabledHint ??
-            "Pull your latest reels from Instagram and update baseline stats (median, percentiles)."
+            "Pull your latest reels from Instagram and refresh your stats (averages, medians)."
           }
           aria-label={label}
           onClick={() => void runBaseline()}
@@ -110,10 +110,10 @@ export function BaselineButton({ clientSlug, orgSlug, disabled, disabledHint, co
         className="inline-flex items-center justify-center gap-2 rounded-lg border border-app-secondary-btn-border bg-app-secondary-btn-bg px-4 py-2 text-sm font-semibold text-app-secondary-btn-fg transition-colors hover:bg-zinc-200 dark:hover:bg-white/[0.14] disabled:opacity-50"
       >
         {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <BarChart3 className="h-4 w-4" aria-hidden />}
-        {busy ? "Refreshing…" : "Refresh baseline"}
+        {busy ? "Refreshing…" : "Refresh my reels"}
       </button>
       <p className="text-[11px] leading-snug text-app-fg-subtle">
-        Scrape your own reels and refresh median / percentile metrics.
+        Pull your own reels from Instagram and refresh performance numbers.
       </p>
       {status ? (
         <p className="max-w-[260px] text-[11px] text-app-fg-muted">{status}</p>

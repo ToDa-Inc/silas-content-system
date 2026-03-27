@@ -1,6 +1,9 @@
 "use client";
 
-import type { ReelAnalysisDetail } from "@/lib/reel-types";
+import type {
+  OwnReelsMetricsResponse,
+  ReelAnalysisDetail,
+} from "@/lib/reel-types";
 import { getContentApiBase } from "@/lib/env";
 
 /** FastAPI `detail` is a string (400) or validation array (422). */
@@ -133,6 +136,39 @@ export async function fetchActiveReelAnalysisJob(
       };
     }
     return { ok: true, data: json as ActiveReelAnalysisJobResponse };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+/** Own-reel metrics history for dashboard charts — requires repeated pulls from Instagram (snapshots). */
+export async function fetchOwnReelsMetrics(
+  clientSlug: string,
+  orgSlug: string,
+  opts?: { from?: string; to?: string; reelIds?: string[] },
+): Promise<
+  { ok: true; data: OwnReelsMetricsResponse } | { ok: false; error: string }
+> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  const sp = new URLSearchParams();
+  if (opts?.from) sp.set("from", opts.from);
+  if (opts?.to) sp.set("to", opts.to);
+  if (opts?.reelIds?.length) sp.set("reel_ids", opts.reelIds.join(","));
+  const q = sp.toString();
+  const url = `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/reels/metrics${q ? `?${q}` : ""}`;
+  try {
+    const res = await contentApiFetch(url, { headers });
+    const json = (await res.json().catch(() => ({}))) as OwnReelsMetricsResponse & {
+      detail?: unknown;
+    };
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(json as Record<string, unknown>, `Request failed (${res.status})`),
+      };
+    }
+    return { ok: true, data: { reels: json.reels ?? [] } };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
   }

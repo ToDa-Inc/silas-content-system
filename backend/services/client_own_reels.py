@@ -52,6 +52,11 @@ def _hashtags(item: dict, caption: str) -> List[str]:
     return re.findall(r"#[\w\u00C0-\u024F]+", caption)[:50]
 
 
+def _normalize_post_url_key(url: str) -> str:
+    """Stable key for UNIQUE(client_id, post_url) — match jobs/reel_analyze_url.py."""
+    return url.strip().split("?")[0].split("#")[0].rstrip("/")
+
+
 def upsert_client_own_reels(
     supabase: Client,
     *,
@@ -61,10 +66,16 @@ def upsert_client_own_reels(
     videos: List[dict],
     account_avg_views: int,
 ) -> int:
-    """Insert/update scraped_reels for the creator's own posts (no competitor, no outlier flags)."""
+    """Upsert scraped_reels for the client's own posts (competitor_id NULL).
+
+    Preserves stable ``id`` per (client_id, post_url) so ``reel_snapshots`` can track
+    metrics over time. Rows no longer returned in this baseline batch are removed.
+    """
     un = ig_username.replace("@", "").strip()
     if not un or not videos:
         return 0
+
+    normalized_keys: set[str] = set()
     rows: List[Dict[str, Any]] = []
     for item in videos:
         url = _post_url(item)
@@ -80,12 +91,14 @@ def upsert_client_own_reels(
         caption = _caption_text(item)
         thumb = reel_thumbnail_url_from_apify_item(item)
         hook = (caption.split("\n")[0][:500] if caption else "") or None
+        url_key = _normalize_post_url_key(url)
+        normalized_keys.add(url_key)
         rows.append(
             {
                 "client_id": client_id,
                 "competitor_id": None,
                 "scrape_job_id": job_id,
-                "post_url": url,
+                "post_url": url_key,
                 "thumbnail_url": str(thumb) if thumb else None,
                 "account_username": un,
                 "account_avg_views": account_avg_views,
@@ -106,11 +119,43 @@ def upsert_client_own_reels(
         )
     if not rows:
         return 0
-    # Replace prior client-owned rows (competitor_id NULL) for this client.
-    supabase.table("scraped_reels").delete().eq("client_id", client_id).is_(
-        "competitor_id", "null"
-    ).execute()
+
+    existing_res = (
+        supabase.table("scraped_reels")
+        .select("id, post_url")
+        .eq("client_id", client_id)
+        .is_("competitor_id", "null")
+        .execute()
+    )
+    id_by_url: Dict[str, str] = {}
+    stored_url_by_norm: Dict[str, str] = {}
+    for er in existing_res.data or []:
+        raw = str(er.get("post_url") or "")
+        n = _normalize_post_url_key(raw)
+        if n and n not in id_by_url:
+            id_by_url[n] = str(er["id"])
+            stored_url_by_norm[n] = raw if raw else n
+
     for row in rows:
-        row["id"] = generate_reel_id()
-    supabase.table("scraped_reels").insert(rows).execute()
+        key = row["post_url"]
+        row["id"] = id_by_url.get(key) or generate_reel_id()
+        row["post_url"] = stored_url_by_norm.get(key, key)
+
+    supabase.table("scraped_reels").upsert(rows, on_conflict="client_id,post_url").execute()
+
+    fresh_res = (
+        supabase.table("scraped_reels")
+        .select("id, post_url")
+        .eq("client_id", client_id)
+        .is_("competitor_id", "null")
+        .execute()
+    )
+    orphan_ids: List[str] = []
+    for er in fresh_res.data or []:
+        n = _normalize_post_url_key(str(er.get("post_url") or ""))
+        if n not in normalized_keys:
+            orphan_ids.append(str(er["id"]))
+    if orphan_ids:
+        supabase.table("scraped_reels").delete().in_("id", orphan_ids).execute()
+
     return len(rows)

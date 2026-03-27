@@ -107,6 +107,31 @@ class ReelAnalysisOut(BaseModel):
     silas_rating: Optional[str] = None
 
 
+class MetricPoint(BaseModel):
+    """One append-only row from reel_snapshots (chart-friendly)."""
+
+    scraped_at: str
+    views: Optional[int] = None
+    likes: Optional[int] = None
+    comments: Optional[int] = None
+
+
+class ReelMetricsSeriesOut(BaseModel):
+    """GET …/reels/{reel_id}/metrics — own reel time series."""
+
+    reel_id: str
+    post_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    hook_text: Optional[str] = None
+    points: List[MetricPoint] = Field(default_factory=list)
+
+
+class ReelMetricsListOut(BaseModel):
+    """GET …/reels/metrics — multiple own reels (compare / dashboard)."""
+
+    reels: List[ReelMetricsSeriesOut] = Field(default_factory=list)
+
+
 class ScrapedReelOut(BaseModel):
     model_config = ConfigDict(extra="ignore")
 

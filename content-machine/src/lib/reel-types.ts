@@ -1,5 +1,25 @@
 /** Shared reel + Silas analysis types (server + client). */
 
+/** GET …/reels/metrics — snapshot time series for own reels. */
+export type OwnReelsMetricPoint = {
+  scraped_at: string;
+  views?: number | null;
+  likes?: number | null;
+  comments?: number | null;
+};
+
+export type OwnReelsMetricsSeries = {
+  reel_id: string;
+  post_url?: string | null;
+  thumbnail_url?: string | null;
+  hook_text?: string | null;
+  points: OwnReelsMetricPoint[];
+};
+
+export type OwnReelsMetricsResponse = {
+  reels: OwnReelsMetricsSeries[];
+};
+
 export type ReelAnalysisSummary = {
   id: string;
   total_score: number | null;

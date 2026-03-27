@@ -189,11 +189,12 @@ export default async function IntelligencePage() {
         </div>
         {!ownReelsRes.ok ? (
           <p className="text-xs text-app-fg-subtle">
-            Couldn&apos;t load your reels. Use <strong>Sync all</strong> in the toolbar.
+            Couldn&apos;t load your reels. Use <strong>Update data</strong> in the toolbar.
           </p>
         ) : topOwn.length === 0 ? (
           <p className="text-sm text-app-fg-muted">
-            No reels stored yet. Use <strong>Sync all</strong> in the toolbar to pull your latest reels from Instagram.
+            No reels stored yet. Use <strong>Update data</strong> in the toolbar to pull your latest reels
+            from Instagram.
           </p>
         ) : (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">

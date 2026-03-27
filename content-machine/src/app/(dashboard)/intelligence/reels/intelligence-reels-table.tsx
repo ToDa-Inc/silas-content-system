@@ -16,6 +16,7 @@ import {
 } from "@/lib/api-client";
 import { analysisSortScore, formatSilasScoreSummary } from "@/lib/silas-score-display";
 import { AnalyzeReelModal } from "../components/analyze-reel-modal";
+import { IntelligenceProgressBar } from "../components/intelligence-progress-bar";
 import { ReelAnalysisDetailModal } from "../components/reel-analysis-detail-modal";
 
 function formatPosted(d: string | null | undefined): string {
@@ -528,48 +529,26 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
           </div>
           <div className="flex min-w-0 max-w-full flex-[1_1_280px] flex-col gap-2">
             {trackedJobId ? (
-              <div
-                className="rounded-lg border border-zinc-200/90 bg-white/90 px-3 py-2.5 dark:border-white/10 dark:bg-zinc-900/70"
-                role="status"
-                aria-live="polite"
-              >
-                {staleRunning ? (
-                  <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px] text-amber-800 dark:text-amber-200/90">
-                    <span>This run is taking unusually long — it may have stalled. You can dismiss and refresh later.</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setTrackedJobId(null);
-                        setTrackedJobType(null);
-                        setBulkExpectedTotal(null);
-                        setLastJob(null);
-                        setBulkMsg(null);
-                      }}
-                      className="font-semibold text-amber-700 underline hover:no-underline dark:text-amber-300"
-                    >
-                      Dismiss
-                    </button>
-                  </div>
-                ) : null}
-                <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] text-zinc-600 dark:text-app-fg-muted">
-                  <span className="min-w-0 truncate">{progressLabel}</span>
-                  <span className="shrink-0 tabular-nums text-zinc-500 dark:text-app-fg-faint">
-                    {Math.round(barPct)}%
-                  </span>
-                </div>
-                <div className="h-2 overflow-hidden rounded-full bg-zinc-200/90 dark:bg-white/10">
-                  <div
-                    className={`h-full rounded-full transition-[width] duration-200 ease-out ${
-                      lastJob?.status === "failed"
-                        ? "bg-red-500/90"
-                        : lastJob?.status === "completed"
-                          ? "bg-emerald-500"
-                          : "bg-amber-500"
-                    } ${!lastJob || lastJob.status === "running" || lastJob.status === "queued" ? "animate-pulse" : ""}`}
-                    style={{ width: `${Math.min(100, barPct)}%` }}
-                  />
-                </div>
-              </div>
+              <IntelligenceProgressBar
+                label={progressLabel}
+                percent={barPct}
+                status={
+                  lastJob?.status === "running" ||
+                  lastJob?.status === "queued" ||
+                  lastJob?.status === "completed" ||
+                  lastJob?.status === "failed"
+                    ? lastJob.status
+                    : null
+                }
+                staleHint={staleRunning}
+                onDismissStale={() => {
+                  setTrackedJobId(null);
+                  setTrackedJobType(null);
+                  setBulkExpectedTotal(null);
+                  setLastJob(null);
+                  setBulkMsg(null);
+                }}
+              />
             ) : null}
             <button
               type="button"
