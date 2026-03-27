@@ -9,6 +9,17 @@ class AnalyzeReelUrlBody(BaseModel):
     url: str = Field(..., min_length=12, description="Instagram reel or post URL")
 
 
+class AnalyzeReelBulkBody(BaseModel):
+    """POST /clients/{slug}/reels/analyze-bulk — sequential Silas analysis for many URLs."""
+
+    urls: List[str] = Field(
+        ...,
+        min_length=1,
+        max_length=20,
+        description="Instagram reel/post URLs (max 20, deduped server-side)",
+    )
+
+
 class TopicSearchBody(BaseModel):
     """POST /clients/{slug}/search/topics — keyword reel search (Sasky actor)."""
 
@@ -25,6 +36,9 @@ class ReelAnalysisSummary(BaseModel):
     total_score: Optional[int] = None
     replicability_rating: Optional[str] = None
     analyzed_at: Optional[str] = None
+    prompt_version: Optional[str] = None
+    weighted_total: Optional[float] = None
+    silas_rating: Optional[str] = None
 
 
 class ReelAnalysisDetailOut(BaseModel):
@@ -49,6 +63,13 @@ class ReelAnalysisDetailOut(BaseModel):
     replicability_rating: Optional[str] = None
 
     full_analysis_json: Optional[Dict[str, Any]] = None
+    hook_type: Optional[str] = None
+    emotional_trigger: Optional[str] = None
+    content_angle: Optional[str] = None
+    caption_structure: Optional[str] = None
+    why_it_worked: Optional[str] = None
+    replicable_elements: Optional[Dict[str, Any]] = None
+    suggested_adaptations: Optional[List[Any]] = None
     model_used: Optional[str] = None
     prompt_version: Optional[str] = None
     video_analyzed: Optional[bool] = None
@@ -82,6 +103,8 @@ class ReelAnalysisOut(BaseModel):
     video_analyzed: Optional[bool] = None
     analyzed_at: Optional[str] = None
     created_at: Optional[str] = None
+    weighted_total: Optional[float] = None
+    silas_rating: Optional[str] = None
 
 
 class ScrapedReelOut(BaseModel):

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { ChevronDown, ChevronUp, Loader2, X } from "lucide-react";
 import { fetchReelAnalysisDetail } from "@/lib/api-client";
-import { replicabilityLabel } from "@/lib/replicability-label";
+import { formatSilasScoreSummary } from "@/lib/silas-score-display";
 import type { ReelAnalysisDetail } from "@/lib/reel-types";
 
 type Props = {
@@ -13,6 +13,66 @@ type Props = {
   clientSlug: string;
   orgSlug: string;
 };
+
+function Section({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-lg border border-zinc-200/70 bg-white/60 p-3 dark:border-white/10 dark:bg-white/[0.04]">
+      <h3 className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500 dark:text-app-fg-subtle">
+        {title}
+      </h3>
+      <div className="mt-2 text-[11px] leading-relaxed text-zinc-800 dark:text-app-fg-secondary">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function formatLines(fmt: Record<string, string> | undefined | null): React.ReactNode {
+  if (!fmt || !Object.keys(fmt).length) return null;
+  const order = ["format_type", "hook_type", "language", "duration_feel", "caption"];
+  const keys = [...new Set([...order.filter((k) => k in fmt), ...Object.keys(fmt)])];
+  return (
+    <dl className="space-y-1">
+      {keys.map((k) => {
+        const v = fmt[k];
+        if (!v) return null;
+        const label = k.replace(/_/g, " ");
+        return (
+          <div key={k} className="flex gap-2">
+            <dt className="w-28 shrink-0 capitalize text-zinc-500 dark:text-app-fg-muted">{label}</dt>
+            <dd className="min-w-0 flex-1">{v}</dd>
+          </div>
+        );
+      })}
+    </dl>
+  );
+}
+
+function replicableList(el: Record<string, string> | null | undefined): React.ReactNode {
+  if (!el || !Object.keys(el).length) return null;
+  return (
+    <ul className="list-inside list-disc space-y-1">
+      {Object.entries(el).map(([k, v]) => (
+        <li key={k}>
+          <span className="font-medium capitalize">{k.replace(/_/g, " ")}:</span> {v}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function suggestedBlock(raw: unknown): string | null {
+  if (raw == null) return null;
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw) && raw.length && typeof raw[0] === "string") return raw[0] as string;
+  return null;
+}
 
 export function ReelAnalysisDetailModal({ open, onClose, reelId, clientSlug, orgSlug }: Props) {
   const [loading, setLoading] = useState(false);
@@ -25,11 +85,11 @@ export function ReelAnalysisDetailModal({ open, onClose, reelId, clientSlug, org
       return;
     }
     let cancelled = false;
-    setLoading(true);
-    setErr(null);
-    setData(null);
-    setShowFull(false);
     void (async () => {
+      setLoading(true);
+      setErr(null);
+      setData(null);
+      setShowFull(false);
       const res = await fetchReelAnalysisDetail(clientSlug, orgSlug, reelId);
       if (cancelled) return;
       setLoading(false);
@@ -59,6 +119,48 @@ export function ReelAnalysisDetailModal({ open, onClose, reelId, clientSlug, org
   const fullText = json?.full_text;
   const scores = json?.scores;
   const videoFlag = data?.video_analyzed ?? json?.video_analyzed;
+  const sum = json?.structured_summary;
+
+  const wtRaw = json?.weighted_total;
+  const wtParsed =
+    wtRaw == null ? null : typeof wtRaw === "number" ? wtRaw : Number(wtRaw);
+  const wt = wtParsed != null && Number.isFinite(wtParsed) ? wtParsed : null;
+  const disp =
+    data != null
+      ? formatSilasScoreSummary({
+          total_score: data.total_score,
+          replicability_rating: data.replicability_rating,
+          weighted_total: wt,
+          silas_rating: typeof json?.rating === "string" ? json.rating : null,
+          prompt_version: data.prompt_version,
+        })
+      : null;
+
+  const why =
+    data?.why_it_worked?.trim() ||
+    sum?.content_summary?.trim() ||
+    null;
+  const hookType = data?.hook_type?.trim() || sum?.format?.hook_type || null;
+  const contentAngle = data?.content_angle?.trim() || sum?.format?.format_type || null;
+  const captionStruct = data?.caption_structure?.trim() || sum?.format?.caption || null;
+  const emotional = data?.emotional_trigger?.trim() || null;
+  const repl =
+    (data?.replicable_elements && Object.keys(data.replicable_elements).length
+      ? data.replicable_elements
+      : null) ||
+    sum?.replicable_elements ||
+    null;
+  const suggest =
+    suggestedBlock(data?.suggested_adaptations) || sum?.suggested_adaptation?.trim() || null;
+
+  const hasStructured =
+    why ||
+    hookType ||
+    contentAngle ||
+    captionStruct ||
+    emotional ||
+    (repl && Object.keys(repl).length) ||
+    suggest;
 
   return (
     <div
@@ -106,12 +208,14 @@ export function ReelAnalysisDetailModal({ open, onClose, reelId, clientSlug, org
           <div className="space-y-3 text-xs text-zinc-800 dark:text-app-fg-secondary">
             <div className="flex flex-wrap items-baseline gap-2">
               <span className="text-2xl font-bold text-zinc-900 dark:text-app-fg">
-                {data.total_score ?? "—"}
-                <span className="text-sm font-normal text-zinc-500 dark:text-app-fg-muted">/50</span>
+                {disp?.scoreText ?? "—"}
+                <span className="text-sm font-normal text-zinc-500 dark:text-app-fg-muted">
+                  {disp?.maxSuffix ?? ""}
+                </span>
               </span>
-              {data.replicability_rating ? (
+              {disp?.ratingText ? (
                 <span className="rounded-full bg-zinc-200/90 px-2 py-0.5 text-[11px] font-medium text-zinc-800 dark:bg-white/15 dark:text-app-fg">
-                  {replicabilityLabel(data.replicability_rating)}
+                  {disp.ratingText}
                 </span>
               ) : null}
               {videoFlag === false ? (
@@ -143,6 +247,42 @@ export function ReelAnalysisDetailModal({ open, onClose, reelId, clientSlug, org
                 ))}
               </ul>
             ) : null}
+
+            {hasStructured ? (
+              <div className="space-y-2">
+                {why ? <Section title="Summary">{why}</Section> : null}
+                {emotional ? <Section title="Relatability signal">{emotional}</Section> : null}
+                {hookType || contentAngle || captionStruct ? (
+                  <Section title="Format">
+                    {hookType ? (
+                      <p className="mb-1">
+                        <span className="text-zinc-500 dark:text-app-fg-muted">Hook type:</span> {hookType}
+                      </p>
+                    ) : null}
+                    {contentAngle ? (
+                      <p className="mb-1">
+                        <span className="text-zinc-500 dark:text-app-fg-muted">Type:</span> {contentAngle}
+                      </p>
+                    ) : null}
+                    {captionStruct ? (
+                      <p>
+                        <span className="text-zinc-500 dark:text-app-fg-muted">Caption:</span> {captionStruct}
+                      </p>
+                    ) : null}
+                    {!hookType && !contentAngle && !captionStruct && sum?.format
+                      ? formatLines(sum.format)
+                      : null}
+                  </Section>
+                ) : sum?.format && Object.keys(sum.format).length ? (
+                  <Section title="Format">{formatLines(sum.format)}</Section>
+                ) : null}
+                {repl && Object.keys(repl).length ? (
+                  <Section title="Replicable elements">{replicableList(repl)}</Section>
+                ) : null}
+                {suggest ? <Section title="Suggested adaptation">{suggest}</Section> : null}
+              </div>
+            ) : null}
+
             {fullText ? (
               <div>
                 <button

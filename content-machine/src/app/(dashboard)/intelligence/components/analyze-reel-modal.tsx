@@ -8,6 +8,7 @@ import {
   formatFastApiError,
   getContentApiBase,
 } from "@/lib/api-client";
+import { formatSilasScoreSummary } from "@/lib/silas-score-display";
 
 type Props = {
   open: boolean;
@@ -18,6 +19,8 @@ type Props = {
   disabledHint?: string | null;
   /** When opening the modal, pre-fill the URL field (e.g. from a reel row). */
   initialUrl?: string | null;
+  /** Lets the parent disable row actions and show a shared progress area while this job runs. */
+  onAnalysisJobEnqueued?: (jobId: string) => void;
 };
 
 function isLikelyInstagramReelUrl(s: string): boolean {
@@ -48,6 +51,8 @@ type JobRow = {
     analysis?: {
       total_score: number | null;
       rating: string;
+      weighted_total?: number | null;
+      raw_scores?: Record<string, number | null | undefined>;
       scores?: Record<string, number | null | undefined>;
       full_text?: string;
       prompt_version?: string;
@@ -73,6 +78,7 @@ export function AnalyzeReelModal({
   disabled,
   disabledHint,
   initialUrl,
+  onAnalysisJobEnqueued,
 }: Props) {
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
@@ -169,6 +175,8 @@ export function AnalyzeReelModal({
         return;
       }
 
+      onAnalysisJobEnqueued?.(jobId);
+
       for (let i = 0; i < MAX_POLLS; i++) {
         await new Promise((r) => setTimeout(r, POLL_MS));
         setPhase(
@@ -230,6 +238,14 @@ export function AnalyzeReelModal({
       ? { analysis: result.analysis, reel: result.reel }
       : null;
   const scores = success?.analysis.scores;
+  const jobSilas = success
+    ? formatSilasScoreSummary({
+        total_score: success.analysis.total_score,
+        weighted_total: success.analysis.weighted_total ?? null,
+        rating: success.analysis.rating,
+        prompt_version: success.analysis.prompt_version ?? null,
+      })
+    : null;
 
   return (
     <div
@@ -317,12 +333,16 @@ export function AnalyzeReelModal({
             </p>
             <div className="flex flex-wrap items-baseline gap-2">
               <span className="text-2xl font-bold text-zinc-900 dark:text-app-fg">
-                {success.analysis.total_score ?? "—"}
-                <span className="text-sm font-normal text-zinc-500 dark:text-app-fg-muted">/50</span>
+                {jobSilas?.scoreText ?? "—"}
+                <span className="text-sm font-normal text-zinc-500 dark:text-app-fg-muted">
+                  {jobSilas?.maxSuffix ?? ""}
+                </span>
               </span>
-              <span className="rounded-full bg-zinc-200/90 px-2 py-0.5 text-[11px] font-medium text-zinc-800 dark:bg-white/12 dark:text-app-fg">
-                {success.analysis.rating}
-              </span>
+              {jobSilas?.ratingText ? (
+                <span className="rounded-full bg-zinc-200/90 px-2 py-0.5 text-[11px] font-medium text-zinc-800 dark:bg-white/12 dark:text-app-fg">
+                  {jobSilas.ratingText}
+                </span>
+              ) : null}
               {success.analysis.video_analyzed === false ? (
                 <span className="text-[10px] text-zinc-500 dark:text-app-fg-faint">
                   Caption-only (video too large or unavailable)

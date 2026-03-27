@@ -5,6 +5,16 @@ export type ReelAnalysisSummary = {
   total_score: number | null;
   replicability_rating: string | null;
   analyzed_at: string | null;
+  prompt_version?: string | null;
+  weighted_total?: number | null;
+  silas_rating?: string | null;
+};
+
+export type ReelAnalysisStructuredSummary = {
+  content_summary?: string | null;
+  format?: Record<string, string>;
+  replicable_elements?: Record<string, string> | null;
+  suggested_adaptation?: string | null;
 };
 
 export type ReelAnalysisDetail = {
@@ -22,10 +32,22 @@ export type ReelAnalysisDetail = {
   comment_trigger_score: number | null;
   total_score: number | null;
   replicability_rating: string | null;
+  hook_type?: string | null;
+  emotional_trigger?: string | null;
+  content_angle?: string | null;
+  caption_structure?: string | null;
+  why_it_worked?: string | null;
+  replicable_elements?: Record<string, string> | null;
+  suggested_adaptations?: unknown;
   full_analysis_json: {
     full_text?: string;
     scores?: Record<string, number | null>;
     video_analyzed?: boolean;
+    structured_summary?: ReelAnalysisStructuredSummary | null;
+    rating?: string | null;
+    weighted_total?: number | null;
+    weighted_scores?: Record<string, number | null>;
+    raw_scores?: Record<string, number | null>;
   } | null;
   model_used: string | null;
   prompt_version: string | null;

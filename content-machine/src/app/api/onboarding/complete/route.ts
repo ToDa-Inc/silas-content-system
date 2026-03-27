@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { createClient as createServerClient } from "@/lib/supabase/server";
-import { newClientId, newMemberId, newOrgId } from "@/lib/ids";
+import { newClientId, newMemberId, newOrgId, newProfileApiKey } from "@/lib/ids";
 import { slugify } from "@/lib/slug";
 import { ACTIVE_CLIENT_SLUG_COOKIE } from "@/lib/workspace-cookie";
 
@@ -80,11 +80,21 @@ export async function POST(request: Request) {
   }
 
   /**
-   * organization_members.user_id FK → profiles(id), not auth.users directly.
-   * If the auth trigger never ran, membership insert fails and (previously) left an orphan org+client.
+   * organization_members.user_id FK → profiles(id). Same idea as Bookedin admin_create_business:
+   * api_key is generated in app when the account is provisioned, not via DB triggers.
    */
+  const { data: existingProfile } = await admin
+    .from("profiles")
+    .select("api_key")
+    .eq("id", user.id)
+    .maybeSingle();
+  const apiKey =
+    existingProfile?.api_key && String(existingProfile.api_key).trim()
+      ? String(existingProfile.api_key).trim()
+      : newProfileApiKey();
+
   const { error: profileEnsureErr } = await admin.from("profiles").upsert(
-    { id: user.id },
+    { id: user.id, api_key: apiKey },
     { onConflict: "id" },
   );
   if (profileEnsureErr) {

@@ -1,14 +1,29 @@
+import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from supabase import Client
 
-from core.database import get_supabase
+from core.config import Settings, get_settings
+from core.database import get_supabase, get_supabase_for_settings
+from core.deps import require_org_access, resolve_client_id
 from core.id_generator import generate_client_id
-from core.deps import require_org_access
 from models.client import ClientCreate, ClientOut, ClientUpdate
+from services.client_dna_compile import force_recompile_client_dna_sync, maybe_recompile_client_dna
 
 router = APIRouter(prefix="/api/v1/clients", tags=["clients"])
+logger = logging.getLogger(__name__)
+
+_DNA_TRIGGER_FIELDS = frozenset({"niche_config", "icp", "client_context"})
+
+
+def _background_recompile_client_dna(client_id: str) -> None:
+    try:
+        settings = get_settings()
+        supabase = get_supabase_for_settings(settings)
+        maybe_recompile_client_dna(settings, supabase, client_id, force=False)
+    except Exception:
+        logger.exception("client_dna background recompile failed for %s", client_id)
 
 
 @router.get("", response_model=list[ClientOut])
@@ -36,12 +51,36 @@ def create_client(
         "niche_config": body.niche_config,
         "icp": body.icp,
         "products": body.products,
+        "client_context": body.client_context or {},
         "is_active": True,
     }
     res = supabase.table("clients").insert(row).execute()
     if not res.data:
         raise HTTPException(status_code=400, detail="Insert failed")
     return res.data[0]
+
+
+@router.post("/{slug}/dna/regenerate", response_model=ClientOut)
+def regenerate_client_dna(
+    slug: str,
+    org_id: Annotated[str, Depends(require_org_access)],
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict:
+    """Force recompile client_dna briefs (OpenRouter)."""
+    _ = org_id
+    _ = slug
+    try:
+        force_recompile_client_dna_sync(settings, supabase, client_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    out = supabase.table("clients").select("*").eq("id", client_id).limit(1).execute()
+    if not out.data:
+        raise HTTPException(status_code=404, detail="Client not found")
+    return out.data[0]
 
 
 @router.get("/{slug}", response_model=ClientOut)
@@ -67,6 +106,7 @@ def get_client(
 def update_client(
     slug: str,
     body: ClientUpdate,
+    background_tasks: BackgroundTasks,
     org_id: Annotated[str, Depends(require_org_access)],
     supabase: Annotated[Client, Depends(get_supabase)],
 ) -> dict:
@@ -89,4 +129,8 @@ def update_client(
 
     supabase.table("clients").update(patch).eq("id", client_id).execute()
     out = supabase.table("clients").select("*").eq("id", client_id).limit(1).execute()
+
+    if _DNA_TRIGGER_FIELDS & set(patch.keys()):
+        background_tasks.add_task(_background_recompile_client_dna, client_id)
+
     return out.data[0]

@@ -52,7 +52,7 @@ Edit **`.env`** — one file for FastAPI, worker, and Next.js. `next.config.ts` 
 | `SUPABASE_SERVICE_ROLE_KEY` | API + worker only — never in the browser |
 | `NEXT_PUBLIC_CONTENT_API_URL` | FastAPI base URL, e.g. `http://127.0.0.1:8787` |
 
-**Auth:** `/login` and `/signup` use **Supabase Auth**. After login, org + client slugs come from **`organization_members`** + the active-client cookie (`resolveTenancy`) — nothing to configure in `.env`. FastAPI calls send **`X-Api-Key`** (`profiles.api_key`) and **`X-Org-Slug`**. If `profiles.api_key` is missing, apply the `profiles` section from **`backend/sql/phase1_all_in_one.sql`**. Without membership, the API returns **403**.
+**Auth:** `/login` and `/signup` use **Supabase Auth**. After login, org + client slugs come from **`organization_members`** + the active-client cookie (`resolveTenancy`) — nothing to configure in `.env`. FastAPI calls send **`X-Api-Key`** (`profiles.api_key`) and **`X-Org-Slug`**. **`profiles.api_key`** is set when onboarding completes (**`POST /api/onboarding/complete`**). Ensure `profiles` has an **`api_key`** column in Supabase. Without membership, the API returns **403**.
 
 **Site URL / redirect:** In Supabase → Authentication → URL configuration, set **Site URL** to `http://localhost:3000` and add the same to **Redirect URLs** so email links and `/auth/callback` work.
 

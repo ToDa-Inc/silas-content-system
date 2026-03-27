@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List
+
+logger = logging.getLogger(__name__)
 
 from core.config import Settings
 from core.database import get_supabase_for_settings
@@ -186,6 +189,13 @@ def run_client_auto_profile(settings: Settings, job: Dict[str, Any]) -> None:
             "language": lang,
         }
     ).eq("id", client_id).execute()
+
+    try:
+        from services.client_dna_compile import maybe_recompile_client_dna
+
+        maybe_recompile_client_dna(settings, supabase, client_id, force=False)
+    except Exception:
+        logger.exception("client_dna recompile after auto_profile failed for %s", client_id)
 
     supabase.table("background_jobs").update(
         {

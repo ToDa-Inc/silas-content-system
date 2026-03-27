@@ -50,10 +50,11 @@ export function ApiKeyPanel() {
   if (!apiKey) {
     return (
       <p className="text-sm text-amber-200/90">
-        No <code className="rounded bg-zinc-900 px-1">api_key</code> on your profile yet. Run{" "}
-        <code className="rounded bg-zinc-900 px-1">backend/sql/phase1_all_in_one.sql</code>{" "}
-        in Supabase SQL Editor (or ensure your <code className="rounded bg-zinc-900 px-1">profiles</code>{" "}
-        row has a key), then refresh.
+        No <code className="rounded bg-zinc-900 px-1">api_key</code> on your profile yet. Add a{" "}
+        <code className="rounded bg-zinc-900 px-1">text</code> column{" "}
+        <code className="rounded bg-zinc-900 px-1">profiles.api_key</code> in Supabase if missing, then
+        complete workspace setup once (onboarding assigns a key), or set a key manually on your{" "}
+        <code className="rounded bg-zinc-900 px-1">profiles</code> row.
       </p>
     );
   }

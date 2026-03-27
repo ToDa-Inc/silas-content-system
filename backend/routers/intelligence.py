@@ -13,7 +13,11 @@ from jobs.baseline_scrape import run_baseline_scrape
 from jobs.client_auto_profile import run_client_auto_profile
 from jobs.competitor_discovery import run_competitor_discovery
 from jobs.profile_scrape import run_profile_scrape
-from jobs.reel_analyze_url import instagram_reel_url_is_valid, run_reel_analyze_url
+from jobs.reel_analyze_url import (
+    instagram_reel_url_is_valid,
+    run_reel_analyze_bulk,
+    run_reel_analyze_url,
+)
 from models.competitor import (
     CompetitorAddBody,
     CompetitorOut,
@@ -22,6 +26,7 @@ from models.competitor import (
     ScrapeCompetitorReelsBody,
 )
 from models.reel import (
+    AnalyzeReelBulkBody,
     AnalyzeReelUrlBody,
     ReelAnalysisDetailOut,
     ReelAnalysisOut,
@@ -122,16 +127,44 @@ def _normalize_post_url_key(url: str) -> str:
     return url.strip().split("?")[0].split("#")[0].rstrip("/")
 
 
+def _coerce_json_weighted_total(val: Any) -> Optional[float]:
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, str):
+        s = val.strip().strip('"')
+        try:
+            return float(s)
+        except ValueError:
+            return None
+    return None
+
+
+def _normalize_silas_rating(val: Any) -> Optional[str]:
+    if val is None:
+        return None
+    if isinstance(val, str):
+        t = val.strip()
+        return t or None
+    return str(val)
+
+
 def _attach_reel_analyses(supabase: Client, client_id: str, reels: list[dict]) -> None:
     """Merge latest reel_analyses summary onto each scraped_reels row (by reel_id, else post_url)."""
     if not reels:
         return
-    ares = (
-        supabase.table("reel_analyses")
-        .select("id, reel_id, post_url, total_score, replicability_rating, analyzed_at")
-        .eq("client_id", client_id)
-        .execute()
+    select_v2 = (
+        "id, reel_id, post_url, total_score, replicability_rating, analyzed_at, prompt_version, "
+        "weighted_total:full_analysis_json->weighted_total, silas_rating:full_analysis_json->>rating"
     )
+    select_legacy = (
+        "id, reel_id, post_url, total_score, replicability_rating, analyzed_at, prompt_version"
+    )
+    try:
+        ares = supabase.table("reel_analyses").select(select_v2).eq("client_id", client_id).execute()
+    except Exception:
+        ares = supabase.table("reel_analyses").select(select_legacy).eq("client_id", client_id).execute()
     rows = ares.data or []
     by_reel: Dict[str, dict] = {}
     by_url: Dict[str, dict] = {}
@@ -156,6 +189,9 @@ def _attach_reel_analyses(supabase: Client, client_id: str, reels: list[dict]) -
                 "total_score": chosen.get("total_score"),
                 "replicability_rating": chosen.get("replicability_rating"),
                 "analyzed_at": chosen.get("analyzed_at"),
+                "prompt_version": chosen.get("prompt_version"),
+                "weighted_total": _coerce_json_weighted_total(chosen.get("weighted_total")),
+                "silas_rating": _normalize_silas_rating(chosen.get("silas_rating")),
             }
 
 
@@ -184,6 +220,25 @@ def _background_reel_analyze(job_id: str) -> None:
         return
     try:
         run_reel_analyze_url(settings, res.data)
+    except Exception as e:
+        _fail_job(supabase, job_id, str(e))
+
+
+def _reel_analyze_busy(supabase: Client, client_id: str) -> bool:
+    for jt in ("reel_analyze_url", "reel_analyze_bulk"):
+        if has_active_job(supabase, client_id=client_id, job_type=jt):
+            return True
+    return False
+
+
+def _background_reel_analyze_bulk(job_id: str) -> None:
+    settings = get_settings()
+    supabase = get_supabase_for_settings(settings)
+    res = supabase.table("background_jobs").select("*").eq("id", job_id).single().execute()
+    if not res.data:
+        return
+    try:
+        run_reel_analyze_bulk(settings, res.data)
     except Exception as e:
         _fail_job(supabase, job_id, str(e))
 
@@ -803,7 +858,7 @@ def analyze_reel_by_url(
             detail="Reel analysis requires APIFY_API_TOKEN and OPENROUTER_API_KEY",
         )
     fail_abandoned_queued_jobs(supabase, client_id=client_id, job_type="reel_analyze_url")
-    if has_active_job(supabase, client_id=client_id, job_type="reel_analyze_url"):
+    if _reel_analyze_busy(supabase, client_id):
         raise HTTPException(
             status_code=409,
             detail="A reel analysis is already running or queued for this client",
@@ -824,6 +879,89 @@ def analyze_reel_by_url(
     return {"job_id": job_id, "status": "queued"}
 
 
+@router.post("/clients/{slug}/reels/analyze-bulk")
+def analyze_reels_bulk(
+    slug: str,
+    body: AnalyzeReelBulkBody,
+    background_tasks: BackgroundTasks,
+    org_id: Annotated[str, Depends(require_org_access)],
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Dict[str, Any]:
+    """Enqueue sequential URL analyses (same pipeline as analyze-url). Poll GET /api/v1/jobs/{job_id}."""
+    if not settings.apify_api_token or not settings.openrouter_api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Reel analysis requires APIFY_API_TOKEN and OPENROUTER_API_KEY",
+        )
+    cleaned: list[str] = []
+    for u in body.urls:
+        s = str(u).strip()
+        if not s:
+            continue
+        if not instagram_reel_url_is_valid(s):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid Instagram reel or post URL: {s[:80]}",
+            )
+        cleaned.append(s)
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="No valid URLs in request")
+
+    fail_abandoned_queued_jobs(supabase, client_id=client_id, job_type="reel_analyze_bulk")
+    if _reel_analyze_busy(supabase, client_id):
+        raise HTTPException(
+            status_code=409,
+            detail="A reel analysis is already running or queued for this client",
+        )
+
+    job_id = generate_job_id()
+    now = datetime.now(timezone.utc).isoformat()
+    row = {
+        "id": job_id,
+        "org_id": org_id,
+        "client_id": client_id,
+        "job_type": "reel_analyze_bulk",
+        "payload": {"urls": cleaned},
+        "status": "running",
+        "started_at": now,
+    }
+    supabase.table("background_jobs").insert(row).execute()
+    background_tasks.add_task(_background_reel_analyze_bulk, job_id)
+    return {"job_id": job_id, "status": "queued", "count": len(cleaned)}
+
+
+@router.get("/clients/{slug}/reels/active-analysis")
+def get_active_reel_analysis_job(
+    slug: str,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+) -> Dict[str, Any]:
+    """Running or queued Silas reel job so the UI can resume polling after reload."""
+    res = (
+        supabase.table("background_jobs")
+        .select("id, job_type, status, started_at")
+        .eq("client_id", client_id)
+        .in_("job_type", ["reel_analyze_url", "reel_analyze_bulk"])
+        .in_("status", ["queued", "running"])
+        .order("started_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    if not rows:
+        return {"active": False}
+    row = rows[0]
+    return {
+        "active": True,
+        "job_id": row["id"],
+        "job_type": row["job_type"],
+        "status": row.get("status"),
+        "started_at": row.get("started_at"),
+    }
+
+
 @router.get("/clients/{slug}/reel-analyses", response_model=list[ReelAnalysisOut])
 def list_client_reel_analyses(
     slug: str,
@@ -832,20 +970,42 @@ def list_client_reel_analyses(
     limit: int = Query(20, ge=1, le=100),
 ) -> list[dict]:
     """Saved Silas analyses (linked to scraped_reels via reel_id). Requires sql/phase2_reel_analyses.sql."""
-    res = (
-        supabase.table("reel_analyses")
-        .select(
-            "id, client_id, reel_id, analysis_job_id, source, post_url, owner_username, "
-            "instant_hook_score, relatability_score, cognitive_tension_score, clear_value_score, "
-            "comment_trigger_score, total_score, replicability_rating, model_used, prompt_version, "
-            "video_analyzed, analyzed_at, created_at"
-        )
-        .eq("client_id", client_id)
-        .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
+    select_v2 = (
+        "id, client_id, reel_id, analysis_job_id, source, post_url, owner_username, "
+        "instant_hook_score, relatability_score, cognitive_tension_score, clear_value_score, "
+        "comment_trigger_score, total_score, replicability_rating, model_used, prompt_version, "
+        "video_analyzed, analyzed_at, created_at, "
+        "weighted_total:full_analysis_json->weighted_total, silas_rating:full_analysis_json->>rating"
     )
-    return res.data or []
+    select_legacy = (
+        "id, client_id, reel_id, analysis_job_id, source, post_url, owner_username, "
+        "instant_hook_score, relatability_score, cognitive_tension_score, clear_value_score, "
+        "comment_trigger_score, total_score, replicability_rating, model_used, prompt_version, "
+        "video_analyzed, analyzed_at, created_at"
+    )
+    try:
+        res = (
+            supabase.table("reel_analyses")
+            .select(select_v2)
+            .eq("client_id", client_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+    except Exception:
+        res = (
+            supabase.table("reel_analyses")
+            .select(select_legacy)
+            .eq("client_id", client_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+    rows = res.data or []
+    for row in rows:
+        row["weighted_total"] = _coerce_json_weighted_total(row.get("weighted_total"))
+        row["silas_rating"] = _normalize_silas_rating(row.get("silas_rating"))
+    return rows
 
 
 @router.get("/clients/{slug}/reels", response_model=list[ScrapedReelOut])

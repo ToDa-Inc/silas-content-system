@@ -2,7 +2,7 @@
 
 import { useState, type ReactNode } from "react";
 import type { ScrapedReelRow } from "@/lib/api";
-import { replicabilityLabel } from "@/lib/replicability-label";
+import { formatSilasScoreSummary } from "@/lib/silas-score-display";
 import { ReelAnalysisDetailModal } from "./reel-analysis-detail-modal";
 
 type Props = {
@@ -16,6 +16,7 @@ type Props = {
 export function ReelCardWithAnalysis({ row, clientSlug, orgSlug, children }: Props) {
   const [open, setOpen] = useState(false);
   const a = row.analysis;
+  const silas = a ? formatSilasScoreSummary(a) : null;
 
   return (
     <>
@@ -24,8 +25,13 @@ export function ReelCardWithAnalysis({ row, clientSlug, orgSlug, children }: Pro
         {a ? (
           <div className="mt-2 flex w-full min-w-0 flex-wrap items-center gap-2 border-t border-zinc-200/80 pt-2 dark:border-white/10">
             <span className="rounded-md bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200/95">
-              {a.total_score != null ? `${a.total_score}/50` : "—"}
-              {a.replicability_rating ? ` · ${replicabilityLabel(a.replicability_rating)}` : ""}
+              {silas ? (
+                <>
+                  {silas.scoreText}
+                  <span className="font-normal opacity-80">{silas.maxSuffix}</span>
+                  {silas.ratingText ? ` · ${silas.ratingText}` : ""}
+                </>
+              ) : null}
             </span>
             <button
               type="button"

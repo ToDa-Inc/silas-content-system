@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Loader2, Users } from "lucide-react";
+import { AppSelect } from "@/components/ui/app-select";
 import { useToast } from "@/components/ui/toast-provider";
 
 export type ClientOption = { slug: string; name: string };
@@ -49,26 +50,24 @@ export function ClientSwitcher({ clients, activeSlug, orgLabel }: Props) {
         <Users className="h-3.5 w-3.5" aria-hidden />
         {orgLabel ? <span className="text-zinc-500">@{orgLabel}</span> : null}
       </span>
-      <label className="flex items-center gap-2">
-        <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Creator</span>
-        <div className="relative">
-          <select
-            value={activeSlug && clients.some((c) => c.slug === activeSlug) ? activeSlug : clients[0]!.slug}
-            disabled={busy}
-            onChange={(e) => void onChange(e.target.value)}
-            className="appearance-none rounded-lg border border-zinc-200 bg-white py-1.5 pl-3 pr-8 text-xs font-semibold text-zinc-900 dark:border-white/10 dark:bg-zinc-900 dark:text-zinc-100"
-          >
-            {clients.map((c) => (
-              <option key={c.slug} value={c.slug}>
-                {c.name} ({c.slug})
-              </option>
-            ))}
-          </select>
-          {busy ? (
-            <Loader2 className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-zinc-500" />
-          ) : null}
-        </div>
-      </label>
+      <div className="relative flex items-end gap-2">
+        <AppSelect
+          label="Creator"
+          value={
+            activeSlug && clients.some((c) => c.slug === activeSlug) ? activeSlug : clients[0]!.slug
+          }
+          disabled={busy}
+          onChange={(slug) => void onChange(slug)}
+          options={clients.map((c) => ({
+            value: c.slug,
+            label: `${c.name} (${c.slug})`,
+          }))}
+          triggerClassName="min-w-[200px] py-1.5 text-xs font-semibold"
+        />
+        {busy ? (
+          <Loader2 className="mb-1 h-3.5 w-3.5 shrink-0 animate-spin text-zinc-500" aria-hidden />
+        ) : null}
+      </div>
     </div>
   );
 }

@@ -99,4 +99,77 @@ export async function fetchReelAnalysisDetail(
   }
 }
 
+export type ActiveReelAnalysisJobResponse =
+  | { active: false }
+  | {
+      active: true;
+      job_id: string;
+      job_type: string;
+      status: string | null;
+      started_at: string | null;
+    };
+
+/** Running or queued reel analyze-url / analyze-bulk job (resume after reload). */
+export async function fetchActiveReelAnalysisJob(
+  clientSlug: string,
+  orgSlug: string,
+): Promise<
+  { ok: true; data: ActiveReelAnalysisJobResponse } | { ok: false; error: string }
+> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/reels/active-analysis`,
+      { headers },
+    );
+    const json = (await res.json().catch(() => ({}))) as ActiveReelAnalysisJobResponse & {
+      detail?: unknown;
+    };
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(json as Record<string, unknown>, `Request failed (${res.status})`),
+      };
+    }
+    return { ok: true, data: json as ActiveReelAnalysisJobResponse };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function enqueueReelAnalyzeBulk(
+  clientSlug: string,
+  orgSlug: string,
+  urls: string[],
+): Promise<{ ok: true; job_id: string; count: number } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/reels/analyze-bulk`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ urls }),
+      },
+    );
+    const json = (await res.json().catch(() => ({}))) as {
+      job_id?: string;
+      count?: number;
+      detail?: unknown;
+    };
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json, `Request failed (${res.status})`) };
+    }
+    const jobId = json.job_id;
+    if (!jobId) {
+      return { ok: false, error: "No job_id returned from server." };
+    }
+    return { ok: true, job_id: jobId, count: json.count ?? urls.length };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
 export { getContentApiBase };

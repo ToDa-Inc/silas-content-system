@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Loader2 } from "lucide-react";
+import { AppSelect } from "@/components/ui/app-select";
 import { clientApiHeaders, contentApiFetch, formatFastApiError, getContentApiBase } from "@/lib/api-client";
 
 const LIMIT_OPTIONS = [5, 10, 15, 20, 30] as const;
@@ -57,21 +58,16 @@ export function ScrapeCompetitorReelsButton({
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <label className="flex items-center gap-1.5 text-[10px] text-app-fg-subtle">
-        <span className="whitespace-nowrap">Reels</span>
-        <select
-          value={limit}
-          onChange={(e) => setLimit(Number(e.target.value))}
+      <div className="flex items-end gap-1.5 text-[10px] text-app-fg-subtle">
+        <AppSelect
+          label="Reels"
+          value={String(limit)}
+          onChange={(v) => setLimit(Number(v))}
+          options={LIMIT_OPTIONS.map((n) => ({ value: String(n), label: String(n) }))}
           disabled={busy || disabled}
-          className="rounded border border-zinc-300 bg-white/80 px-1.5 py-0.5 text-[10px] text-app-fg dark:border-white/20 dark:bg-zinc-900/80"
-        >
-          {LIMIT_OPTIONS.map((n) => (
-            <option key={n} value={n}>
-              {n}
-            </option>
-          ))}
-        </select>
-      </label>
+          triggerClassName="min-w-[56px] py-1 text-[10px]"
+        />
+      </div>
       <button
         type="button"
         disabled={busy || disabled}

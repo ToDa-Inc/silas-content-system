@@ -11,6 +11,7 @@ class ClientCreate(BaseModel):
     niche_config: List[Any] = Field(default_factory=list)
     icp: dict = Field(default_factory=dict)
     products: dict = Field(default_factory=dict)
+    client_context: dict = Field(default_factory=dict)
 
 
 class ClientUpdate(BaseModel):
@@ -20,6 +21,7 @@ class ClientUpdate(BaseModel):
     niche_config: Optional[List[Any]] = None
     icp: Optional[dict] = None
     products: Optional[dict] = None
+    client_context: Optional[dict] = None
     is_active: Optional[bool] = None
     outlier_ratio_threshold: Optional[float] = None
 
@@ -36,5 +38,7 @@ class ClientOut(BaseModel):
     niche_config: List[Any]
     icp: dict
     products: dict
+    client_context: Optional[dict] = None
+    client_dna: Optional[dict] = None
     is_active: bool
     outlier_ratio_threshold: Optional[float] = None

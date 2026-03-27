@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Loader2, Plus } from "lucide-react";
 import { clientApiHeaders, contentApiFetch, getContentApiBase } from "@/lib/api-client";
 import { slugify } from "@/lib/slug";
+import { AppSelect } from "@/components/ui/app-select";
 import { useToast } from "@/components/ui/toast-provider";
 import { cn } from "@/lib/cn";
 import type { ClientOption } from "./client-switcher";
@@ -186,25 +187,21 @@ export function SidebarClientPanel({ clients, activeSlug, orgSlug }: Props) {
         </>
       ) : null}
 
-      <div className="relative mt-2">
-        <select
+      <div className="mt-2 flex items-center gap-2">
+        <AppSelect
           value={effectiveSlug}
           disabled={busySwitch}
-          onChange={(e) => void switchClient(e.target.value)}
-          className={cn(
-            "w-full appearance-none rounded-lg border border-zinc-200 bg-white py-2 pl-2.5 pr-8 text-xs font-medium text-zinc-900 dark:border-white/10 dark:bg-zinc-900 dark:text-zinc-100",
+          onChange={(slug) => void switchClient(slug)}
+          options={clients.map((c) => ({ value: c.slug, label: c.name }))}
+          ariaLabel="Switch creator"
+          className="min-w-0 flex-1"
+          triggerClassName={cn(
+            "w-full min-w-0 py-2 text-xs font-medium",
             busySwitch && "opacity-60",
           )}
-          aria-label="Switch creator"
-        >
-          {clients.map((c) => (
-            <option key={c.slug} value={c.slug}>
-              {c.name}
-            </option>
-          ))}
-        </select>
+        />
         {busySwitch ? (
-          <Loader2 className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-zinc-500" />
+          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-zinc-500" aria-hidden />
         ) : null}
       </div>
 

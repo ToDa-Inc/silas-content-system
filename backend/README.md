@@ -6,16 +6,17 @@ FastAPI service + background worker for clients, competitors, baselines, and job
 
 - Python 3.9+
 - **Supabase**
-  - **New empty project:** paste **[sql/phase1_all_in_one.sql](sql/phase1_all_in_one.sql)** once (schema + RLS + `profiles.api_key` trigger + auth signup hook).
-  - **Already have Phase 1 tables:** add anything missing by copying the matching blocks from `phase1_all_in_one.sql`, then run **[sql/phase1b_scrape_pipeline.sql](sql/phase1b_scrape_pipeline.sql)** if you need `scraped_reels` + `upsert_scraped_reels_batch`.
-  - Optional split: [01_phase1_schema.sql](sql/01_phase1_schema.sql) + [02_phase1_rls.sql](sql/02_phase1_rls.sql).
+  - **New empty project:** apply your Phase 1 schema (see **`docs/BACKEND-ARCHITECTURE.md`** — `profiles` must include a **`api_key` text** column, unique if you enforce it). RLS/policies as you define there.
+  - **Already have Phase 1 tables:** add migrations from **`backend/sql/`** as needed (`phase2`…`phase4` in this repo; scrape pipeline SQL may live in docs or another branch).
   - **Manual competitors:** run **[sql/phase1c_competitors_added_by.sql](sql/phase1c_competitors_added_by.sql)** once to add `competitors.added_by` (who pasted the handle in the UI).
   - **Saved reel analyses (Analyze by URL history):** run **[sql/phase2_reel_analyses.sql](sql/phase2_reel_analyses.sql)** once. This creates `reel_analyses` (stable key `(client_id, post_url)`) and links optional `reel_id` → `scraped_reels`. If you used the old `client_reel_analyses` migration, drop that table first, then run this file. List via `GET /api/v1/clients/{slug}/reel-analyses`.
   - **Reel metric history (growth / snapshots):** run **[sql/phase3_reel_snapshots.sql](sql/phase3_reel_snapshots.sql)** once. Creates `reel_snapshots` (append-only views/likes/comments per sync). Required for `GET …/activity` own-reel growth and historical deltas.
+  - **Client brain (Context page, PDF/DOCX uploads):** run **[sql/phase4_client_context.sql](sql/phase4_client_context.sql)** once. Adds `clients.client_context` and the private **`client-context`** storage bucket.
+  - **Client DNA (compressed briefs for reel analysis / generation):** run **[sql/phase5_client_dna.sql](sql/phase5_client_dna.sql)** once. Adds `clients.client_dna`. See **`docs/client_dna.md`**.
 
 **Signup without email confirmation (local dev):** Authentication → Email → disable **Confirm email**. **Site URL** `http://localhost:3000`.
 
-**Signup 500:** ensure `profiles_set_api_key` and `handle_new_user` in `phase1_all_in_one.sql` are applied (`SECURITY DEFINER`, correct `search_path`).
+**Onboarding 500 on profile:** ensure `public.profiles` has an **`api_key`** column; the Next.js route **`POST /api/onboarding/complete`** creates the row and sets the key in app code (same idea as Bookedin `generate_api_key()` on business create).
 
 ## Setup
 
@@ -95,7 +96,7 @@ python worker.py
 
 ## Auth / tenancy
 
-- **Browser / dashboard → FastAPI:** header **`X-Api-Key: <profiles.api_key>`** (or **`Authorization: Bearer <api_key>`**) plus **`X-Org-Slug`**. The API looks up `profiles` by `api_key`, then checks **`organization_members`**. API keys come from the `profiles` trigger in **`sql/phase1_all_in_one.sql`**.
+- **Browser / dashboard → FastAPI:** header **`X-Api-Key: <profiles.api_key>`** (or **`Authorization: Bearer <api_key>`**) plus **`X-Org-Slug`**. The API looks up `profiles` by `api_key`, then checks **`organization_members`**. **`profiles.api_key`** is generated when the user completes **workspace onboarding** (`content-machine` → **`POST /api/onboarding/complete`**), same pattern as Bookedin **`generate_api_key()`** on business creation — not DB triggers.
 - **Worker + cron:** Service role only. Cron uses **`X-Cron-Secret`**.
 
 The service role bypasses RLS for server-side writes; still use network controls in production.

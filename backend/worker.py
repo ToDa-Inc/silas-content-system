@@ -18,7 +18,7 @@ from jobs.baseline_scrape import run_baseline_scrape
 from jobs.client_auto_profile import run_client_auto_profile
 from jobs.competitor_discovery import run_competitor_discovery
 from jobs.profile_scrape import run_profile_scrape
-from jobs.reel_analyze_url import run_reel_analyze_url
+from jobs.reel_analyze_url import run_reel_analyze_bulk, run_reel_analyze_url
 
 
 def _fail_job(settings: Settings, job_id: str, message: str) -> None:
@@ -55,6 +55,8 @@ def _process_job_sync(settings: Settings, job: Dict[str, Any]) -> None:
         run_client_auto_profile(settings, job)
     elif jt == "reel_analyze_url":
         run_reel_analyze_url(settings, job)
+    elif jt == "reel_analyze_bulk":
+        run_reel_analyze_bulk(settings, job)
     else:
         _fail_job(settings, job["id"], f"Unknown job_type: {jt}")
 

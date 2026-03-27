@@ -93,6 +93,30 @@ export type BaselineRow = {
   expires_at: string | null;
 };
 
+/** One block of the client brain (Context page). */
+export type ClientContextSection = {
+  text: string;
+  source: "manual" | "upload" | "generated";
+  file: {
+    name: string;
+    storage_path: string;
+    uploaded_at: string;
+  } | null;
+  updated_at: string | null;
+};
+
+export type ClientContextData = Partial<
+  Record<
+    | "icp"
+    | "brand_map"
+    | "story_board"
+    | "communication_guideline"
+    | "offer_documentation"
+    | "onboarding_transcript",
+    ClientContextSection
+  >
+>;
+
 /** Active client row from `GET /api/v1/clients/{slug}` — niche_config drives discovery copy. */
 export type ClientRow = {
   id: string;
@@ -104,6 +128,9 @@ export type ClientRow = {
   niche_config: unknown[];
   icp: Record<string, unknown>;
   products: Record<string, unknown>;
+  client_context?: ClientContextData | null;
+  /** Pre-compiled briefs for AI (analysis, generation, voice). See docs/client_dna.md. */
+  client_dna?: Record<string, unknown> | null;
   is_active: boolean;
   outlier_ratio_threshold?: number | null;
 };
