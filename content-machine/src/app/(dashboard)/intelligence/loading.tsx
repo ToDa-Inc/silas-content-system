@@ -1,3 +1,4 @@
+/** Intelligence-specific skeleton (toolbar + grid) while this segment streams. */
 export default function IntelligenceLoading() {
   return (
     <main className="mx-auto max-w-[1100px] animate-pulse px-4 py-8 md:px-8">

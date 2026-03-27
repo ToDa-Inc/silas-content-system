@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Sparkles } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useTransition, useState } from "react";
+import { Loader2, Sparkles } from "lucide-react";
 import { useToast } from "@/components/ui/toast-provider";
 import { cn } from "@/lib/cn";
 import { mainNav } from "./nav";
@@ -28,7 +29,18 @@ export function Sidebar({
   orgSlug = "",
 }: SidebarProps) {
   const pathname = usePathname();
+  const router = useRouter();
   const { show } = useToast();
+  const [isPending, startTransition] = useTransition();
+  const [pendingHref, setPendingHref] = useState<string | null>(null);
+
+  useEffect(() => {
+    setPendingHref(null);
+  }, [pathname]);
+
+  function navActive(href: string) {
+    return pathname === href || (href !== "/dashboard" && pathname.startsWith(href));
+  }
 
   return (
     <aside
@@ -56,22 +68,45 @@ export function Sidebar({
         aria-label="Main navigation"
       >
         {mainNav.map(({ href, label, icon: Icon }) => {
-          const active =
-            pathname === href || (href !== "/dashboard" && pathname.startsWith(href));
+          const active = navActive(href);
+          const navigatingHere = isPending && pendingHref === href;
           return (
             <Link
               key={href}
               href={href}
               prefetch
-              onClick={onNavigate}
+              aria-busy={navigatingHere}
+              onClick={(e) => {
+                if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) {
+                  return;
+                }
+                if (active) {
+                  onNavigate?.();
+                  return;
+                }
+                e.preventDefault();
+                setPendingHref(href);
+                startTransition(() => {
+                  router.push(href);
+                });
+                onNavigate?.();
+              }}
               className={cn(
-                "flex items-center gap-3 rounded-r-lg border-l-2 border-transparent py-2 pl-3 pr-2 text-[13px] font-medium",
+                "flex items-center gap-3 rounded-r-lg border-l-2 border-transparent py-2 pl-3 pr-2 text-[13px] font-medium transition-opacity",
                 active
                   ? "border-amber-500 bg-amber-500/12 text-amber-400 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
                   : "text-zinc-600 hover:bg-zinc-200/80 hover:text-zinc-900 dark:text-app-fg-subtle dark:hover:bg-white/[0.06] dark:hover:text-app-fg-secondary",
+                isPending && !navigatingHere && "opacity-50",
               )}
             >
-              <Icon className="h-[18px] w-[18px] shrink-0" aria-hidden />
+              {navigatingHere ? (
+                <Loader2
+                  className="h-[18px] w-[18px] shrink-0 animate-spin text-amber-400"
+                  aria-hidden
+                />
+              ) : (
+                <Icon className="h-[18px] w-[18px] shrink-0" aria-hidden />
+              )}
               {label}
             </Link>
           );
