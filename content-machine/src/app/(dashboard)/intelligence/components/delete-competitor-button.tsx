@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Loader2, Trash2 } from "lucide-react";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useToast } from "@/components/ui/toast-provider";
 import { clientApiHeaders, contentApiFetch, formatFastApiError, getContentApiBase } from "@/lib/api-client";
 
@@ -24,13 +25,10 @@ export function DeleteCompetitorButton({
   const router = useRouter();
   const { show } = useToast();
   const [busy, setBusy] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
-  async function run() {
+  async function executeDelete() {
     if (disabled || !clientSlug.trim() || !orgSlug.trim()) return;
-    const ok = window.confirm(
-      `Remove @${username} from competitors? Scraped reels for this account will be deleted from Intelligence.`,
-    );
-    if (!ok) return;
 
     setBusy(true);
     const apiBase = getContentApiBase();
@@ -46,6 +44,7 @@ export function DeleteCompetitorButton({
         return;
       }
       show(`Removed @${username}`, "success");
+      setConfirmOpen(false);
       router.refresh();
     } catch {
       show("Network error — try again.", "error");
@@ -55,15 +54,36 @@ export function DeleteCompetitorButton({
   }
 
   return (
-    <button
-      type="button"
-      disabled={busy || disabled}
-      onClick={() => void run()}
-      className="inline-flex items-center gap-1 rounded-md border border-red-500/35 bg-red-500/10 px-2 py-0.5 text-[10px] font-semibold text-red-700 hover:bg-red-500/20 disabled:opacity-50 dark:text-red-400"
-      title={`Remove @${username} from competitors`}
-    >
-      {busy ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden /> : <Trash2 className="h-3 w-3" aria-hidden />}
-      Remove
-    </button>
+    <>
+      <button
+        type="button"
+        disabled={busy || disabled}
+        onClick={() => setConfirmOpen(true)}
+        className="inline-flex items-center gap-1 rounded-md border border-red-500/35 bg-red-500/10 px-2 py-0.5 text-[10px] font-semibold text-red-700 hover:bg-red-500/20 disabled:opacity-50 dark:text-red-400"
+        title={`Remove @${username} from competitors`}
+      >
+        {busy ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden /> : <Trash2 className="h-3 w-3" aria-hidden />}
+        Remove
+      </button>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        onClose={() => {
+          if (!busy) setConfirmOpen(false);
+        }}
+        title={`Remove @${username}?`}
+        description={
+          <>
+            This removes them from your competitors list. Scraped reels for this account will be deleted from
+            Intelligence.
+          </>
+        }
+        confirmLabel="Remove"
+        cancelLabel="Cancel"
+        variant="danger"
+        busy={busy}
+        onConfirm={executeDelete}
+      />
+    </>
   );
 }

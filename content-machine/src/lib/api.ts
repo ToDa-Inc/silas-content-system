@@ -65,6 +65,8 @@ export type CompetitorRow = {
   followers: number | null;
   avg_views: number | null;
   avg_likes: number | null;
+  /** Average comments per post (competitor baseline); set after enrichment / discovery. */
+  avg_comments?: number | null;
   language: string | null;
   content_style: string | null;
   topics: string[] | null;
@@ -150,6 +152,12 @@ export type ScrapedReelRow = {
   shares: number | null;
   outlier_ratio: number | null;
   is_outlier: boolean | null;
+  outlier_views_ratio?: number | null;
+  outlier_likes_ratio?: number | null;
+  outlier_comments_ratio?: number | null;
+  is_outlier_views?: boolean | null;
+  is_outlier_likes?: boolean | null;
+  is_outlier_comments?: boolean | null;
   hook_text: string | null;
   caption: string | null;
   posted_at: string | null;
@@ -377,9 +385,20 @@ export type OwnReelGrowthItem = {
   comments?: number | null;
 };
 
+export type WeekBreakoutsPayload = {
+  window_start: string;
+  window_end: string;
+  days: number;
+  top_n?: number;
+  top_by_views: ScrapedReelRow[];
+  top_by_likes: ScrapedReelRow[];
+  top_by_comments: ScrapedReelRow[];
+};
+
 export type IntelligenceActivityRow = {
   since: string;
   new_breakout_reels: ScrapedReelRow[];
+  week_breakouts?: WeekBreakoutsPayload;
   own_reel_growth: OwnReelGrowthItem[];
   is_quiet: boolean;
 };

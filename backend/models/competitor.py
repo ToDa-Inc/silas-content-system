@@ -13,6 +13,7 @@ class CompetitorOut(BaseModel):
     followers: Optional[int]
     avg_views: Optional[int]
     avg_likes: Optional[int]
+    avg_comments: Optional[int] = None
     language: Optional[str]
     content_style: Optional[str]
     topics: Optional[List[str]]

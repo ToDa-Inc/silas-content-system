@@ -1,6 +1,6 @@
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from supabase import Client
@@ -137,6 +137,90 @@ def _own_reel_meta(
         .execute()
     )
     return rc.data[0] if rc.data else None
+
+
+def _reel_reference_date(r: dict) -> Optional[datetime]:
+    """Prefer post time, then first seen / row created — for rolling window filters (not last sync)."""
+    for key in ("posted_at", "first_seen_at", "created_at"):
+        dt = _dt_from_row(r.get(key))
+        if dt is not None:
+            return dt
+    return None
+
+
+def _float_ratio(val: Any) -> float:
+    if val is None:
+        return 0.0
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _is_legacy_views_only_row(r: dict) -> bool:
+    """Pre multi-metric scrape: is_outlier + outlier_ratio (views) only; per-metric ratios unset."""
+    if r.get("is_outlier") is not True:
+        return False
+    if r.get("outlier_views_ratio") is not None:
+        return False
+    if r.get("outlier_likes_ratio") is not None or r.get("outlier_comments_ratio") is not None:
+        return False
+    return True
+
+
+def _is_views_breakout_row(r: dict) -> bool:
+    if r.get("is_outlier_views") is True:
+        return True
+    return _is_legacy_views_only_row(r)
+
+
+def _views_ratio_sort_key(r: dict) -> Tuple[float, str]:
+    if r.get("outlier_views_ratio") is not None:
+        return (_float_ratio(r.get("outlier_views_ratio")), str(r.get("id") or ""))
+    return (_float_ratio(r.get("outlier_ratio")), str(r.get("id") or ""))
+
+
+def _weekly_breakout_tops(
+    rows: List[dict],
+    days: int = 7,
+    top_n: int = 3,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], datetime, datetime]:
+    """
+    Among competitor outlier reels in `rows`, keep those whose reference date is in the last `days`,
+    then pick the top `top_n` reels per outlier type (views / likes / comments) by ratio strength.
+    """
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(days=days)
+    pool: List[dict] = []
+    for r in rows:
+        dt = _reel_reference_date(r)
+        if dt is None or dt < window_start:
+            continue
+        pool.append(r)
+
+    def top_by(
+        include: Any,
+        sort_key_fn: Any,
+    ) -> List[Dict[str, Any]]:
+        if not pool:
+            return []
+        sub = [r for r in pool if include(r)]
+        sub.sort(key=sort_key_fn, reverse=True)
+        return [dict(x) for x in sub[:top_n]]
+
+    tv = top_by(
+        _is_views_breakout_row,
+        _views_ratio_sort_key,
+    )
+    tl = top_by(
+        lambda r: r.get("is_outlier_likes") is True,
+        lambda r: (_float_ratio(r.get("outlier_likes_ratio")), str(r.get("id") or "")),
+    )
+    tc = top_by(
+        lambda r: r.get("is_outlier_comments") is True,
+        lambda r: (_float_ratio(r.get("outlier_comments_ratio")), str(r.get("id") or "")),
+    )
+    return tv, tl, tc, window_start, now
 
 
 def _compute_client_stats(supabase: Client, client_id: str) -> Dict[str, Any]:
@@ -794,10 +878,10 @@ def get_intelligence_activity(
     supabase: Annotated[Client, Depends(get_supabase)],
     since: Optional[str] = Query(
         None,
-        description="ISO8601 lower bound; default last 24h. Client should pass last visit time.",
+        description="Deprecated for breakouts; rolling 7-day window is used. Still affects response `since` echo.",
     ),
 ) -> Dict[str, Any]:
-    """High-signal changes since `since`: new breakout competitor reels, optional own-reel growth."""
+    """Competitor breakout highlights (rolling 7 days) plus optional own-reel growth from snapshots."""
     since_dt = _parse_since(since)
     res = (
         supabase.table("scraped_reels")
@@ -808,12 +892,7 @@ def get_intelligence_activity(
         .execute()
     )
     rows: List[dict] = res.data or []
-    new_breakouts: List[dict] = []
-    for r in rows:
-        lu = r.get("last_updated_at") or r.get("first_seen_at") or r.get("created_at")
-        dt = _dt_from_row(lu)
-        if dt is None or dt >= since_dt:
-            new_breakouts.append(r)
+    tv, tl, tc, window_start, window_end = _weekly_breakout_tops(rows, days=7)
 
     growth: List[Dict[str, Any]] = []
     try:
@@ -878,11 +957,21 @@ def get_intelligence_activity(
     except Exception:
         growth = []
 
+    has_weekly = bool(tv or tl or tc)
     return {
         "since": since_dt.isoformat(),
-        "new_breakout_reels": new_breakouts[:12],
+        "new_breakout_reels": [],
+        "week_breakouts": {
+            "window_start": window_start.isoformat(),
+            "window_end": window_end.isoformat(),
+            "days": 7,
+            "top_n": 3,
+            "top_by_views": tv,
+            "top_by_likes": tl,
+            "top_by_comments": tc,
+        },
         "own_reel_growth": growth,
-        "is_quiet": len(new_breakouts) == 0 and len(growth) == 0,
+        "is_quiet": not has_weekly and len(growth) == 0,
     }
 
 

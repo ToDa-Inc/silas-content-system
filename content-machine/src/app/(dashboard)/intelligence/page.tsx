@@ -13,6 +13,8 @@ import {
   type ScrapedReelRow,
 } from "@/lib/api";
 import { topicKeywordSuggestionsFromNicheConfig } from "@/lib/niche-keywords";
+import { BreakoutsTeaserCard } from "./components/breakouts-teaser-card";
+import { CompetitorsTeaserCard } from "./components/competitors-teaser-card";
 import { CompetitorsList } from "./components/competitors-list";
 import { DiscoverInline } from "./components/discover-inline";
 import { IntelligenceToolbar } from "./components/intelligence-toolbar";
@@ -140,6 +142,13 @@ export default async function IntelligencePage() {
 
       {clientSlug.trim() && orgSlug.trim() ? (
         <WhatHappenedSection clientSlug={clientSlug} orgSlug={orgSlug} disabled={syncDisabled} />
+      ) : null}
+
+      {clientSlug.trim() && orgSlug.trim() ? (
+        <div className="mb-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+          <BreakoutsTeaserCard count={reelsRes.ok ? nOutliers : "—"} />
+          <CompetitorsTeaserCard count={compRes.ok ? competitors.length : "—"} />
+        </div>
       ) : null}
 
       <section className="mb-8 flex flex-wrap gap-3">

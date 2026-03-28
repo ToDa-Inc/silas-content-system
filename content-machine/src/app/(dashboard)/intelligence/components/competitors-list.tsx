@@ -62,7 +62,7 @@ export function CompetitorsList({
       <div className="glass rounded-xl px-6 py-12 text-center">
         <p className="text-sm font-medium text-app-fg">No competitors tracked yet.</p>
         <p className="mt-2 text-xs text-app-fg-subtle">
-          Use <strong>Find more</strong> below or <strong>Add competitor</strong> in the toolbar.
+          Open <strong>Add competitors</strong> above to add manually or run discovery.
         </p>
       </div>
     );

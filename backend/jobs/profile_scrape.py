@@ -1,4 +1,4 @@
-"""profile_scrape job — Apify reels for one competitor, upsert scraped_reels via RPC."""
+"""profile_scrape job — Apify reels for one competitor, upsert scraped_reels via PostgREST."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from core.config import Settings
 from core.database import get_supabase_for_settings
+from core.id_generator import generate_reel_id
 from services.apify import REEL_ACTOR, run_actor
 from services.reel_snapshots import insert_snapshots_for_scrape_job
 from services.reel_thumbnail_url import reel_thumbnail_url_from_apify_item
@@ -66,6 +67,16 @@ def _reel_items(items: list) -> List[dict]:
     return out
 
 
+def _ratio_decimal(metric: int, avg: int) -> Optional[Decimal]:
+    if avg <= 0:
+        return None
+    return round(Decimal(metric) / Decimal(avg), 2)
+
+
+def _ratio_str(r: Optional[Decimal]) -> Optional[str]:
+    return str(r) if r is not None else None
+
+
 def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
     if not settings.apify_api_token:
         raise RuntimeError("APIFY_API_TOKEN not configured")
@@ -83,7 +94,7 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
 
     cres = (
         supabase.table("competitors")
-        .select("id, username, avg_views, client_id")
+        .select("id, username, avg_views, avg_likes, avg_comments, client_id")
         .eq("id", competitor_id)
         .eq("client_id", client_id)
         .limit(1)
@@ -105,8 +116,10 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
     )
     if not clres.data:
         raise RuntimeError("Client not found")
-    threshold = float(clres.data[0].get("outlier_ratio_threshold") or 10.0)
-    account_avg = int(comp.get("avg_views") or 0)
+    threshold = float(clres.data[0].get("outlier_ratio_threshold") or 5.0)
+    account_avg_views = int(comp.get("avg_views") or 0)
+    account_avg_likes = int(comp.get("avg_likes") or 0)
+    account_avg_comments = int(comp.get("avg_comments") or 0)
 
     raw_limit = int(payload.get("results_limit") or payload.get("limit") or 30)
     results_limit = max(1, min(50, raw_limit))
@@ -129,12 +142,19 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
         saves = int(item.get("saveCount") or 0)
         shares = int(item.get("shareCount") or 0)
         caption = _caption_text(item)
-        if account_avg > 0:
-            ratio = round(Decimal(views) / Decimal(account_avg), 2)
-            is_out = float(ratio) >= threshold
-        else:
-            ratio = None
-            is_out = False
+
+        rv = _ratio_decimal(views, account_avg_views)
+        rl = _ratio_decimal(likes, account_avg_likes)
+        rc = _ratio_decimal(comments, account_avg_comments)
+
+        is_out_v = rv is not None and float(rv) >= threshold
+        is_out_l = rl is not None and float(rl) >= threshold
+        is_out_c = rc is not None and float(rc) >= threshold
+        is_any = is_out_v or is_out_l or is_out_c
+
+        ratio_vals = [float(x) for x in (rv, rl, rc) if x is not None]
+        max_r = max(ratio_vals) if ratio_vals else None
+        legacy_ratio_str = f"{max_r:.2f}" if max_r is not None else None
 
         thumb = reel_thumbnail_url_from_apify_item(item)
         hook = (caption.split("\n")[0][:500] if caption else "") or None
@@ -143,14 +163,20 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
             "post_url": url,
             "thumbnail_url": str(thumb) if thumb else None,
             "account_username": username,
-            "account_avg_views": account_avg,
+            "account_avg_views": account_avg_views,
             "views": views,
             "likes": likes,
             "comments": comments,
             "saves": saves,
             "shares": shares,
-            "outlier_ratio": str(ratio) if ratio is not None else None,
-            "is_outlier": is_out,
+            "outlier_views_ratio": _ratio_str(rv),
+            "outlier_likes_ratio": _ratio_str(rl),
+            "outlier_comments_ratio": _ratio_str(rc),
+            "is_outlier_views": is_out_v,
+            "is_outlier_likes": is_out_l,
+            "is_outlier_comments": is_out_c,
+            "outlier_ratio": legacy_ratio_str,
+            "is_outlier": is_any,
             "hook_text": hook,
             "caption": caption or None,
             "hashtags": _hashtags(item, caption),
@@ -162,15 +188,23 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
 
     done_at = datetime.now(timezone.utc)
     if batch:
-        supabase.rpc(
-            "upsert_scraped_reels_batch",
-            {
-                "p_client_id": client_id,
-                "p_competitor_id": competitor_id,
-                "p_scrape_job_id": job_id,
-                "p_items": batch,
-            },
-        ).execute()
+        urls = [r["post_url"] for r in batch]
+        existing_res = (
+            supabase.table("scraped_reels")
+            .select("id, post_url")
+            .eq("client_id", client_id)
+            .in_("post_url", urls)
+            .execute()
+        )
+        url_to_id = {str(e["post_url"]): str(e["id"]) for e in (existing_res.data or [])}
+        for row in batch:
+            pu = str(row["post_url"])
+            row["id"] = url_to_id.get(pu) or generate_reel_id()
+            row["client_id"] = client_id
+            row["competitor_id"] = competitor_id
+            row["scrape_job_id"] = job_id
+
+        supabase.table("scraped_reels").upsert(batch, on_conflict="client_id,post_url").execute()
         insert_snapshots_for_scrape_job(supabase, client_id=client_id, scrape_job_id=job_id)
 
     supabase.table("competitors").update({"last_scraped_at": done_at.isoformat()}).eq("id", competitor_id).execute()

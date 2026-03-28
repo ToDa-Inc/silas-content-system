@@ -162,7 +162,7 @@ export function AddCompetitorModal({
         }
         setTimeout(() => onToolbarMessage?.(null), 8000);
       } else {
-        onToolbarMessage?.(`Added @${un} — scrape from their row or use Sync all.`);
+        onToolbarMessage?.(`Added @${un} — scrape from their row or use Sync on Intelligence.`);
         setTimeout(() => onToolbarMessage?.(null), 6000);
       }
       onClose();

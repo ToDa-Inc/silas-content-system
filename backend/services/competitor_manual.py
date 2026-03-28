@@ -127,6 +127,7 @@ def preview_manual_competitor(
         "followers": None,
         "avg_views": None,
         "avg_likes": None,
+        "avg_comments": None,
         "relevance_score": None,
         "reasoning": None,
         "composite_score": None,
@@ -168,9 +169,11 @@ def _enrich_manual_row_from_instagram(
             return
         total_views = sum(int(p.get("views") or 0) for p in posts)
         total_likes = sum(int(p.get("likes") or 0) for p in posts)
+        total_comments = sum(int(p.get("comments") or 0) for p in posts)
         n = len(posts)
         row["avg_views"] = round(total_views / n)
         row["avg_likes"] = round(total_likes / n)
+        row["avg_comments"] = round(total_comments / n)
     except Exception:
         logging.getLogger(__name__).warning(
             "Manual competitor metrics enrichment failed for @%s",
@@ -208,6 +211,7 @@ def add_manual_competitor(
         "followers": None,
         "avg_views": None,
         "avg_likes": None,
+        "avg_comments": None,
         "language": None,
         "content_style": None,
         "topics": [],

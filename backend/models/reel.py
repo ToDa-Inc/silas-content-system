@@ -149,6 +149,12 @@ class ScrapedReelOut(BaseModel):
     shares: Optional[int] = None
     outlier_ratio: Optional[float] = None
     is_outlier: Optional[bool] = None
+    outlier_views_ratio: Optional[float] = None
+    outlier_likes_ratio: Optional[float] = None
+    outlier_comments_ratio: Optional[float] = None
+    is_outlier_views: Optional[bool] = None
+    is_outlier_likes: Optional[bool] = None
+    is_outlier_comments: Optional[bool] = None
     hook_text: Optional[str] = None
     caption: Optional[str] = None
     hashtags: Optional[List[str]] = None

@@ -418,6 +418,7 @@ def run_competitor_discovery(settings: Settings, job: Dict[str, Any]) -> None:
         total_views = sum(p["views"] for p in posts)
         avg_views = round(total_views / len(posts))
         avg_likes = round(sum(p["likes"] for p in posts) / len(posts))
+        avg_comments = round(sum(p["comments"] for p in posts) / len(posts))
 
         prompt = _build_relevance_prompt(niche_profile, account, posts)
         analysis = analyze_relevance(
@@ -438,6 +439,7 @@ def run_competitor_discovery(settings: Settings, job: Dict[str, Any]) -> None:
             "followers": account["followers"],
             "avgViews": avg_views,
             "avgLikes": avg_likes,
+            "avgComments": avg_comments,
             "relevance": analysis,
         }
 
@@ -448,6 +450,7 @@ def run_competitor_discovery(settings: Settings, job: Dict[str, Any]) -> None:
             "followers": account["followers"],
             "avg_views": avg_views,
             "avg_likes": avg_likes,
+            "avg_comments": avg_comments,
             "language": analysis.get("language"),
             "content_style": analysis.get("content_style"),
             "topics": analysis.get("primary_topics") or [],
