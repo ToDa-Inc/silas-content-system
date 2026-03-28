@@ -257,6 +257,7 @@ export default async function IntelligencePage() {
             <DiscoverInline
               clientSlug={clientSlug}
               orgSlug={orgSlug}
+              suggestedKeywords={suggestedKeywords}
               disabled={syncDisabled}
               disabledHint={syncDisabledHint}
             />
