@@ -59,7 +59,7 @@ Optional: `backend/.env` or `config/.env` for overrides (see load order in root 
 
 8. **`CORS_ORIGINS`** — include `http://localhost:3000` and `http://127.0.0.1:3000` for local Next.js; add production origins as needed.
 
-9. **`CRON_SECRET`** — set a long random string to enable `POST /api/v1/cron/scrape-cycle` with header `X-Cron-Secret`. If unset, the cron route returns 503 (safe default).
+9. **`CRON_SECRET`** — set a long random string to enable cron routes (`POST /api/v1/cron/scrape-cycle`, `POST /api/v1/cron/sync-all`) with header `X-Cron-Secret`. If unset, those routes return 503 (safe default).
 
 10. **Save** the file. Load order is **repo `.env` → `backend/.env` → `config/.env`** (each overrides the previous). Put shared keys in repo `.env`; keep `config/.env` only if Node scripts still read it.
 
@@ -127,6 +127,7 @@ VALUES (
 - `POST /api/v1/clients/{slug}/baseline/refresh`
 - `GET /api/v1/clients/{slug}/reels` (optional `?outlier_only=true`)
 - `POST /api/v1/clients/{slug}/reels/scrape`
-- `POST /api/v1/cron/scrape-cycle` (header `X-Cron-Secret`)
+- `POST /api/v1/cron/scrape-cycle` (header `X-Cron-Secret`) — stale competitor scrapes only
+- `POST /api/v1/cron/sync-all` (header `X-Cron-Secret`) — enqueue own baseline + all competitors per active client
 - `GET /api/v1/jobs/{job_id}`
 - `GET /health`

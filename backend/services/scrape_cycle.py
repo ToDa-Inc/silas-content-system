@@ -138,3 +138,92 @@ def enqueue_stale_profile_scrapes_all_clients(supabase: Client) -> Dict[str, int
         "skipped_duplicate": skipped_duplicate,
         "competitors_considered": competitors_seen,
     }
+
+
+def enqueue_sync_all_jobs_for_client(
+    supabase: Client,
+    *,
+    org_id: str,
+    client_id: str,
+) -> Dict[str, int]:
+    """Queue baseline_scrape (own reels) + profile_scrape for every competitor (cron/worker)."""
+    baseline_queued = 0
+    baseline_skipped = 0
+    profile_queued = 0
+    profile_skipped = 0
+
+    if has_active_job(supabase, client_id=client_id, job_type="baseline_scrape"):
+        baseline_skipped = 1
+    else:
+        supabase.table("background_jobs").insert(
+            {
+                "id": generate_job_id(),
+                "org_id": org_id,
+                "client_id": client_id,
+                "job_type": "baseline_scrape",
+                "payload": {},
+                "status": "queued",
+            }
+        ).execute()
+        baseline_queued = 1
+
+    cres = supabase.table("competitors").select("id").eq("client_id", client_id).execute()
+    for row in cres.data or []:
+        comp_id = str(row["id"])
+        if has_active_job(
+            supabase,
+            client_id=client_id,
+            job_type="profile_scrape",
+            payload_match={"competitor_id": comp_id},
+        ):
+            profile_skipped += 1
+            continue
+        supabase.table("background_jobs").insert(
+            {
+                "id": generate_job_id(),
+                "org_id": org_id,
+                "client_id": client_id,
+                "job_type": "profile_scrape",
+                "payload": {"competitor_id": comp_id},
+                "status": "queued",
+            }
+        ).execute()
+        profile_queued += 1
+
+    return {
+        "baseline_queued": baseline_queued,
+        "baseline_skipped": baseline_skipped,
+        "profile_queued": profile_queued,
+        "profile_skipped": profile_skipped,
+        "competitors_considered": len(cres.data or []),
+    }
+
+
+def enqueue_sync_all_jobs_all_clients(supabase: Client) -> Dict[str, Any]:
+    """For each active client, enqueue own-reel baseline + all competitor profile scrapes."""
+    clients = supabase.table("clients").select("id, org_id").eq("is_active", True).execute()
+    total_baseline_queued = 0
+    total_baseline_skipped = 0
+    total_profile_queued = 0
+    total_profile_skipped = 0
+    clients_checked = 0
+
+    for c in clients.data or []:
+        clients_checked += 1
+        stats = enqueue_sync_all_jobs_for_client(
+            supabase,
+            org_id=c["org_id"],
+            client_id=c["id"],
+        )
+        total_baseline_queued += stats["baseline_queued"]
+        total_baseline_skipped += stats["baseline_skipped"]
+        total_profile_queued += stats["profile_queued"]
+        total_profile_skipped += stats["profile_skipped"]
+
+    return {
+        "clients_checked": clients_checked,
+        "baseline_jobs_queued": total_baseline_queued,
+        "baseline_jobs_skipped": total_baseline_skipped,
+        "profile_jobs_queued": total_profile_queued,
+        "profile_jobs_skipped": total_profile_skipped,
+    }
