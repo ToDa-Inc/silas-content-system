@@ -144,6 +144,7 @@ export async function POST(request: Request) {
           icp,
           products: {},
           language,
+          outlier_ratio_threshold: 5,
         })
         .select("slug")
         .single();

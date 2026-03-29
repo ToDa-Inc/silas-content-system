@@ -8,7 +8,7 @@ type Props = {
 
 export function BreakoutsTeaserCard({ count }: Props) {
   return (
-    <section className="mb-12">
+    <section>
       <Link
         href="/intelligence/breakouts"
         className="group block rounded-xl border border-zinc-200/60 bg-zinc-50/40 p-5 shadow-sm transition-colors hover:border-amber-400/35 hover:bg-zinc-100/70 dark:border-white/[0.08] dark:bg-white/[0.02] dark:hover:bg-white/[0.06]"

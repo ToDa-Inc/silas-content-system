@@ -1,3 +1,5 @@
+import logging
+import threading
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, List, Optional, Tuple
@@ -37,11 +39,20 @@ from models.reel import (
     TopicSearchBody,
 )
 from services.apify import run_keyword_reel_search
+from services.breakout_recompute import recompute_breakouts_for_client
 from services.competitor_manual import add_manual_competitor, preview_manual_competitor
-from services.job_queue import fail_abandoned_queued_jobs, has_active_job
+from services.job_queue import (
+    fail_abandoned_queued_jobs,
+    fail_stale_running_jobs,
+    has_active_job,
+)
 from services.scrape_cycle import find_stale_competitors
 
 router = APIRouter(prefix="/api/v1", tags=["intelligence"])
+logger = logging.getLogger(__name__)
+
+# One bulk competitor sync at a time per client (background thread in API process).
+_bulk_competitor_sync_locks: dict[str, threading.Lock] = {}
 
 
 def _ensure_utc(dt: datetime) -> datetime:
@@ -183,11 +194,13 @@ def _views_ratio_sort_key(r: dict) -> Tuple[float, str]:
 def _weekly_breakout_tops(
     rows: List[dict],
     days: int = 7,
-    top_n: int = 3,
+    top_n_views: int = 3,
+    top_n_likes: int = 3,
+    top_n_comments: int = 3,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], datetime, datetime]:
     """
     Among competitor outlier reels in `rows`, keep those whose reference date is in the last `days`,
-    then pick the top `top_n` reels per outlier type (views / likes / comments) by ratio strength.
+    then pick the top reels per outlier type by ratio strength (up to N per column).
     """
     now = datetime.now(timezone.utc)
     window_start = now - timedelta(days=days)
@@ -201,24 +214,28 @@ def _weekly_breakout_tops(
     def top_by(
         include: Any,
         sort_key_fn: Any,
+        limit: int,
     ) -> List[Dict[str, Any]]:
-        if not pool:
+        if not pool or limit <= 0:
             return []
         sub = [r for r in pool if include(r)]
         sub.sort(key=sort_key_fn, reverse=True)
-        return [dict(x) for x in sub[:top_n]]
+        return [dict(x) for x in sub[:limit]]
 
     tv = top_by(
         _is_views_breakout_row,
         _views_ratio_sort_key,
+        top_n_views,
     )
     tl = top_by(
         lambda r: r.get("is_outlier_likes") is True,
         lambda r: (_float_ratio(r.get("outlier_likes_ratio")), str(r.get("id") or "")),
+        top_n_likes,
     )
     tc = top_by(
         lambda r: r.get("is_outlier_comments") is True,
         lambda r: (_float_ratio(r.get("outlier_comments_ratio")), str(r.get("id") or "")),
+        top_n_comments,
     )
     return tv, tl, tc, window_start, now
 
@@ -715,6 +732,112 @@ def _run_baseline_refresh(
     }
 
 
+def _competitor_scrape_background_worker(
+    *,
+    settings: Settings,
+    org_id: str,
+    client_id: str,
+    competitor_ids: List[str],
+    results_limit: int,
+    lock: threading.Lock,
+) -> None:
+    """Runs after HTTP response: Apify scrapes sequentially (uses client outlier threshold, e.g. 5×)."""
+    try:
+        supabase = get_supabase_for_settings(settings)
+        fail_abandoned_queued_jobs(supabase, client_id=client_id, job_type="profile_scrape")
+        fail_stale_running_jobs(supabase, client_id=client_id, job_type="profile_scrape")
+        for comp_id in competitor_ids:
+            if has_active_job(
+                supabase,
+                client_id=client_id,
+                job_type="profile_scrape",
+                payload_match={"competitor_id": comp_id},
+            ):
+                continue
+            job_id = generate_job_id()
+            row = {
+                "id": job_id,
+                "org_id": org_id,
+                "client_id": client_id,
+                "job_type": "profile_scrape",
+                "payload": {"competitor_id": comp_id, "results_limit": results_limit},
+                "status": "running",
+            }
+            supabase.table("background_jobs").insert(row).execute()
+            job_dict = dict(row)
+            try:
+                run_profile_scrape(settings, job_dict)
+            except Exception as e:
+                logger.exception("profile_scrape failed for competitor %s", comp_id)
+                _fail_job(supabase, job_id, str(e))
+    finally:
+        lock.release()
+
+
+def _try_start_competitor_scrapes_background(
+    *,
+    settings: Settings,
+    org_id: str,
+    client_id: str,
+    supabase: Client,
+    results_limit: int = 30,
+) -> Optional[Dict[str, Any]]:
+    """
+    Spawn a daemon thread to run all competitor profile scrapes without blocking the request.
+    Returns None if another bulk sync is already running for this client (caller: 409 or skip).
+    """
+    cres = (
+        supabase.table("competitors")
+        .select("id")
+        .eq("client_id", client_id)
+        .execute()
+    )
+    competitor_ids = [str(r["id"]) for r in (cres.data or [])]
+    if not competitor_ids:
+        return {
+            "mode": "background",
+            "competitors_attempted": 0,
+            "reels_processed": 0,
+            "message": "No competitors to sync.",
+            "details": [],
+        }
+
+    lock = _bulk_competitor_sync_locks.setdefault(client_id, threading.Lock())
+    if not lock.acquire(blocking=False):
+        return None
+
+    thread = threading.Thread(
+        target=_competitor_scrape_background_worker,
+        kwargs={
+            "settings": settings,
+            "org_id": org_id,
+            "client_id": client_id,
+            "competitor_ids": competitor_ids,
+            "results_limit": results_limit,
+            "lock": lock,
+        },
+        daemon=True,
+        name="competitor-scrape-sync",
+    )
+    try:
+        thread.start()
+    except RuntimeError:
+        lock.release()
+        raise
+
+    return {
+        "mode": "background",
+        "competitors_attempted": len(competitor_ids),
+        # Not known until the background thread finishes; avoid misleading 0 in JSON.
+        "reels_processed": None,
+        "message": (
+            "Competitor scrapes started on this API server (no separate worker needed). "
+            "Refresh in a few minutes for updated reels and breakout flags."
+        ),
+        "details": [],
+    }
+
+
 @router.post("/clients/{slug}/sync/own")
 def sync_own_reels(
     slug: str,
@@ -737,54 +860,37 @@ def sync_competitor_reels_all(
     supabase: Annotated[Client, Depends(get_supabase)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> Dict[str, Any]:
-    """Sync reels for every competitor (not limited to stale queue)."""
+    """Start competitor scrapes in a background thread on this API process; returns immediately."""
     if not settings.apify_api_token:
         raise HTTPException(status_code=503, detail="APIFY_API_TOKEN not configured")
-    cres = (
-        supabase.table("competitors")
-        .select("id")
-        .eq("client_id", client_id)
-        .execute()
+    out = _try_start_competitor_scrapes_background(
+        settings=settings,
+        org_id=org_id,
+        client_id=client_id,
+        supabase=supabase,
+        results_limit=30,
     )
-    competitor_ids = [str(r["id"]) for r in (cres.data or [])]
-    details: List[Dict[str, Any]] = []
-    total_reels = 0
-    for comp_id in competitor_ids:
-        fail_abandoned_queued_jobs(supabase, client_id=client_id, job_type="profile_scrape")
-        if has_active_job(
-            supabase,
-            client_id=client_id,
-            job_type="profile_scrape",
-            payload_match={"competitor_id": comp_id},
-        ):
-            details.append({"competitor_id": comp_id, "skipped": "already_running"})
-            continue
-        job_id = generate_job_id()
-        row = {
-            "id": job_id,
-            "org_id": org_id,
-            "client_id": client_id,
-            "job_type": "profile_scrape",
-            "payload": {"competitor_id": comp_id, "results_limit": 30},
-            "status": "running",
-        }
-        supabase.table("background_jobs").insert(row).execute()
-        job_dict = dict(row)
-        try:
-            run_profile_scrape(settings, job_dict)
-        except Exception as e:
-            _fail_job(supabase, job_id, str(e))
-            details.append({"competitor_id": comp_id, "error": str(e)[:800]})
-            continue
-        job_row = _fetch_job_row(supabase, job_id)
-        res = job_row.get("result") or {}
-        total_reels += int(res.get("reels_processed") or 0)
-        details.append({"competitor_id": comp_id, "result": res})
-    return {
-        "competitors_attempted": len(competitor_ids),
-        "reels_processed": total_reels,
-        "details": details,
-    }
+    if out is None:
+        raise HTTPException(
+            status_code=409,
+            detail="A competitor sync is already running for this client — wait for it to finish.",
+        )
+    return out
+
+
+@router.post("/clients/{slug}/recompute-breakouts")
+def recompute_client_breakouts(
+    slug: str,
+    org_id: Annotated[str, Depends(require_org_access)],
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+) -> Dict[str, Any]:
+    """Refresh breakout flags from reels already in DB (no Apify / Instagram fetch)."""
+    _ = org_id
+    out = recompute_breakouts_for_client(supabase, client_id=client_id)
+    if out.get("error") == "client_not_found":
+        raise HTTPException(status_code=404, detail="Client not found")
+    return out
 
 
 @router.post("/clients/{slug}/sync")
@@ -813,51 +919,28 @@ def sync_all(
     except Exception as e:
         baseline = {"error": str(e)[:800]}
 
-    cres = (
-        supabase.table("competitors")
-        .select("id")
-        .eq("client_id", client_id)
-        .execute()
+    comp_sync = _try_start_competitor_scrapes_background(
+        settings=settings,
+        org_id=org_id,
+        client_id=client_id,
+        supabase=supabase,
+        results_limit=30,
     )
-    competitor_ids = [str(r["id"]) for r in (cres.data or [])]
-    details: List[Dict[str, Any]] = []
-    total_reels = 0
-    for comp_id in competitor_ids:
-        fail_abandoned_queued_jobs(supabase, client_id=client_id, job_type="profile_scrape")
-        if has_active_job(
-            supabase,
-            client_id=client_id,
-            job_type="profile_scrape",
-            payload_match={"competitor_id": comp_id},
-        ):
-            details.append({"competitor_id": comp_id, "skipped": "already_running"})
-            continue
-        job_id = generate_job_id()
-        row = {
-            "id": job_id,
-            "org_id": org_id,
-            "client_id": client_id,
-            "job_type": "profile_scrape",
-            "payload": {"competitor_id": comp_id, "results_limit": 30},
-            "status": "running",
+    if comp_sync is None:
+        comp_sync = {
+            "mode": "skipped_locked",
+            "competitors_attempted": 0,
+            "reels_processed": 0,
+            "message": "Competitor bulk sync already running — skipped duplicate start.",
+            "details": [],
         }
-        supabase.table("background_jobs").insert(row).execute()
-        job_dict = dict(row)
-        try:
-            run_profile_scrape(settings, job_dict)
-        except Exception as e:
-            _fail_job(supabase, job_id, str(e))
-            details.append({"competitor_id": comp_id, "error": str(e)[:800]})
-            continue
-        job_row = _fetch_job_row(supabase, job_id)
-        res = job_row.get("result") or {}
-        total_reels += int(res.get("reels_processed") or 0)
-        details.append({"competitor_id": comp_id, "result": res})
     return {
         "baseline": baseline,
-        "competitors_attempted": len(competitor_ids),
-        "competitor_reels_processed": total_reels,
-        "competitor_details": details,
+        "competitors_attempted": comp_sync["competitors_attempted"],
+        "competitor_reels_processed": comp_sync.get("reels_processed"),
+        "competitor_sync_mode": comp_sync.get("mode"),
+        "competitor_details": comp_sync.get("details") or [],
+        "competitor_sync_message": comp_sync.get("message"),
     }
 
 
@@ -965,7 +1048,7 @@ def get_intelligence_activity(
             "window_start": window_start.isoformat(),
             "window_end": window_end.isoformat(),
             "days": 7,
-            "top_n": 3,
+            "top_n_by_type": {"views": 3, "likes": 3, "comments": 3},
             "top_by_views": tv,
             "top_by_likes": tl,
             "top_by_comments": tc,

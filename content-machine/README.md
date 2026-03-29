@@ -15,6 +15,8 @@ Next.js **App Router** app inside this monorepo: UI migrated from the HTML proto
 **Backend + frontend:** from **repo root** run **`npm run dev:all`** (FastAPI **8787** + Next **3000**).  
 If you only run **`npm run dev`** here, the UI works but **API routes from the dashboard will fail** until `npm run dev:api` is running from the root.
 
+**Scrapes and job queue:** `dev:all` does **not** start the worker. From repo root use **`npm run dev:full`** (API + Next + worker) or run **`npm run dev:worker`** in a second terminal while `dev:all` is up.
+
 From **repo root**:
 
 ```bash
@@ -57,6 +59,26 @@ Edit **`.env`** — one file for FastAPI, worker, and Next.js. `next.config.ts` 
 **Site URL / redirect:** In Supabase → Authentication → URL configuration, set **Site URL** to `http://localhost:3000` and add the same to **Redirect URLs** so email links and `/auth/callback` work.
 
 From the **repo root**, run API + UI together: **`npm install`** once, then **`npm run dev:all`**. Still run **`python worker.py`** from `backend/` when using queued jobs.
+
+### Daily cron (Vercel + FastAPI)
+
+The repo includes **`vercel.json`** → cron **`GET /api/cron/daily-sync`** at **05:00 UTC** (change the `schedule` field to use another hour; cron is always UTC on Vercel).
+
+1. **Generate a secret** (example): `openssl rand -hex 32`
+2. **Backend** (Railway, VPS, Fly, etc.): set **`CRON_SECRET`** to that string (same as in root `.env` for FastAPI).
+3. **Vercel** (project → Settings → Environment Variables):
+   - **`CRON_SECRET`** = the same string (Vercel attaches `Authorization: Bearer …` to the cron request).
+   - **`CONTENT_API_URL`** = public base URL of your FastAPI, e.g. `https://your-api.example.com` (no trailing slash).
+4. **CORS:** add your Vercel app URL to **`CORS_ORIGINS`** on the API so the dashboard still works.
+5. **Worker:** `daily-sync` calls **`/api/v1/cron/sync-all`**, which **queues** jobs. Something must run **`python worker.py`** (or your production equivalent) so Apify scrapes actually run. The second call, **`recompute-breakouts`**, only updates DB flags and does not need Apify.
+
+Local manual test (with API running and `CRON_SECRET` set):
+
+```bash
+curl -sS -H "Authorization: Bearer YOUR_CRON_SECRET" "http://localhost:3000/api/cron/daily-sync"
+```
+
+Use your deployed Next URL in production instead of localhost.
 
 ## Stack
 

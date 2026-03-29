@@ -7,20 +7,25 @@ import time
 import httpx
 
 
-def _poll_run(token: str, actor_id: str, run_id: str, max_attempts: int = 60) -> None:
+def _poll_run(token: str, actor_id: str, run_id: str, max_attempts: int = 120) -> None:
+    """Poll until SUCCEEDED/FAILED/ABORTED or max_attempts (5s interval). Default ~10 min."""
+    last = "UNKNOWN"
     with httpx.Client(timeout=120.0) as client:
-        for attempt in range(max_attempts):
+        for _attempt in range(max_attempts):
             time.sleep(5)
             r = client.get(
                 f"https://api.apify.com/v2/acts/{actor_id}/runs/{run_id}",
                 headers={"Authorization": f"Bearer {token}"},
             )
             r.raise_for_status()
-            status = r.json()["data"]["status"]
-            if status == "SUCCEEDED":
+            last = r.json()["data"]["status"]
+            if last == "SUCCEEDED":
                 return
-            if status in ("FAILED", "ABORTED"):
-                raise RuntimeError(f"Apify run {status}")
+            if last in ("FAILED", "ABORTED"):
+                raise RuntimeError(f"Apify run {last}")
+    raise RuntimeError(
+        f"Apify run {run_id} timed out after {max_attempts * 5}s (last status: {last})"
+    )
 
 
 def run_actor(token: str, actor_id: str, body: dict) -> list:

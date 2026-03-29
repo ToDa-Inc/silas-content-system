@@ -20,6 +20,7 @@ export function SectionSyncButton({ mode, clientSlug, orgSlug, disabled, disable
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [statusTone, setStatusTone] = useState<"neutral" | "success" | "error">("neutral");
 
   async function runSync() {
     if (disabled || !clientSlug.trim() || !orgSlug.trim()) {
@@ -33,6 +34,7 @@ export function SectionSyncButton({ mode, clientSlug, orgSlug, disabled, disable
     }
     setBusy(true);
     setStatus(null);
+    setStatusTone("neutral");
     const apiBase = getContentApiBase();
     const headersBase = await clientApiHeaders({ orgSlug });
 
@@ -44,10 +46,12 @@ export function SectionSyncButton({ mode, clientSlug, orgSlug, disabled, disable
           headers: headersBase,
         });
         if (res.status === 409) {
+          setStatusTone("error");
           setStatus("A sync for your reels is already running — please wait.");
           return;
         }
         if (!res.ok) {
+          setStatusTone("error");
           const err = await res.text();
           setStatus(err ? `Error: ${err.slice(0, 160)}` : "Sync failed.");
           return;
@@ -55,6 +59,7 @@ export function SectionSyncButton({ mode, clientSlug, orgSlug, disabled, disable
         const json = (await res.json().catch(() => ({}))) as { result?: { reels_analyzed?: number } };
         const n = json.result?.reels_analyzed;
         if (mode === "own") {
+          setStatusTone("success");
           setStatus(n != null ? `Done — ${n} reels synced.` : "Done.");
           router.refresh();
           return;
@@ -62,28 +67,59 @@ export function SectionSyncButton({ mode, clientSlug, orgSlug, disabled, disable
       }
 
       if (mode === "competitors" || mode === "both") {
-        setStatus(mode === "both" ? "Syncing competitor reels…" : "Syncing…");
+        setStatus(mode === "both" ? "Starting competitor scrapes…" : "Starting…");
         const res = await contentApiFetch(`${apiBase}/api/v1/clients/${clientSlug}/sync/competitors`, {
           method: "POST",
           headers: headersBase,
         });
+        if (res.status === 409) {
+          setStatusTone("error");
+          setStatus("A competitor sync is already running — wait a few minutes and refresh.");
+          return;
+        }
         if (!res.ok) {
+          setStatusTone("error");
           const err = await res.text();
           setStatus(err ? `Error: ${err.slice(0, 160)}` : "Sync failed.");
           return;
         }
-        const json = (await res.json()) as { reels_processed?: number; competitors_attempted?: number };
-        const br = json.reels_processed ?? 0;
+        const json = (await res.json()) as {
+          mode?: string;
+          message?: string;
+          competitors_attempted?: number;
+          /** Omitted or null while background scrapes are still running */
+          reels_processed?: number | null;
+        };
         const nc = json.competitors_attempted ?? 0;
-        setStatus(
-          mode === "both"
-            ? `Done — competitor reels updated (${br} reels, ${nc} accounts).`
-            : `Done — ${br} reels (${nc} accounts).`,
-        );
+        if (json.mode === "background") {
+          setStatusTone("success");
+          const apiMsg = typeof json.message === "string" ? json.message.trim() : "";
+          const fromApi = apiMsg.length > 0;
+          const base = fromApi
+            ? apiMsg
+            : nc > 0
+              ? `Started scrapes for ${nc} competitor account(s) on the API. Refresh in a few minutes for new data.`
+              : "Nothing to sync.";
+          setStatus(fromApi && nc > 0 ? `${base} (${nc} accounts).` : base);
+        } else if (json.mode === "queued") {
+          setStatusTone("neutral");
+          setStatus(
+            "Jobs were queued for a worker. Prefer restarting the API with the latest code — competitor sync now runs inside the API process.",
+          );
+        } else {
+          setStatusTone("success");
+          const br = json.reels_processed ?? 0;
+          setStatus(
+            mode === "both"
+              ? `Done — competitor reels updated (${br} reels, ${nc} accounts).`
+              : `Done — ${br} reels (${nc} accounts).`,
+          );
+        }
         router.refresh();
         return;
       }
     } catch {
+      setStatusTone("error");
       setStatus("Something went wrong — try again.");
     } finally {
       setBusy(false);
@@ -114,7 +150,16 @@ export function SectionSyncButton({ mode, clientSlug, orgSlug, disabled, disable
         {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <RefreshCw className="h-4 w-4" aria-hidden />}
       </button>
       {status ? (
-        <p className="max-w-[14rem] text-right text-[10px] leading-snug text-app-fg-muted" role="status">
+        <p
+          className={
+            statusTone === "success"
+              ? "max-w-[min(22rem,92vw)] text-right text-[10px] leading-snug text-emerald-700 dark:text-emerald-400"
+              : statusTone === "error"
+                ? "max-w-[min(22rem,92vw)] text-right text-[10px] leading-snug text-red-600 dark:text-red-400"
+                : "max-w-[min(22rem,92vw)] text-right text-[10px] leading-snug text-app-fg-muted"
+          }
+          role="status"
+        >
           {status}
         </p>
       ) : null}

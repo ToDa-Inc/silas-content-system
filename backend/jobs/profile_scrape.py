@@ -14,6 +14,9 @@ from services.apify import REEL_ACTOR, run_actor
 from services.reel_snapshots import insert_snapshots_for_scrape_job
 from services.reel_thumbnail_url import reel_thumbnail_url_from_apify_item
 
+# When `clients.outlier_ratio_threshold` is null, use this (also the recommended DB default).
+DEFAULT_OUTLIER_RATIO_THRESHOLD = 5.0
+
 
 def _caption_text(item: dict) -> str:
     c = item.get("caption")
@@ -116,11 +119,9 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
     )
     if not clres.data:
         raise RuntimeError("Client not found")
-    threshold = float(clres.data[0].get("outlier_ratio_threshold") or 5.0)
-    account_avg_views = int(comp.get("avg_views") or 0)
-    account_avg_likes = int(comp.get("avg_likes") or 0)
-    account_avg_comments = int(comp.get("avg_comments") or 0)
-
+    threshold = float(
+        clres.data[0].get("outlier_ratio_threshold") or DEFAULT_OUTLIER_RATIO_THRESHOLD
+    )
     raw_limit = int(payload.get("results_limit") or payload.get("limit") or 30)
     results_limit = max(1, min(50, raw_limit))
 
@@ -130,6 +131,21 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
         {"username": [username], "resultsLimit": results_limit},
     )
     videos = _reel_items(items)
+
+    # ── Recalculate competitor averages from this fresh batch ──
+    all_views = [int(v.get("videoViewCount") or v.get("playsCount") or 0) for v in videos]
+    all_likes = [int(v.get("likesCount") or 0) for v in videos]
+    all_comments = [int(v.get("commentsCount") or 0) for v in videos]
+
+    if videos:
+        n = len(videos)
+        account_avg_views = round(sum(all_views) / n)
+        account_avg_likes = round(sum(all_likes) / n)
+        account_avg_comments = round(sum(all_comments) / n)
+    else:
+        account_avg_views = int(comp.get("avg_views") or 0)
+        account_avg_likes = int(comp.get("avg_likes") or 0)
+        account_avg_comments = int(comp.get("avg_comments") or 0)
 
     batch: List[Dict[str, Any]] = []
     for item in videos:
@@ -164,6 +180,8 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
             "thumbnail_url": str(thumb) if thumb else None,
             "account_username": username,
             "account_avg_views": account_avg_views,
+            "account_avg_likes": account_avg_likes,
+            "account_avg_comments": account_avg_comments,
             "views": views,
             "likes": likes,
             "comments": comments,
@@ -207,7 +225,13 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
         supabase.table("scraped_reels").upsert(batch, on_conflict="client_id,post_url").execute()
         insert_snapshots_for_scrape_job(supabase, client_id=client_id, scrape_job_id=job_id)
 
-    supabase.table("competitors").update({"last_scraped_at": done_at.isoformat()}).eq("id", competitor_id).execute()
+    # ── Update competitor averages + last_scraped_at in one call ──
+    comp_update: Dict[str, Any] = {"last_scraped_at": done_at.isoformat()}
+    if videos:
+        comp_update["avg_views"] = account_avg_views
+        comp_update["avg_likes"] = account_avg_likes
+        comp_update["avg_comments"] = account_avg_comments
+    supabase.table("competitors").update(comp_update).eq("id", competitor_id).execute()
 
     supabase.table("background_jobs").update(
         {

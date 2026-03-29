@@ -53,6 +53,7 @@ def create_client(
         "products": body.products,
         "client_context": body.client_context or {},
         "is_active": True,
+        "outlier_ratio_threshold": 5.0,
     }
     res = supabase.table("clients").insert(row).execute()
     if not res.data:

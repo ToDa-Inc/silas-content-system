@@ -6,27 +6,12 @@ import { clientApiHeaders, contentApiFetch, getContentApiBase } from "@/lib/api-
 import type { ScrapedReelRow, WeekBreakoutsPayload } from "@/lib/api";
 import { ReelThumbnail } from "@/components/reel-thumbnail";
 import { ReelCardWithAnalysis } from "./reel-card-with-analysis";
-import { ReelEngagementInline } from "./reel-engagement-inline";
-import { SectionSyncButton } from "./section-sync-button";
-
-type OwnReelGrowth = {
-  reel_id: string;
-  views_gained: number;
-  views_now: number;
-  post_url?: string | null;
-  thumbnail_url?: string | null;
-  hook_text?: string | null;
-  caption?: string | null;
-  account_username?: string | null;
-  likes?: number | null;
-  comments?: number | null;
-};
+import { StoredBreakoutsRecomputeButton } from "./stored-breakouts-recompute-button";
 
 type ActivityPayload = {
   since: string;
   new_breakout_reels: ScrapedReelRow[];
   week_breakouts?: WeekBreakoutsPayload;
-  own_reel_growth: OwnReelGrowth[];
   is_quiet: boolean;
 };
 
@@ -193,6 +178,7 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
   const [data, setData] = useState<ActivityPayload | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [activityRefreshKey, setActivityRefreshKey] = useState(0);
 
   useEffect(() => {
     if (disabled || !clientSlug.trim() || !orgSlug.trim()) {
@@ -226,7 +212,7 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
     return () => {
       cancelled = true;
     };
-  }, [clientSlug, orgSlug, disabled]);
+  }, [clientSlug, orgSlug, disabled, activityRefreshKey]);
 
   if (disabled || !clientSlug.trim()) {
     return null;
@@ -255,27 +241,24 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
   const topLikes = normalizeTopList(wb?.top_by_likes);
   const topComments = normalizeTopList(wb?.top_by_comments);
 
-  const quietGrowth = !(data?.own_reel_growth?.length ?? 0);
-
   return (
     <section className="mb-8">
       <div className="mb-2 flex flex-wrap items-start justify-between gap-3">
         <h2 className="text-sm font-semibold text-app-fg">What happened</h2>
-        <SectionSyncButton
-          mode="both"
+        <StoredBreakoutsRecomputeButton
           clientSlug={clientSlug}
           orgSlug={orgSlug}
           disabled={disabled}
           disabledHint={disabledHint}
+          onAfterSuccess={() => setActivityRefreshKey((k) => k + 1)}
         />
       </div>
       <p className="mb-1 text-[11px] text-app-fg-subtle">{formatWindowHint(wb)}</p>
       <p className="mb-4 text-[11px] leading-relaxed text-app-fg-muted">
-        Top 3 competitor breakouts per type (views / likes / comments vs that account&apos;s average). Sync to refresh
-        numbers.
+        Up to 3 breakouts per column (views, likes, comments — vs each account&apos;s average; 5× threshold).
       </p>
 
-      <div className="mb-8 grid grid-cols-1 gap-4 lg:grid-cols-3 lg:items-start">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3 lg:items-start">
         <WeeklyBreakoutColumn
           title="Most views"
           reels={topViews}
@@ -298,43 +281,6 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
           orgSlug={orgSlug}
         />
       </div>
-
-      {!quietGrowth ? (
-        <div>
-          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-app-fg-subtle">
-            Your reels gaining traction
-          </p>
-          <p className="mb-3 text-[11px] text-app-fg-muted">View growth on your reels since you last opened the app.</p>
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            {data!.own_reel_growth!.map((g) => (
-              <div
-                key={g.reel_id}
-                className="flex gap-3 rounded-xl border border-zinc-200/90 bg-zinc-50/95 p-3 dark:border-white/10 dark:bg-zinc-950/75"
-              >
-                <ReelThumbnail src={g.thumbnail_url} alt="Your reel" href={g.post_url} size="md" />
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
-                    +{g.views_gained.toLocaleString()} views since last visit
-                  </p>
-                  <p className="mt-0.5 text-[10px] text-app-fg-subtle">{g.views_now.toLocaleString()} views now</p>
-                  <p className="mt-1 line-clamp-2 text-xs text-app-fg-muted">{g.hook_text || g.caption || "—"}</p>
-                  <ReelEngagementInline className="mt-2" views={g.views_now} likes={g.likes} comments={g.comments} />
-                  {g.post_url ? (
-                    <a
-                      href={g.post_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="mt-2 inline-block text-[10px] font-semibold text-amber-600 hover:underline dark:text-amber-400"
-                    >
-                      Open ↗
-                    </a>
-                  ) : null}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
     </section>
   );
 }

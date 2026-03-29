@@ -389,7 +389,9 @@ export type WeekBreakoutsPayload = {
   window_start: string;
   window_end: string;
   days: number;
+  /** @deprecated use top_n_by_type */
   top_n?: number;
+  top_n_by_type?: { views: number; likes: number; comments: number };
   top_by_views: ScrapedReelRow[];
   top_by_likes: ScrapedReelRow[];
   top_by_comments: ScrapedReelRow[];

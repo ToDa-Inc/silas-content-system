@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from core.config import Settings, get_settings
 from core.database import get_supabase
+from services.breakout_recompute import recompute_breakouts_all_clients
 from services.scrape_cycle import (
     enqueue_stale_profile_scrapes_all_clients,
     enqueue_sync_all_jobs_all_clients,
@@ -47,3 +48,14 @@ def sync_all(
     _require_cron_secret(settings, x_cron_secret)
     supabase = get_supabase()
     return enqueue_sync_all_jobs_all_clients(supabase)
+
+
+@router.post("/recompute-breakouts", status_code=status.HTTP_200_OK)
+def cron_recompute_breakouts(
+    settings: Annotated[Settings, Depends(get_settings)],
+    x_cron_secret: Annotated[Optional[str], Header(alias="X-Cron-Secret")] = None,
+) -> Dict[str, Any]:
+    """Recompute breakout flags for all active clients from existing scraped_reels (no Apify)."""
+    _require_cron_secret(settings, x_cron_secret)
+    supabase = get_supabase()
+    return recompute_breakouts_all_clients(supabase)

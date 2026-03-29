@@ -98,7 +98,7 @@ silas-content-system/
 
 ## Starting apps (explicit scripts — no generic `dev` at root)
 
-**Full stack (what you usually want):** the **backend** (FastAPI on **8787**) and the **frontend** (Next on **3000**) are two processes. Running only `npm run dev` inside `content-machine/` starts the **dashboard UI**; pages that call the API (e.g. Intelligence) need the API up too.
+**API + dashboard:** the **backend** (FastAPI on **8787**) and the **frontend** (Next on **3000**) are two processes. Running only `npm run dev` inside `content-machine/` starts the **dashboard UI**; pages that call the API (e.g. Intelligence) need the API up too.
 
 From **repo root** `silas-content-system/`:
 
@@ -106,7 +106,13 @@ From **repo root** `silas-content-system/`:
 npm run dev:all
 ```
 
-That runs **API + dashboard** together. Alternatively, two terminals: `npm run dev:api` and `npm run dashboard`.
+That runs **API + dashboard** only. **Queued scrapes and other `background_jobs` need the worker** — same env as the API (`APIFY_API_TOKEN`, Supabase service role, etc.):
+
+```bash
+npm run dev:full
+```
+
+That runs **API + dashboard + worker** in one terminal. Or add a second terminal: `npm run dev:worker` (equivalent to `cd backend && python3 worker.py`) while `dev:all` is already running.
 
 The repo has **multiple** entry points, so the root `package.json` uses **named** scripts only:
 
@@ -114,6 +120,8 @@ The repo has **multiple** entry points, so the root `package.json` uses **named*
 |------|----------------|
 | **FastAPI** (`backend/`, port **8787**) | `npm run dev:api` (after `npm install` at root for `concurrently`, plus backend venv + deps) |
 | **Dashboard + API together** | `npm run dev:all` |
+| **Background worker** (scrapes / `background_jobs`) | `npm run dev:worker` — not included in `dev:all` |
+| **API + dashboard + worker** | `npm run dev:full` |
 | **Next.js dashboard only** | `npm run dashboard` (or `cd content-machine && npm run dev` — same thing; **no API**) |
 | **B-roll Remotion studio** | `npm run broll:studio` (after `npm install --prefix video-production/broll-caption-editor`) |
 | **Pipeline CLI** | `npm run scrape`, `npm run analyze`, etc. |

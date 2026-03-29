@@ -112,7 +112,11 @@ export function SyncDataModal({
     return true;
   }
 
-  async function runCompetitors(): Promise<boolean> {
+  async function runCompetitors(): Promise<{
+    ok: boolean;
+    queued?: boolean;
+    background?: boolean;
+  }> {
     const apiBase = getContentApiBase();
     const headers = await clientApiHeaders({ orgSlug });
     const res = await contentApiFetch(
@@ -120,15 +124,20 @@ export function SyncDataModal({
       { method: "POST", headers },
     );
     if (res.status === 409) {
-      setError("A competitor sync is already running — please wait.");
-      return false;
+      setError("A competitor sync is already running — wait a few minutes and try again.");
+      return { ok: false };
     }
     if (!res.ok) {
       const json = (await res.json().catch(() => ({}))) as { detail?: unknown };
       setError(formatFastApiError(json, await res.text().catch(() => "Sync failed")));
-      return false;
+      return { ok: false };
     }
-    return true;
+    const json = (await res.json().catch(() => ({}))) as { mode?: string };
+    return {
+      ok: true,
+      queued: json.mode === "queued",
+      background: json.mode === "background",
+    };
   }
 
   async function startSync() {
@@ -178,16 +187,26 @@ export function SyncDataModal({
       if (mode === "competitors") {
         setProgressPhase("competitors");
         setProgressPct(0);
-        setProgressLabel("Syncing all tracked creators…");
-        const ok = await runCompetitors();
-        if (!ok) {
+        setProgressLabel("Starting competitor scrapes on the API…");
+        const comp = await runCompetitors();
+        if (!comp.ok) {
           setProgressStatus("failed");
           setBusy(false);
           setProgressPhase("idle");
           return;
         }
-        setProgressLabel("Done — competitor reels updated.");
-        onSyncMessage?.("Tracked creators’ reels were refreshed.");
+        if (comp.background) {
+          setProgressLabel("Scrapes started — they run in the background on this server.");
+          onSyncMessage?.(
+            "Refresh in a few minutes for updated reels and breakout flags (uses your client threshold, e.g. 5×).",
+          );
+        } else if (comp.queued) {
+          setProgressLabel("Jobs queued for a worker process.");
+          onSyncMessage?.("If nothing updates, upgrade the API — sync now runs inside uvicorn by default.");
+        } else {
+          setProgressLabel("Done — competitor reels updated.");
+          onSyncMessage?.("Tracked creators’ reels were refreshed.");
+        }
         finishOk();
         return;
       }
@@ -204,16 +223,26 @@ export function SyncDataModal({
       }
       setProgressPct(45);
       setProgressPhase("competitors");
-      setProgressLabel("Step 2 of 2 — all tracked creators…");
-      const compOk = await runCompetitors();
-      if (!compOk) {
+      setProgressLabel("Step 2 of 2 — starting competitor scrapes…");
+      const comp = await runCompetitors();
+      if (!comp.ok) {
         setProgressStatus("failed");
         setBusy(false);
         setProgressPhase("idle");
         return;
       }
-      setProgressLabel("Done — your reels and all creators are up to date.");
-      onSyncMessage?.("Full update finished (your reels + all creators).");
+      if (comp.background) {
+        setProgressLabel("Done — your reels synced; competitor scrapes running on the API.");
+        onSyncMessage?.(
+          "Your reels are updated. Competitor scrapes continue in the background — refresh shortly for new data.",
+        );
+      } else if (comp.queued) {
+        setProgressLabel("Done — your reels synced; old queued-job mode.");
+        onSyncMessage?.("Competitor jobs were queued for a separate worker.");
+      } else {
+        setProgressLabel("Done — your reels and all creators are up to date.");
+        onSyncMessage?.("Full update finished (your reels + all creators).");
+      }
       finishOk();
     } catch {
       setError("Something went wrong — try again.");

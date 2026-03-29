@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { fetchScrapedReels, getCachedServerApiContext, type ScrapedReelRow } from "@/lib/api";
+import { StoredBreakoutsRecomputeButton } from "../components/stored-breakouts-recompute-button";
 import { BreakoutsReelsGrid } from "../components/breakouts-reels-grid";
-import { SectionSyncButton } from "../components/section-sync-button";
 
 function maxBreakoutStrength(r: ScrapedReelRow): number {
   const nums = [
@@ -22,7 +22,7 @@ function allOutlierReels(reels: ScrapedReelRow[]): ScrapedReelRow[] {
 
 export default async function IntelligenceBreakoutsPage() {
   const { user, tenancy, clientSlug, orgSlug } = await getCachedServerApiContext();
-  const reelsRes = await fetchScrapedReels(false, true);
+  const reelsRes = await fetchScrapedReels(true, true);
   const allReels = reelsRes.ok && Array.isArray(reelsRes.data) ? reelsRes.data : [];
   const outliers = allOutlierReels(allReels);
 
@@ -66,8 +66,7 @@ export default async function IntelligenceBreakoutsPage() {
           <h1 className="text-lg font-semibold text-app-fg">Competitor breakouts</h1>
         </div>
         {clientSlug.trim() && orgSlug.trim() ? (
-          <SectionSyncButton
-            mode="competitors"
+          <StoredBreakoutsRecomputeButton
             clientSlug={clientSlug}
             orgSlug={orgSlug}
             disabled={syncDisabled}
@@ -76,12 +75,17 @@ export default async function IntelligenceBreakoutsPage() {
         ) : null}
       </header>
 
-      <p className="mb-6 text-xs text-app-fg-muted">
+      <p className="mb-6 text-xs leading-relaxed text-app-fg-muted">
         {reelsRes.ok ? (
-          <>
-            <span className="font-semibold text-app-fg-secondary">{outliers.length}</span> breakout
-            {outliers.length === 1 ? "" : "s"} — all types together, sorted by strongest ratio.
-          </>
+          outliers.length === 0 ? (
+            <span>No breakout reels yet — add competitors on Intelligence, then recalculate or wait for daily sync.</span>
+          ) : (
+            <span>
+              Showing{" "}
+              <span className="font-semibold text-app-fg-secondary">{outliers.length}</span> competitor breakout
+              {outliers.length === 1 ? "" : "s"} (all types, strongest ratio first).
+            </span>
+          )
         ) : (
           <span>Couldn&apos;t load reels. Try refreshing.</span>
         )}
