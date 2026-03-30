@@ -50,6 +50,7 @@ export async function clientApiHeaders(opts?: ClientApiHeaderOptions): Promise<H
 export async function clientApiContext(opts?: ClientApiHeaderOptions): Promise<{
   headers: HeadersInit;
   clientSlug: string;
+  orgSlug: string;
 }> {
   const supabase = createClient();
   const {
@@ -73,7 +74,7 @@ export async function clientApiContext(opts?: ClientApiHeaderOptions): Promise<{
       h["X-Api-Key"] = profile.api_key;
     }
   }
-  return { headers: h, clientSlug };
+  return { headers: h, clientSlug, orgSlug };
 }
 
 /** Full Silas analysis for a reel — opens from Intelligence / View all reels. */
