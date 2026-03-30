@@ -37,6 +37,11 @@ type Props = {
   orgSlug: string;
 };
 
+/** Rows eligible for bulk selection / re-analysis (must have a canonical post URL). */
+function rowHasPostUrl(row: ScrapedReelRow): boolean {
+  return Boolean(row.post_url?.trim());
+}
+
 function compareForSort(a: ScrapedReelRow, b: ScrapedReelRow, key: SortKey): number {
   switch (key) {
     case "views": {
@@ -125,6 +130,7 @@ function SortHeader({
   );
 }
 
+/** First-time analyze only: has post URL and no analysis row yet. */
 function isAnalyzable(row: ScrapedReelRow): boolean {
   return Boolean(row.post_url?.trim() && !row.analysis);
 }
@@ -171,6 +177,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [analyzeOpen, setAnalyzeOpen] = useState(false);
   const [analyzeInitialUrl, setAnalyzeInitialUrl] = useState<string | null>(null);
+  const [analyzeSkipApify, setAnalyzeSkipApify] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [bulkMsg, setBulkMsg] = useState<string | null>(null);
   const [trackedJobId, setTrackedJobId] = useState<string | null>(null);
@@ -239,24 +246,31 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
     if (page > totalPages) setPage(totalPages);
   }, [page, totalPages]);
 
-  const analyzableVisible = useMemo(
-    () => pageRows.filter((r) => isAnalyzable(r)),
+  const postUrlVisible = useMemo(
+    () => pageRows.filter((r) => rowHasPostUrl(r)),
     [pageRows],
   );
 
-  const selectedPendingUrls = useMemo(() => {
+  const selectedPostUrls = useMemo(() => {
     const list: string[] = [];
     for (const r of rows) {
       if (!selected.has(r.id)) continue;
-      if (!isAnalyzable(r)) continue;
+      if (!rowHasPostUrl(r)) continue;
       list.push(r.post_url!.trim());
     }
     return list;
   }, [rows, selected]);
 
+  /** Bulk LLM-only when every selected row with a link already has an analysis row. */
+  const bulkSkipApify = useMemo(() => {
+    const picked = rows.filter((r) => selected.has(r.id) && rowHasPostUrl(r));
+    if (picked.length === 0) return false;
+    return picked.every((r) => Boolean(r.analysis));
+  }, [rows, selected]);
+
   const allVisibleSelected =
-    analyzableVisible.length > 0 && analyzableVisible.every((r) => selected.has(r.id));
-  const someVisibleSelected = analyzableVisible.some((r) => selected.has(r.id));
+    postUrlVisible.length > 0 && postUrlVisible.every((r) => selected.has(r.id));
+  const someVisibleSelected = postUrlVisible.some((r) => selected.has(r.id));
 
   useEffect(() => {
     const el = headerSelectRef.current;
@@ -423,9 +437,9 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
     setSelected((prev) => {
       const next = new Set(prev);
       if (allVisibleSelected) {
-        for (const r of analyzableVisible) next.delete(r.id);
+        for (const r of postUrlVisible) next.delete(r.id);
       } else {
-        for (const r of analyzableVisible) next.add(r.id);
+        for (const r of postUrlVisible) next.add(r.id);
       }
       return next;
     });
@@ -436,14 +450,16 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
       setBulkMsg("Missing client or organization context.");
       return;
     }
-    const urls = selectedPendingUrls.slice(0, BULK_MAX_URLS);
+    const urls = selectedPostUrls.slice(0, BULK_MAX_URLS);
     if (!urls.length) {
-      setBulkMsg("Select reels that don’t have analysis yet (with a valid link).");
+      setBulkMsg("Select at least one reel that has a post link.");
       return;
     }
 
     setBulkMsg(null);
-    const enq = await enqueueReelAnalyzeBulk(clientSlug, orgSlug, urls);
+    const enq = await enqueueReelAnalyzeBulk(clientSlug, orgSlug, urls, {
+      skip_apify: bulkSkipApify,
+    });
     if (!enq.ok) {
       setBulkMsg(enq.error);
       return;
@@ -552,15 +568,15 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
             ) : null}
             <button
               type="button"
-              disabled={disableReelAnalysis || selectedPendingUrls.length === 0}
+              disabled={disableReelAnalysis || selectedPostUrls.length === 0}
               onClick={() => void runBulkAnalyze()}
               className="inline-flex w-fit items-center gap-1.5 rounded-lg border border-amber-500/50 bg-amber-500/15 px-3 py-2 text-xs font-semibold text-amber-800 transition-colors hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-40 dark:text-amber-200"
             >
               <Sparkles className="h-3.5 w-3.5 shrink-0" aria-hidden />
               Analyze selected
-              {selectedPendingUrls.length > 0 ? ` (${selectedPendingUrls.length})` : ""}
+              {selectedPostUrls.length > 0 ? ` (${selectedPostUrls.length})` : ""}
             </button>
-            {selectedPendingUrls.length > BULK_MAX_URLS ? (
+            {selectedPostUrls.length > BULK_MAX_URLS ? (
               <span className="text-[10px] text-amber-800/90 dark:text-amber-200/80">
                 Only the first {BULK_MAX_URLS} will run per batch (API limit).
               </span>
@@ -579,14 +595,14 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
           <thead>
             <tr className="border-b border-zinc-200/90 text-[10px] uppercase tracking-widest text-zinc-500 dark:border-white/10 dark:text-app-fg-subtle">
               <th className="w-10 px-2 py-3 font-medium">
-                {analyzableVisible.length > 0 ? (
+                {postUrlVisible.length > 0 ? (
                   <input
                     ref={headerSelectRef}
                     type="checkbox"
                     className="h-3.5 w-3.5 rounded border-zinc-400 accent-amber-600"
                     checked={allVisibleSelected}
                     onChange={toggleSelectAllVisible}
-                    aria-label="Select all reels pending analysis on this page"
+                    aria-label="Select all reels with a post link on this page"
                   />
                 ) : null}
               </th>
@@ -624,7 +640,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                 onClick={() => handleSort("comments")}
               />
               <SortHeader
-                label="Date"
+                label="Posted"
                 active={sortKey === "posted_at"}
                 dir={sortDir}
                 onClick={() => handleSort("posted_at")}
@@ -637,6 +653,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
               const a = row.analysis;
               const silas = a ? formatSilasScoreSummary(a) : null;
               const canAnalyze = isAnalyzable(row);
+              const hasPost = rowHasPostUrl(row);
               const rowIndex =
                 pageSize === 0 ? i : (safePage - 1) * effectivePageSize + i;
               return (
@@ -645,7 +662,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                   className="border-b border-zinc-100/90 transition-colors hover:bg-zinc-100/80 dark:border-white/[0.06] dark:hover:bg-white/[0.06]"
                 >
                   <td className="px-2 py-2.5 align-middle">
-                    {canAnalyze ? (
+                    {hasPost ? (
                       <input
                         type="checkbox"
                         disabled={disableReelAnalysis}
@@ -689,12 +706,29 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                         >
                           View analysis
                         </button>
+                        {hasPost ? (
+                          <button
+                            type="button"
+                            disabled={disableReelAnalysis}
+                            onClick={() => {
+                              setAnalyzeSkipApify(true);
+                              setAnalyzeInitialUrl(row.post_url!.trim());
+                              setAnalyzeOpen(true);
+                            }}
+                            className="inline-flex w-fit items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-semibold text-amber-700 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-40 dark:text-amber-300"
+                            title="Re-run Silas via Gemini only (no Apify / no video re-download)"
+                          >
+                            <Sparkles className="h-3 w-3 shrink-0" aria-hidden />
+                            Re-analyze
+                          </button>
+                        ) : null}
                       </div>
                     ) : canAnalyze ? (
                       <button
                         type="button"
                         disabled={disableReelAnalysis}
                         onClick={() => {
+                          setAnalyzeSkipApify(false);
                           setAnalyzeInitialUrl(row.post_url!.trim());
                           setAnalyzeOpen(true);
                         }}
@@ -818,10 +852,12 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
         onClose={() => {
           setAnalyzeOpen(false);
           setAnalyzeInitialUrl(null);
+          setAnalyzeSkipApify(false);
         }}
         clientSlug={clientSlug}
         orgSlug={orgSlug}
         initialUrl={analyzeInitialUrl}
+        skipApify={analyzeSkipApify}
         disabled={Boolean(disableReelAnalysis && !analyzeOpen)}
         disabledHint="An analysis is already running. Wait for it to finish or dismiss the stalled bar."
         onAnalysisJobEnqueued={(jobId) => {

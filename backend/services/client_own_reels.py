@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from supabase import Client
 
 from core.id_generator import generate_reel_id
+from services.apify_posted_at import apify_instagram_item_posted_at_iso
+from services.instagram_post_url import canonical_instagram_post_url
 from services.reel_thumbnail_url import reel_thumbnail_url_from_apify_item
 
 
@@ -31,30 +32,11 @@ def _post_url(item: dict) -> Optional[str]:
     return None
 
 
-def _posted_at_iso(item: dict) -> Optional[str]:
-    ts = item.get("timestamp")
-    if ts is None:
-        return None
-    try:
-        if isinstance(ts, (int, float)):
-            return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat()
-        if isinstance(ts, str) and ts.isdigit():
-            return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
-    except (OSError, ValueError, OverflowError):
-        return None
-    return None
-
-
 def _hashtags(item: dict, caption: str) -> List[str]:
     raw = item.get("hashtags")
     if isinstance(raw, list) and raw:
         return [str(x).strip() for x in raw if x][:50]
     return re.findall(r"#[\w\u00C0-\u024F]+", caption)[:50]
-
-
-def _normalize_post_url_key(url: str) -> str:
-    """Stable key for UNIQUE(client_id, post_url) — match jobs/reel_analyze_url.py."""
-    return url.strip().split("?")[0].split("#")[0].rstrip("/")
 
 
 def upsert_client_own_reels(
@@ -91,7 +73,7 @@ def upsert_client_own_reels(
         caption = _caption_text(item)
         thumb = reel_thumbnail_url_from_apify_item(item)
         hook = (caption.split("\n")[0][:500] if caption else "") or None
-        url_key = _normalize_post_url_key(url)
+        url_key = canonical_instagram_post_url(url)
         normalized_keys.add(url_key)
         rows.append(
             {
@@ -112,7 +94,7 @@ def upsert_client_own_reels(
                 "hook_text": hook,
                 "caption": caption or None,
                 "hashtags": _hashtags(item, caption),
-                "posted_at": _posted_at_iso(item),
+                "posted_at": apify_instagram_item_posted_at_iso(item),
                 "format": "reel",
                 "source": "client_baseline",
             }
@@ -131,7 +113,7 @@ def upsert_client_own_reels(
     stored_url_by_norm: Dict[str, str] = {}
     for er in existing_res.data or []:
         raw = str(er.get("post_url") or "")
-        n = _normalize_post_url_key(raw)
+        n = canonical_instagram_post_url(raw)
         if n and n not in id_by_url:
             id_by_url[n] = str(er["id"])
             stored_url_by_norm[n] = raw if raw else n
@@ -152,7 +134,7 @@ def upsert_client_own_reels(
     )
     orphan_ids: List[str] = []
     for er in fresh_res.data or []:
-        n = _normalize_post_url_key(str(er.get("post_url") or ""))
+        n = canonical_instagram_post_url(str(er.get("post_url") or ""))
         if n not in normalized_keys:
             orphan_ids.append(str(er["id"]))
     if orphan_ids:

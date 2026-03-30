@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import get_cors_list, get_settings
-from routers import clients, context, cron, intelligence, jobs
+from routers import clients, context, cron, generation, intelligence, jobs
 
 settings = get_settings()
 app = FastAPI(title="Content Machine API", version="0.1.0")
@@ -17,6 +17,7 @@ app.add_middleware(
 
 app.include_router(clients.router)
 app.include_router(context.router)
+app.include_router(generation.router)
 app.include_router(intelligence.router)
 app.include_router(jobs.router)
 app.include_router(cron.router)

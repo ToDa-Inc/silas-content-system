@@ -19,6 +19,8 @@ type Props = {
   disabledHint?: string | null;
   /** When opening the modal, pre-fill the URL field (e.g. from a reel row). */
   initialUrl?: string | null;
+  /** Skip Apify + video download; LLM-only re-run from DB (requires scraped_reels row). */
+  skipApify?: boolean;
   /** Lets the parent disable row actions and show a shared progress area while this job runs. */
   onAnalysisJobEnqueued?: (jobId: string) => void;
 };
@@ -78,6 +80,7 @@ export function AnalyzeReelModal({
   disabled,
   disabledHint,
   initialUrl,
+  skipApify = false,
   onAnalysisJobEnqueued,
 }: Props) {
   const [url, setUrl] = useState("");
@@ -140,7 +143,11 @@ export function AnalyzeReelModal({
 
     setBusy(true);
     setMsg(null);
-    setPhase("Queued — scraping + analysis (~1 min)…");
+    setPhase(
+      skipApify
+        ? "Queued — LLM re-analysis (no Apify / no video download)…"
+        : "Queued — scraping + analysis (~1 min)…",
+    );
     setResult(null);
     setShowFull(false);
 
@@ -153,7 +160,7 @@ export function AnalyzeReelModal({
         {
           method: "POST",
           headers: { ...headersBase, "Content-Type": "application/json" },
-          body: JSON.stringify({ url: trimmed }),
+          body: JSON.stringify({ url: trimmed, skip_apify: skipApify }),
         },
       );
 
@@ -180,11 +187,15 @@ export function AnalyzeReelModal({
       for (let i = 0; i < MAX_POLLS; i++) {
         await new Promise((r) => setTimeout(r, POLL_MS));
         setPhase(
-          i < 8
-            ? "Scraping reel & downloading video…"
-            : i < 25
-              ? "Analyzing with Gemini (video + criteria)…"
-              : "Still working…",
+          skipApify
+            ? i < 20
+              ? "Re-running Silas with Gemini (text + prior analysis)…"
+              : "Still working…"
+            : i < 8
+              ? "Scraping reel & downloading video…"
+              : i < 25
+                ? "Analyzing with Gemini (video + criteria)…"
+                : "Still working…",
         );
 
         const jRes = await contentApiFetch(`${apiBase}/api/v1/jobs/${encodeURIComponent(jobId)}`, {

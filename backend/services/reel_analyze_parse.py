@@ -9,7 +9,7 @@ in full_analysis_json until a DB migration adds dedicated columns.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from .reel_analyze_prompt import CRITERIA_WEIGHTS
 
@@ -18,27 +18,30 @@ from .reel_analyze_prompt import CRITERIA_WEIGHTS
 # Rating helpers
 # ---------------------------------------------------------------------------
 
-def rating_label_from_total(total: Optional[int], scale: int = 100) -> str:
+def rating_label_from_total(total: Optional[Union[int, float]], scale: int = 100) -> str:
     """Return a human-readable rating label.
 
     Supports both /50 (legacy v1) and /100 (v2) scales.
+    v2 totals may be floats (e.g. model output 82.5/100).
     """
     if total is None:
         return "N/A"
     if scale == 50:
-        if total >= 40:
+        t = float(total)
+        if t >= 40:
             return "Highly Replicable"
-        if total >= 30:
+        if t >= 30:
             return "Strong Pattern"
-        if total >= 20:
+        if t >= 20:
             return "Moderate"
         return "Weak"
     # v2 /100 scale
-    if total >= 85:
+    t = float(total)
+    if t >= 85:
         return "Blueprint"
-    if total >= 70:
+    if t >= 70:
         return "Strong Pattern"
-    if total >= 50:
+    if t >= 50:
         return "Moderate"
     return "Weak"
 
@@ -145,6 +148,14 @@ def _extract_v2_scores(text: str) -> Dict[str, Optional[int]]:
     """Extract raw 1-10 scores for each of the 7 v2 criteria."""
     score_matches = re.findall(r"Score:\s*(\d+)\s*/\s*10", text, re.IGNORECASE)
     scores_int = [int(x) for x in score_matches[:7]]
+    if len(scores_int) < 7:
+        alt = re.findall(
+            r"(?:^|\n)\s*\d+\.\s+[^\n]+?[\u2014\u2013\-–]\s*(\d+)\s*/\s*10",
+            text,
+            re.MULTILINE,
+        )
+        if len(alt) >= 7:
+            scores_int = [int(x) for x in alt[:7]]
 
     result: Dict[str, Optional[int]] = {k: None for k in _V2_CRITERIA_ORDER}
     for i, k in enumerate(_V2_CRITERIA_ORDER):
@@ -153,11 +164,11 @@ def _extract_v2_scores(text: str) -> Dict[str, Optional[int]]:
     return result
 
 
-def _extract_weighted_total_from_text(text: str) -> Optional[int]:
-    """Try to extract the TOTAL SCORE: X/100 line."""
-    m = re.search(r"TOTAL\s+SCORE[:\s]+(\d+)\s*/\s*100", text, re.IGNORECASE)
+def _extract_weighted_total_from_text(text: str) -> Optional[float]:
+    """Try to extract the TOTAL SCORE: X/100 line (X may be a decimal)."""
+    m = re.search(r"TOTAL\s+SCORE[:\s]+(\d+(?:\.\d+)?)\s*/\s*100", text, re.IGNORECASE)
     if m:
-        return int(m.group(1))
+        return float(m.group(1))
     return None
 
 
@@ -249,7 +260,9 @@ def parse_silas_analysis_text(text: str) -> Dict[str, Any]:
         # Weighted total: prefer model's own calculation, fall back to ours
         weighted_from_text = _extract_weighted_total_from_text(raw)
         weighted_computed = _compute_weighted_total(v2_scores)
-        weighted_total = weighted_from_text or weighted_computed
+        weighted_total = (
+            weighted_from_text if weighted_from_text is not None else weighted_computed
+        )
 
         # Build weighted breakdown
         weighted_scores = {}

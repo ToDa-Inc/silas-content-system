@@ -44,3 +44,7 @@ def generate_reel_id() -> str:
 
 def generate_baseline_id() -> str:
     return generate_key(8, prefix="cbl_")
+
+
+def generate_generation_session_id() -> str:
+    return generate_key(8, prefix="gsn_")

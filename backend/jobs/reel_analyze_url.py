@@ -23,6 +23,7 @@ from core.config import Settings
 from core.database import get_supabase_for_settings
 from core.id_generator import generate_reel_id
 from services.apify import REEL_ACTOR, run_actor
+from services.apify_posted_at import apify_instagram_item_posted_at_iso
 from services.openrouter import analyze_reel_silas
 from services.reel_analyze_parse import parse_silas_analysis_text
 from services.reel_analyze_prompt import (
@@ -30,6 +31,7 @@ from services.reel_analyze_prompt import (
     build_niche_context_block,
     build_reel_analysis_prompt,
 )
+from services.instagram_post_url import canonical_instagram_post_url
 from services.reel_thumbnail_url import reel_thumbnail_url_from_apify_item
 
 
@@ -63,29 +65,10 @@ def _post_url_from_item(item: dict, fallback: str) -> str:
     return fallback.strip()
 
 
-def _normalize_post_url_key(url: str) -> str:
-    """Stable key for UNIQUE(client_id, post_url) — strip query/fragment and trailing slash."""
-    return url.strip().split("?")[0].split("#")[0].rstrip("/")
-
-
 def _owner_username(item: dict) -> str:
     return (
         str(item.get("ownerUsername") or item.get("owner_username") or "").strip() or "unknown"
     )
-
-
-def _posted_at_iso(item: dict) -> Optional[str]:
-    ts = item.get("timestamp")
-    if ts is None:
-        return None
-    try:
-        if isinstance(ts, (int, float)):
-            return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat()
-        if isinstance(ts, str) and ts.isdigit():
-            return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
-    except (OSError, ValueError, OverflowError):
-        return None
-    return None
 
 
 def _views_int(item: dict) -> int:
@@ -131,7 +114,7 @@ def _upsert_scraped_reel_for_url_paste(
     item: dict,
 ) -> Optional[str]:
     """Insert/update a scraped_reels row with source='url_paste'. Returns the row id."""
-    url_key = _normalize_post_url_key(post_url)
+    url_key = canonical_instagram_post_url(post_url)
     caption = _caption_text(item)
     views = _views_int(item)
     likes = int(item.get("likesCount") or item.get("likes") or 0)
@@ -172,7 +155,7 @@ def _upsert_scraped_reel_for_url_paste(
         "hook_text": hook,
         "caption": caption or None,
         "hashtags": _hashtags(item, caption),
-        "posted_at": _posted_at_iso(item),
+        "posted_at": apify_instagram_item_posted_at_iso(item),
         "format": "reel",
         "source": "url_paste",
     }
@@ -209,7 +192,7 @@ def _upsert_reel_analysis(
     source: str = "analyze_url",
 ) -> Optional[str]:
     """Write structured analysis into reel_analyses. Returns the analysis row id."""
-    url_key = _normalize_post_url_key(post_url)
+    url_key = canonical_instagram_post_url(post_url)
     now = datetime.now(timezone.utc).isoformat()
     scores = parsed.get("scores") or {}
     repl = parsed.get("replicable_elements")
@@ -318,6 +301,50 @@ def _niche_context_for_reel_analysis(supabase, client_id: str) -> Optional[str]:
     )
 
 
+def _fetch_scraped_reel_by_post_url(
+    supabase, client_id: str, url_key: str
+) -> Optional[Dict[str, Any]]:
+    res = (
+        supabase.table("scraped_reels")
+        .select("*")
+        .eq("client_id", client_id)
+        .eq("post_url", url_key)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
+def _fetch_prior_silas_full_text(supabase, client_id: str, url_key: str) -> str:
+    try:
+        res = (
+            supabase.table("reel_analyses")
+            .select("full_analysis_json")
+            .eq("client_id", client_id)
+            .eq("post_url", url_key)
+            .order("analyzed_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        return ""
+    if not res.data:
+        return ""
+    raw = res.data[0].get("full_analysis_json")
+    if isinstance(raw, dict):
+        return str(raw.get("full_text") or "").strip()
+    return ""
+
+
+def _caption_from_scraped_reel_row(row: Dict[str, Any]) -> str:
+    c = row.get("caption")
+    if isinstance(c, dict):
+        return str(c.get("text") or "")[:8000]
+    if isinstance(c, str):
+        return c[:8000]
+    return ""
+
+
 def _execute_reel_analyze_url_core(
     settings: Settings,
     supabase,
@@ -327,8 +354,118 @@ def _execute_reel_analyze_url_core(
     reel_url: str,
     analysis_source: str = "analyze_url",
     niche_context: Optional[str] = None,
+    skip_apify: bool = False,
 ) -> Dict[str, Any]:
     """Scrape one URL, run Gemini, persist. Raises ReelAnalyzeTerminalError for expected misses."""
+    url_key = canonical_instagram_post_url(reel_url)
+
+    if skip_apify:
+        sr = _fetch_scraped_reel_by_post_url(supabase, client_id, url_key)
+        if not sr:
+            raise ReelAnalyzeTerminalError("reel_not_in_db")
+        prior = _fetch_prior_silas_full_text(supabase, client_id, url_key)
+        owner = str(sr.get("account_username") or "").strip() or "unknown"
+        views = int(sr.get("views") or 0)
+        likes = int(sr.get("likes") or 0)
+        comments = int(sr.get("comments") or 0)
+        caption = _caption_from_scraped_reel_row(sr)
+        post_url = str(sr.get("post_url") or reel_url)
+        model = settings.openrouter_reel_analyze_model
+        prompt = build_reel_analysis_prompt(
+            owner=owner,
+            views=f"{views:,}",
+            likes=f"{likes:,}",
+            comments=f"{comments:,}",
+            caption=caption,
+            niche_context=niche_context,
+            text_reanalyze=True,
+            prior_full_text=prior if prior else None,
+        )
+        full_text, video_analyzed = analyze_reel_silas(
+            settings.openrouter_api_key,
+            model,
+            prompt,
+            video_path=None,
+            text_reanalyze=True,
+        )
+        parsed = parse_silas_analysis_text(full_text)
+        reel_row_id = str(sr["id"])
+        persist_source = f"{analysis_source}_llm_only"
+        try:
+            supabase.table("scraped_reels").update({"scrape_job_id": analysis_job_id}).eq(
+                "id", reel_row_id
+            ).execute()
+        except Exception:
+            pass
+        analysis_id: Optional[str] = None
+        persist_error: Optional[str] = None
+        try:
+            analysis_id = _upsert_reel_analysis(
+                supabase,
+                client_id=client_id,
+                reel_id=reel_row_id,
+                job_id=analysis_job_id,
+                post_url=post_url,
+                owner=owner,
+                parsed=parsed,
+                full_text=full_text,
+                model=model,
+                video_analyzed=video_analyzed,
+                source=persist_source,
+            )
+        except Exception as e:
+            persist_error = str(e)[:800]
+        scores = parsed.get("scores") or {}
+        analysis_payload: Dict[str, Any] = {
+            "total_score": parsed.get("total_score"),
+            "rating": parsed.get("rating"),
+            "scores": {
+                "instant_hook": scores.get("instant_hook"),
+                "high_relatability": scores.get("high_relatability"),
+                "cognitive_tension": scores.get("cognitive_tension"),
+                "clear_value": scores.get("clear_value"),
+                "comment_trigger": scores.get("comment_trigger"),
+            },
+            "full_text": full_text,
+            "prompt_version": PROMPT_VERSION,
+            "model": model,
+            "analyzed_at": datetime.now(timezone.utc).isoformat(),
+            "video_analyzed": video_analyzed,
+            "skip_apify": True,
+        }
+        if parsed.get("weighted_total") is not None:
+            analysis_payload["weighted_total"] = parsed.get("weighted_total")
+        rs = parsed.get("raw_scores")
+        if isinstance(rs, dict) and rs:
+            analysis_payload["raw_scores"] = rs
+        try:
+            duration_int = int(sr.get("videoDuration") or 0)
+        except (TypeError, ValueError):
+            duration_int = 0
+        ts_out = sr.get("posted_at")
+        if ts_out is not None:
+            ts_out = str(ts_out)
+        result_body: Dict[str, Any] = {
+            "status": "completed",
+            "skip_apify": True,
+            "reel": {
+                "url": url_key,
+                "owner": owner,
+                "views": views,
+                "likes": likes,
+                "comments": comments,
+                "duration": duration_int,
+                "timestamp": ts_out,
+            },
+            "analysis": analysis_payload,
+        }
+        if analysis_id:
+            result_body["analysis_id"] = analysis_id
+        result_body["reel_id"] = reel_row_id
+        if persist_error:
+            result_body["persist_error"] = persist_error
+        return result_body
+
     items = run_actor(
         settings.apify_api_token,
         REEL_ACTOR,
@@ -359,7 +496,7 @@ def _execute_reel_analyze_url_core(
         comments = int(item.get("commentsCount") or item.get("comments") or 0)
         caption = _caption_text(item)
         post_url = _post_url_from_item(item, reel_url)
-        url_key = _normalize_post_url_key(post_url)
+        url_key = canonical_instagram_post_url(post_url)
         model = settings.openrouter_reel_analyze_model
 
         prompt = build_reel_analysis_prompt(
@@ -385,7 +522,7 @@ def _execute_reel_analyze_url_core(
             duration_int = int(duration) if duration is not None else 0
         except (TypeError, ValueError):
             duration_int = 0
-        ts = _posted_at_iso(item)
+        ts = apify_instagram_item_posted_at_iso(item)
 
         reel_row_id: Optional[str] = None
         analysis_id: Optional[str] = None
@@ -440,6 +577,7 @@ def _execute_reel_analyze_url_core(
 
         result_body: Dict[str, Any] = {
             "status": "completed",
+            "skip_apify": False,
             "reel": {
                 "url": url_key,
                 "owner": owner,
@@ -467,8 +605,8 @@ def _execute_reel_analyze_url_core(
 
 
 def run_reel_analyze_url(settings: Settings, job: Dict[str, Any]) -> None:
-    if not settings.apify_api_token or not settings.openrouter_api_key:
-        raise RuntimeError("APIFY_API_TOKEN and OPENROUTER_API_KEY required")
+    if not settings.openrouter_api_key:
+        raise RuntimeError("OPENROUTER_API_KEY required")
 
     supabase = get_supabase_for_settings(settings)
     job_id = job["id"]
@@ -477,10 +615,14 @@ def run_reel_analyze_url(settings: Settings, job: Dict[str, Any]) -> None:
         raise RuntimeError("reel_analyze_url job missing client_id")
 
     payload = job.get("payload") or {}
+    skip_apify = bool(payload.get("skip_apify"))
     raw_url = str(payload.get("url") or "").strip()
     reel_url = raw_url.strip()
     if not reel_url or not instagram_reel_url_is_valid(reel_url):
         raise ValueError("Invalid Instagram reel or post URL")
+
+    if not skip_apify and not settings.apify_api_token:
+        raise RuntimeError("APIFY_API_TOKEN required unless skip_apify is true")
 
     now = datetime.now(timezone.utc).isoformat()
     supabase.table("background_jobs").update({"status": "running", "started_at": now}).eq(
@@ -497,6 +639,7 @@ def run_reel_analyze_url(settings: Settings, job: Dict[str, Any]) -> None:
             reel_url=reel_url,
             analysis_source="analyze_url",
             niche_context=niche_ctx,
+            skip_apify=skip_apify,
         )
         done = datetime.now(timezone.utc).isoformat()
         supabase.table("background_jobs").update(
@@ -507,8 +650,8 @@ def run_reel_analyze_url(settings: Settings, job: Dict[str, Any]) -> None:
 
 
 def run_reel_analyze_bulk(settings: Settings, job: Dict[str, Any]) -> None:
-    if not settings.apify_api_token or not settings.openrouter_api_key:
-        raise RuntimeError("APIFY_API_TOKEN and OPENROUTER_API_KEY required")
+    if not settings.openrouter_api_key:
+        raise RuntimeError("OPENROUTER_API_KEY required")
 
     supabase = get_supabase_for_settings(settings)
     job_id = job["id"]
@@ -517,6 +660,10 @@ def run_reel_analyze_bulk(settings: Settings, job: Dict[str, Any]) -> None:
         raise RuntimeError("reel_analyze_bulk job missing client_id")
 
     payload = job.get("payload") or {}
+    skip_apify = bool(payload.get("skip_apify"))
+    if not skip_apify and not settings.apify_api_token:
+        raise RuntimeError("APIFY_API_TOKEN required unless skip_apify is true")
+
     raw_urls = payload.get("urls") or []
     if not isinstance(raw_urls, list):
         raise ValueError("reel_analyze_bulk: urls must be a list")
@@ -527,7 +674,7 @@ def run_reel_analyze_bulk(settings: Settings, job: Dict[str, Any]) -> None:
         s = str(u).strip()
         if not s or not instagram_reel_url_is_valid(s):
             continue
-        key = _normalize_post_url_key(s)
+        key = canonical_instagram_post_url(s)
         if key in seen:
             continue
         seen.add(key)
@@ -565,31 +712,32 @@ def run_reel_analyze_bulk(settings: Settings, job: Dict[str, Any]) -> None:
                 reel_url=reel_url,
                 analysis_source="analyze_bulk",
                 niche_context=niche_ctx,
+                skip_apify=skip_apify,
             )
             succeeded += 1
             items_out.append(
                 {
-                    "url": one.get("reel", {}).get("url") or _normalize_post_url_key(reel_url),
+                    "url": one.get("reel", {}).get("url") or canonical_instagram_post_url(reel_url),
                     "ok": True,
                     "reel_id": one.get("reel_id"),
                     "analysis_id": one.get("analysis_id"),
                 }
             )
         except ReelAnalyzeTerminalError as e:
-            failures.append({"url": _normalize_post_url_key(reel_url), "error": e.code})
+            failures.append({"url": canonical_instagram_post_url(reel_url), "error": e.code})
             items_out.append(
                 {
-                    "url": _normalize_post_url_key(reel_url),
+                    "url": canonical_instagram_post_url(reel_url),
                     "ok": False,
                     "error": e.code,
                 }
             )
         except Exception as e:
             err = str(e)[:500]
-            failures.append({"url": _normalize_post_url_key(reel_url), "error": err})
+            failures.append({"url": canonical_instagram_post_url(reel_url), "error": err})
             items_out.append(
                 {
-                    "url": _normalize_post_url_key(reel_url),
+                    "url": canonical_instagram_post_url(reel_url),
                     "ok": False,
                     "error": err,
                 }

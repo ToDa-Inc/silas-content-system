@@ -7,6 +7,10 @@ class AnalyzeReelUrlBody(BaseModel):
     """POST /clients/{slug}/reels/analyze-url — see docs/ANALYZE-REEL-ENDPOINT-SPEC.md."""
 
     url: str = Field(..., min_length=12, description="Instagram reel or post URL")
+    skip_apify: bool = Field(
+        False,
+        description="If true, skip Apify + video download: use DB scraped_reels + prior Silas text, Gemini only.",
+    )
 
 
 class AnalyzeReelBulkBody(BaseModel):
@@ -17,6 +21,10 @@ class AnalyzeReelBulkBody(BaseModel):
         min_length=1,
         max_length=20,
         description="Instagram reel/post URLs (max 20, deduped server-side)",
+    )
+    skip_apify: bool = Field(
+        False,
+        description="If true, each URL uses DB row + prior analysis text only (no Apify).",
     )
 
 

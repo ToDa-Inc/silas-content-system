@@ -178,16 +178,19 @@ export async function enqueueReelAnalyzeBulk(
   clientSlug: string,
   orgSlug: string,
   urls: string[],
+  opts?: { skip_apify?: boolean },
 ): Promise<{ ok: true; job_id: string; count: number } | { ok: false; error: string }> {
   const base = getContentApiBase();
   const headers = await clientApiHeaders({ orgSlug });
   try {
+    const body: { urls: string[]; skip_apify?: boolean } = { urls };
+    if (opts?.skip_apify) body.skip_apify = true;
     const res = await contentApiFetch(
       `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/reels/analyze-bulk`,
       {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ urls }),
+        body: JSON.stringify(body),
       },
     );
     const json = (await res.json().catch(() => ({}))) as {
@@ -203,6 +206,233 @@ export async function enqueueReelAnalyzeBulk(
       return { ok: false, error: "No job_id returned from server." };
     }
     return { ok: true, job_id: jobId, count: json.count ?? urls.length };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export type GenerationSession = {
+  id: string;
+  client_id: string;
+  source_type: string;
+  source_analysis_ids?: string[] | null;
+  source_reel_ids?: string[] | null;
+  synthesized_patterns?: Record<string, unknown> | null;
+  angles?: Array<Record<string, unknown>> | null;
+  chosen_angle_index?: number | null;
+  hooks?: Array<{ tier: number; text: string }> | null;
+  script?: string | null;
+  caption_body?: string | null;
+  hashtags?: string[] | null;
+  story_variants?: string[] | null;
+  status: string;
+  feedback?: string | null;
+  prompt_version?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type ReelAnalysisListRow = {
+  id: string;
+  post_url: string;
+  owner_username?: string | null;
+  total_score?: number | null;
+  replicability_rating?: string | null;
+};
+
+/** Saved analyses for generation source picker — GET reel-analyses. */
+export async function fetchReelAnalysesList(
+  clientSlug: string,
+  orgSlug: string,
+  limit = 50,
+): Promise<{ ok: true; data: ReelAnalysisListRow[] } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/reel-analyses?limit=${limit}`,
+      { headers },
+    );
+    const json = (await res.json().catch(() => [])) as unknown;
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(
+          json as Record<string, unknown>,
+          `Request failed (${res.status})`,
+        ),
+      };
+    }
+    return { ok: true, data: Array.isArray(json) ? (json as ReelAnalysisListRow[]) : [] };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function generationStart(
+  clientSlug: string,
+  orgSlug: string,
+  body: {
+    source_type: "outlier" | "patterns" | "manual";
+    source_analysis_ids?: string[];
+    max_analyses?: number;
+    extra_instruction?: string;
+  },
+): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/generate/start`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    const json = (await res.json().catch(() => ({}))) as GenerationSession & { detail?: unknown };
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
+    }
+    return { ok: true, data: json as GenerationSession };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function generationChooseAngle(
+  clientSlug: string,
+  orgSlug: string,
+  sessionId: string,
+  angleIndex: number,
+): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/generate/sessions/${encodeURIComponent(sessionId)}/choose-angle`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ angle_index: angleIndex }),
+      },
+    );
+    const json = (await res.json().catch(() => ({}))) as GenerationSession & { detail?: unknown };
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
+    }
+    return { ok: true, data: json as GenerationSession };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function generationRegenerate(
+  clientSlug: string,
+  orgSlug: string,
+  sessionId: string,
+  body: { scope: "hooks" | "script" | "caption" | "story" | "all"; feedback?: string },
+): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/generate/sessions/${encodeURIComponent(sessionId)}/regenerate`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    const json = (await res.json().catch(() => ({}))) as GenerationSession & { detail?: unknown };
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
+    }
+    return { ok: true, data: json as GenerationSession };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function generationListSessions(
+  clientSlug: string,
+  orgSlug: string,
+  limit = 20,
+): Promise<{ ok: true; data: GenerationSession[] } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/generate/sessions?limit=${limit}`,
+      { headers },
+    );
+    const json = (await res.json().catch(() => [])) as unknown;
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(
+          json as Record<string, unknown>,
+          `Failed (${res.status})`,
+        ),
+      };
+    }
+    return { ok: true, data: Array.isArray(json) ? (json as GenerationSession[]) : [] };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+/** GET …/generate/sessions/{sessionId} — resume a saved session. */
+export async function generationGetSession(
+  clientSlug: string,
+  orgSlug: string,
+  sessionId: string,
+): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/generate/sessions/${encodeURIComponent(sessionId)}`,
+      { headers },
+    );
+    const json = (await res.json().catch(() => ({}))) as GenerationSession & { detail?: unknown };
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`),
+      };
+    }
+    return { ok: true, data: json as GenerationSession };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function generationSetStatus(
+  clientSlug: string,
+  orgSlug: string,
+  sessionId: string,
+  action: "approve" | "reject",
+  feedback?: string,
+): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  const path =
+    action === "approve" ? "approve" : "reject";
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/generate/sessions/${encodeURIComponent(sessionId)}/${path}`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ feedback: feedback ?? null }),
+      },
+    );
+    const json = (await res.json().catch(() => ({}))) as GenerationSession & { detail?: unknown };
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
+    }
+    return { ok: true, data: json as GenerationSession };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
   }

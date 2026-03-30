@@ -311,12 +311,14 @@ def build_reel_analysis_prompt(
     comments: str,
     caption: str,
     niche_context: str | None = None,
+    text_reanalyze: bool = False,
+    prior_full_text: str | None = None,
 ) -> str:
     """Build the full analysis prompt with reel metadata and optional niche context."""
     cap = (caption or "")[:500]
     ctx = niche_context or _FALLBACK_NICHE_CONTEXT
 
-    return (
+    t = (
         SILAS_REEL_ANALYSIS_TEMPLATE.replace("{owner}", owner)
         .replace("{views}", views)
         .replace("{likes}", likes)
@@ -324,3 +326,44 @@ def build_reel_analysis_prompt(
         .replace("{caption}", cap)
         .replace("{niche_context}", ctx)
     )
+
+    if text_reanalyze:
+        prior = (prior_full_text or "").strip()
+        if len(prior) > 14_000:
+            prior = prior[:14_000] + "\n… [truncated]"
+        if prior:
+            inject = f"""═══════════════════════════════════════════
+PRIOR SILAS OUTPUT (no video re-fetch — use as primary evidence)
+═══════════════════════════════════════════
+{prior}
+
+"""
+        else:
+            inject = """═══════════════════════════════════════════
+NOTE: No prior Silas full_text in DB — use caption and metrics only.
+═══════════════════════════════════════════
+
+"""
+        t = t.replace(
+            "Your job is to watch a reel and diagnose exactly WHY it works",
+            "Your job is to re-score and refine a reel analysis WITHOUT watching video again",
+        )
+        t = t.replace(
+            "These numbers are context only. Your scores must be based on what you SEE and HEAR in the video, not on the metrics above.",
+            "These numbers are context only. Ground scores in the PRIOR SILAS OUTPUT (and caption); you are not watching fresh video.",
+        )
+        t = t.replace(
+            "Watch the entire video carefully. Pay attention to:",
+            "From the prior analysis narrative, infer what the reel showed. Pay attention to:",
+        )
+        t = t.replace(
+            'Every "Evidence:" must cite a specific moment, phrase, visual, or timestamp from the video. Never write generic evidence like "the hook is strong" — describe WHAT you saw.',
+            'Every "Evidence:" must cite specifics from the PRIOR SILAS OUTPUT (quote or paraphrase what was described). Never write generic evidence.',
+        )
+        t = t.replace(
+            "═══════════════════════════════════════════\nANALYSIS INSTRUCTIONS\n═══════════════════════════════════════════\n\n",
+            inject
+            + "═══════════════════════════════════════════\nANALYSIS INSTRUCTIONS\n═══════════════════════════════════════════\n\n",
+        )
+
+    return t

@@ -39,6 +39,7 @@ from models.reel import (
     TopicSearchBody,
 )
 from services.apify import run_keyword_reel_search
+from services.instagram_post_url import canonical_instagram_post_url
 from services.breakout_recompute import recompute_breakouts_for_client
 from services.competitor_manual import add_manual_competitor, preview_manual_competitor
 from services.job_queue import (
@@ -99,28 +100,9 @@ def _metrics_range_bounds(
     return a, b
 
 
-def _snapshot_points_for_reel(
-    supabase: Client,
-    reel_id: str,
-    from_dt: Optional[datetime],
-    to_dt: Optional[datetime],
-) -> List[MetricPoint]:
-    q = (
-        supabase.table("reel_snapshots")
-        .select("scraped_at, views, likes, comments")
-        .eq("reel_id", reel_id)
-        .order("scraped_at", desc=False)
-    )
-    if from_dt is not None:
-        q = q.gte("scraped_at", from_dt.isoformat())
-    if to_dt is not None:
-        q = q.lte("scraped_at", to_dt.isoformat())
-    try:
-        res = q.execute()
-    except Exception:
-        return []
+def _rows_to_metric_points(rows: List[dict]) -> List[MetricPoint]:
     out: List[MetricPoint] = []
-    for row in res.data or []:
+    for row in rows:
         ts = row.get("scraped_at")
         if ts is None:
             continue
@@ -135,19 +117,70 @@ def _snapshot_points_for_reel(
     return out
 
 
-def _own_reel_meta(
-    supabase: Client, client_id: str, reel_id: str
-) -> Optional[Dict[str, Any]]:
+def _snapshot_points_for_reels_batch(
+    supabase: Client,
+    reel_ids: List[str],
+    from_dt: Optional[datetime],
+    to_dt: Optional[datetime],
+) -> Dict[str, List[MetricPoint]]:
+    """One round-trip for snapshots on many reels; points per reel ordered by scraped_at ascending."""
+    if not reel_ids:
+        return {}
+    q = (
+        supabase.table("reel_snapshots")
+        .select("reel_id, scraped_at, views, likes, comments")
+        .in_("reel_id", reel_ids)
+        .order("reel_id", desc=False)
+        .order("scraped_at", desc=False)
+    )
+    if from_dt is not None:
+        q = q.gte("scraped_at", from_dt.isoformat())
+    if to_dt is not None:
+        q = q.lte("scraped_at", to_dt.isoformat())
+    try:
+        res = q.execute()
+    except Exception:
+        return {rid: [] for rid in reel_ids}
+    by_reel: Dict[str, List[dict]] = defaultdict(list)
+    for row in res.data or []:
+        rid = row.get("reel_id")
+        if rid is None:
+            continue
+        by_reel[str(rid)].append(row)
+    return {rid: _rows_to_metric_points(by_reel.get(rid, [])) for rid in reel_ids}
+
+
+def _snapshot_points_for_reel(
+    supabase: Client,
+    reel_id: str,
+    from_dt: Optional[datetime],
+    to_dt: Optional[datetime],
+) -> List[MetricPoint]:
+    m = _snapshot_points_for_reels_batch(supabase, [reel_id], from_dt, to_dt)
+    return m.get(reel_id, [])
+
+
+def _own_reel_metas_batch(
+    supabase: Client, client_id: str, reel_ids: List[str]
+) -> Dict[str, Dict[str, Any]]:
+    if not reel_ids:
+        return {}
     rc = (
         supabase.table("scraped_reels")
         .select("id, post_url, thumbnail_url, hook_text")
-        .eq("id", reel_id)
         .eq("client_id", client_id)
         .is_("competitor_id", "null")
-        .limit(1)
+        .in_("id", reel_ids)
         .execute()
     )
-    return rc.data[0] if rc.data else None
+    return {str(r["id"]): r for r in (rc.data or [])}
+
+
+def _own_reel_meta(
+    supabase: Client, client_id: str, reel_id: str
+) -> Optional[Dict[str, Any]]:
+    m = _own_reel_metas_batch(supabase, client_id, [reel_id])
+    return m.get(str(reel_id))
 
 
 def _reel_reference_date(r: dict) -> Optional[datetime]:
@@ -241,22 +274,30 @@ def _weekly_breakout_tops(
 
 
 def _compute_client_stats(supabase: Client, client_id: str) -> Dict[str, Any]:
+    count_res = (
+        supabase.table("scraped_reels")
+        .select("id", count="exact")
+        .eq("client_id", client_id)
+        .is_("competitor_id", "null")
+        .execute()
+    )
+    total_own = int(count_res.count or 0)
     res = (
         supabase.table("scraped_reels")
         .select("views, likes, posted_at")
         .eq("client_id", client_id)
         .is_("competitor_id", "null")
+        .order("posted_at", desc=True, nullsfirst=False)
+        .limit(30)
         .execute()
     )
-    rows: List[dict] = res.data or []
-    rows.sort(key=lambda r: str(r.get("posted_at") or ""), reverse=True)
-    window = rows[:30]
+    window: List[dict] = res.data or []
     n = len(window)
     if n == 0:
         return {
             "average_views_last_30_reels": None,
             "average_likes_last_30_reels": None,
-            "total_own_reels": 0,
+            "total_own_reels": total_own,
             "avg_views_change_vs_prior_week_pct": None,
         }
     views = [int(r.get("views") or 0) for r in window]
@@ -266,7 +307,7 @@ def _compute_client_stats(supabase: Client, client_id: str) -> Dict[str, Any]:
     return {
         "average_views_last_30_reels": avg_v,
         "average_likes_last_30_reels": avg_l,
-        "total_own_reels": len(rows),
+        "total_own_reels": total_own,
         "avg_views_change_vs_prior_week_pct": None,
     }
 
@@ -293,12 +334,6 @@ def _group_keyword_reel_items(items: list) -> List[Dict[str, Any]]:
             }
         )
     return accounts
-
-
-def _normalize_post_url_key(url: str) -> str:
-    if not url:
-        return ""
-    return url.strip().split("?")[0].split("#")[0].rstrip("/")
 
 
 def _coerce_json_weighted_total(val: Any) -> Optional[float]:
@@ -335,11 +370,49 @@ def _attach_reel_analyses(supabase: Client, client_id: str, reels: list[dict]) -
     select_legacy = (
         "id, reel_id, post_url, total_score, replicability_rating, analyzed_at, prompt_version"
     )
+    rid_list = sorted({str(r["id"]) for r in reels if r.get("id")})
+    url_list = sorted(
+        {str(r["post_url"]).strip() for r in reels if r.get("post_url") and str(r.get("post_url")).strip()}
+    )
+
+    def _load_rows(select_cols: str) -> List[dict]:
+        seen: set[str] = set()
+        out: List[dict] = []
+        step = _ANALYSIS_IN_CHUNK
+        for i in range(0, len(rid_list), step):
+            chunk = rid_list[i : i + step]
+            ares = (
+                supabase.table("reel_analyses")
+                .select(select_cols)
+                .eq("client_id", client_id)
+                .in_("reel_id", chunk)
+                .execute()
+            )
+            for row in ares.data or []:
+                sid = str(row.get("id", ""))
+                if sid and sid not in seen:
+                    seen.add(sid)
+                    out.append(row)
+        for i in range(0, len(url_list), step):
+            chunk = url_list[i : i + step]
+            ares = (
+                supabase.table("reel_analyses")
+                .select(select_cols)
+                .eq("client_id", client_id)
+                .in_("post_url", chunk)
+                .execute()
+            )
+            for row in ares.data or []:
+                sid = str(row.get("id", ""))
+                if sid and sid not in seen:
+                    seen.add(sid)
+                    out.append(row)
+        return out
+
     try:
-        ares = supabase.table("reel_analyses").select(select_v2).eq("client_id", client_id).execute()
+        rows = _load_rows(select_v2)
     except Exception:
-        ares = supabase.table("reel_analyses").select(select_legacy).eq("client_id", client_id).execute()
-    rows = ares.data or []
+        rows = _load_rows(select_legacy)
     by_reel: Dict[str, dict] = {}
     by_url: Dict[str, dict] = {}
     for a in rows:
@@ -348,10 +421,10 @@ def _attach_reel_analyses(supabase: Client, client_id: str, reels: list[dict]) -
             by_reel[str(rid)] = a
         pu = a.get("post_url")
         if pu:
-            by_url[_normalize_post_url_key(str(pu))] = a
+            by_url[canonical_instagram_post_url(str(pu))] = a
     for reel in reels:
         rid = reel.get("id")
-        pu = _normalize_post_url_key(str(reel.get("post_url") or ""))
+        pu = canonical_instagram_post_url(str(reel.get("post_url") or ""))
         chosen: Optional[dict] = None
         if rid and str(rid) in by_reel:
             chosen = by_reel[str(rid)]
@@ -987,47 +1060,59 @@ def get_intelligence_activity(
             .limit(40)
             .execute()
         )
-        own_ids = [str(x["id"]) for x in (own.data or [])]
-        for rid in own_ids[:20]:
-            snaps = (
+        own_ids = [str(x["id"]) for x in (own.data or [])][:20]
+        if own_ids:
+            snap_all = (
                 supabase.table("reel_snapshots")
-                .select("views, scraped_at")
-                .eq("reel_id", rid)
-                .order("scraped_at", desc=True)
-                .limit(2)
+                .select("reel_id, views, scraped_at")
+                .in_("reel_id", own_ids)
                 .execute()
             )
-            srows = snaps.data or []
-            if len(srows) < 2:
-                continue
-            v_new = int(srows[0].get("views") or 0)
-            v_old = int(srows[1].get("views") or 0)
-            gained = v_new - v_old
-            if gained > 0:
-                growth.append(
-                    {
-                        "reel_id": rid,
-                        "views_gained": gained,
-                        "views_now": v_new,
-                    }
-                )
+            srows_all = snap_all.data or []
+            latest_two: Dict[str, List[dict]] = defaultdict(list)
+            for row in sorted(
+                srows_all,
+                key=lambda r: str(r.get("scraped_at") or ""),
+                reverse=True,
+            ):
+                rid = str(row.get("reel_id") or "")
+                if not rid or len(latest_two[rid]) >= 2:
+                    continue
+                latest_two[rid].append(row)
+            for rid, srows in latest_two.items():
+                if len(srows) < 2:
+                    continue
+                v_new = int(srows[0].get("views") or 0)
+                v_old = int(srows[1].get("views") or 0)
+                gained = v_new - v_old
+                if gained > 0:
+                    growth.append(
+                        {
+                            "reel_id": rid,
+                            "views_gained": gained,
+                            "views_now": v_new,
+                        }
+                    )
         growth.sort(key=lambda x: -x["views_gained"])
         growth = growth[:5]
-        for g in growth:
+        if growth:
             try:
+                gids = [g["reel_id"] for g in growth]
                 rres = (
                     supabase.table("scraped_reels")
                     .select(
-                        "post_url, thumbnail_url, hook_text, caption, account_username, "
+                        "id, post_url, thumbnail_url, hook_text, caption, account_username, "
                         "views, likes, comments"
                     )
-                    .eq("id", g["reel_id"])
                     .eq("client_id", client_id)
-                    .limit(1)
+                    .in_("id", gids)
                     .execute()
                 )
-                if rres.data:
-                    meta = rres.data[0]
+                by_id = {str(r["id"]): r for r in (rres.data or [])}
+                for g in growth:
+                    meta = by_id.get(str(g["reel_id"]))
+                    if not meta:
+                        continue
                     g["post_url"] = meta.get("post_url")
                     g["thumbnail_url"] = meta.get("thumbnail_url")
                     g["hook_text"] = meta.get("hook_text")
@@ -1097,10 +1182,15 @@ def analyze_reel_by_url(
     """Enqueue Apify URL scrape + OpenRouter Gemini analysis; poll GET /api/v1/jobs/{job_id}."""
     if not instagram_reel_url_is_valid(body.url):
         raise HTTPException(status_code=400, detail="Invalid Instagram reel or post URL")
-    if not settings.apify_api_token or not settings.openrouter_api_key:
+    if not settings.openrouter_api_key:
         raise HTTPException(
             status_code=503,
-            detail="Reel analysis requires APIFY_API_TOKEN and OPENROUTER_API_KEY",
+            detail="Reel analysis requires OPENROUTER_API_KEY",
+        )
+    if not body.skip_apify and not settings.apify_api_token:
+        raise HTTPException(
+            status_code=503,
+            detail="Full reel analysis requires APIFY_API_TOKEN (or set skip_apify for LLM-only re-run)",
         )
     fail_abandoned_queued_jobs(supabase, client_id=client_id, job_type="reel_analyze_url")
     if _reel_analyze_busy(supabase, client_id):
@@ -1115,7 +1205,7 @@ def analyze_reel_by_url(
         "org_id": org_id,
         "client_id": client_id,
         "job_type": "reel_analyze_url",
-        "payload": {"url": body.url.strip()},
+        "payload": {"url": body.url.strip(), "skip_apify": body.skip_apify},
         "status": "running",
         "started_at": now,
     }
@@ -1135,10 +1225,15 @@ def analyze_reels_bulk(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> Dict[str, Any]:
     """Enqueue sequential URL analyses (same pipeline as analyze-url). Poll GET /api/v1/jobs/{job_id}."""
-    if not settings.apify_api_token or not settings.openrouter_api_key:
+    if not settings.openrouter_api_key:
         raise HTTPException(
             status_code=503,
-            detail="Reel analysis requires APIFY_API_TOKEN and OPENROUTER_API_KEY",
+            detail="Reel analysis requires OPENROUTER_API_KEY",
+        )
+    if not body.skip_apify and not settings.apify_api_token:
+        raise HTTPException(
+            status_code=503,
+            detail="Bulk reel analysis requires APIFY_API_TOKEN (or skip_apify for LLM-only)",
         )
     cleaned: list[str] = []
     for u in body.urls:
@@ -1168,7 +1263,7 @@ def analyze_reels_bulk(
         "org_id": org_id,
         "client_id": client_id,
         "job_type": "reel_analyze_bulk",
-        "payload": {"urls": cleaned},
+        "payload": {"urls": cleaned, "skip_apify": body.skip_apify},
         "status": "running",
         "started_at": now,
     }
@@ -1289,6 +1384,7 @@ def list_reels(
 
 _METRICS_MAX_REEL_IDS = 10
 _METRICS_DEFAULT_OWN_LIMIT = 30
+_ANALYSIS_IN_CHUNK = 80
 
 
 @router.get("/clients/{slug}/reels/metrics", response_model=ReelMetricsListOut)
@@ -1330,12 +1426,15 @@ def list_own_reels_metrics(
         )
         target_ids = [str(x["id"]) for x in (own.data or [])]
 
+    metas = _own_reel_metas_batch(supabase, client_id, target_ids)
+    snap_ids = list(metas.keys())
+    points_by = _snapshot_points_for_reels_batch(supabase, snap_ids, from_dt, to_dt)
     series: List[ReelMetricsSeriesOut] = []
     for rid in target_ids:
-        meta = _own_reel_meta(supabase, client_id, rid)
+        meta = metas.get(str(rid))
         if not meta:
             continue
-        points = _snapshot_points_for_reel(supabase, rid, from_dt, to_dt)
+        points = points_by.get(str(rid), [])
         series.append(
             ReelMetricsSeriesOut(
                 reel_id=str(meta["id"]),
@@ -1391,7 +1490,7 @@ def get_reel_analysis_by_reel_id(
     if not rc.data:
         raise HTTPException(status_code=404, detail="Reel not found for this client")
 
-    post_url = _normalize_post_url_key(str(rc.data[0].get("post_url") or ""))
+    post_url = canonical_instagram_post_url(str(rc.data[0].get("post_url") or ""))
 
     ares = (
         supabase.table("reel_analyses")

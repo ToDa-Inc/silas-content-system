@@ -1,97 +1,82 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
-  AlertTriangle,
-  ArrowRight,
-  Brain,
-  Check,
+  ChevronDown,
+  ChevronUp,
   Copy,
   Loader2,
-  MessageCircle,
+  RefreshCw,
   Sparkles,
-  Star,
-  Zap,
+  ThumbsDown,
+  ThumbsUp,
 } from "lucide-react";
 import { useToast } from "@/components/ui/toast-provider";
+import {
+  clientApiContext,
+  fetchReelAnalysesList,
+  generationChooseAngle,
+  generationGetSession,
+  generationListSessions,
+  generationRegenerate,
+  generationSetStatus,
+  generationStart,
+  type GenerationSession,
+  type ReelAnalysisListRow,
+} from "@/lib/api-client";
 
-const niches = [
-  "B2B SaaS Growth",
-  "Personal Finance",
-  "Creative Technology",
-  "Performance Marketing",
-  "Lifestyle & Wellness",
-];
+type Step = "source" | "angles" | "content";
 
-const tones = [
-  { id: "authoritative", label: "Authoritative", icon: Zap },
-  { id: "curious", label: "Curious", icon: Brain },
-  { id: "urgent", label: "Urgent", icon: AlertTriangle },
-  { id: "conversational", label: "Conversational", icon: MessageCircle },
-] as const;
+type SourceMode = "patterns" | "outlier" | "manual";
 
-const HOOK_POOL = [
-  "Stop wasting hours on manual formatting when these 3 automation secrets can do it for you in seconds.",
-  "Most founders fail because they ignore this one critical metric in their first six months of operation.",
-  "The algorithm changed again — here is the only framework that still scales organic reach in 2026.",
-  'If your hooks feel "random", you are missing this single pattern every 1M+ view account uses.',
-  "Your audience scrolls past 99% of posts — this opening line pattern is why the 1% stop.",
-  "The uncomfortable truth: your content is fine; your first three seconds are what’s killing reach.",
-  "I reviewed 200 viral hooks this week — only one structure showed up in more than half of them.",
-];
-
-const INITIAL = HOOK_POOL.slice(0, 4).map((text, i) => ({
-  id: `h-${i}`,
-  text,
-}));
-
-function pickFreshHooks(count: number) {
-  const shuffled = [...HOOK_POOL].sort(() => Math.random() - 0.5);
-  return shuffled.slice(0, count).map((text, i) => ({
-    id: `h-${Date.now()}-${i}`,
-    text,
-  }));
+function str(v: unknown): string {
+  return typeof v === "string" ? v : v != null ? String(v) : "";
 }
 
 export default function GeneratePage() {
   const { show } = useToast();
-  const [tone, setTone] = useState<string>("authoritative");
-  const [niche, setNiche] = useState(niches[0]);
-  const [topic, setTopic] = useState("");
-  const [items, setItems] = useState(INITIAL);
-  const [generating, setGenerating] = useState(false);
-  const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [starred, setStarred] = useState<Set<string>>(() => new Set());
+  const [step, setStep] = useState<Step>("source");
+  const [sourceMode, setSourceMode] = useState<SourceMode>("patterns");
+  const [extraInstruction, setExtraInstruction] = useState("");
+  const [analyses, setAnalyses] = useState<ReelAnalysisListRow[]>([]);
+  const [selectedAnalysisIds, setSelectedAnalysisIds] = useState<Set<string>>(() => new Set());
+  const [session, setSession] = useState<GenerationSession | null>(null);
+  const [sessions, setSessions] = useState<GenerationSession[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [loadingList, setLoadingList] = useState(false);
+  const [patternsOpen, setPatternsOpen] = useState(false);
+  const [clientSlug, setClientSlug] = useState("");
+  const [orgSlug, setOrgSlug] = useState("");
+  const [regenScope, setRegenScope] = useState<"all" | "hooks" | "script" | "caption" | "story">("all");
+  const [regenFeedback, setRegenFeedback] = useState("");
 
-  const onGenerate = useCallback(() => {
-    setGenerating(true);
-    window.setTimeout(() => {
-      const next = pickFreshHooks(4);
-      setItems(next);
-      setGenerating(false);
-      show(
-        `Generated 4 hooks (${niche}, ${tone})${topic.trim() ? " — topic applied." : "."}`,
-        "success",
-      );
-    }, 1200);
-  }, [niche, show, tone, topic]);
+  const refreshContext = useCallback(async () => {
+    const ctx = await clientApiContext();
+    setClientSlug(ctx.clientSlug);
+    setOrgSlug(ctx.orgSlug);
+    return ctx;
+  }, []);
 
-  const onCopy = useCallback(
-    async (id: string, text: string) => {
+  useEffect(() => {
+    void (async () => {
+      const ctx = await refreshContext();
+      if (!ctx.clientSlug || !ctx.orgSlug) return;
+      setLoadingList(true);
       try {
-        await navigator.clipboard.writeText(text);
-        setCopiedId(id);
-        show("Copied to clipboard.", "success");
-        window.setTimeout(() => setCopiedId((c) => (c === id ? null : c)), 1600);
-      } catch {
-        show("Could not copy — check browser permissions.", "error");
+        const [listRes, anaRes] = await Promise.all([
+          generationListSessions(ctx.clientSlug, ctx.orgSlug, 15),
+          fetchReelAnalysesList(ctx.clientSlug, ctx.orgSlug, 60),
+        ]);
+        if (listRes.ok) setSessions(listRes.data);
+        if (anaRes.ok) setAnalyses(anaRes.data);
+      } finally {
+        setLoadingList(false);
       }
-    },
-    [show],
-  );
+    })();
+  }, [refreshContext]);
 
-  const toggleStar = useCallback((id: string) => {
-    setStarred((prev) => {
+  const toggleAnalysis = useCallback((id: string) => {
+    setSelectedAnalysisIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -99,22 +84,158 @@ export default function GeneratePage() {
     });
   }, []);
 
-  const onExportAll = useCallback(() => {
-    const body = items.map((h, i) => `${i + 1}. ${h.text}`).join("\n\n");
-    void (async () => {
-      try {
-        await navigator.clipboard.writeText(body);
-        show(`Exported ${items.length} hooks to clipboard.`, "success");
-      } catch {
-        show("Export failed — try again.", "error");
+  const onStart = useCallback(async () => {
+    const ctx = await refreshContext();
+    if (!ctx.clientSlug || !ctx.orgSlug) {
+      show("No workspace client — finish onboarding.", "error");
+      return;
+    }
+    if (sourceMode === "outlier" && selectedAnalysisIds.size === 0) {
+      show("Select at least one analyzed reel.", "error");
+      return;
+    }
+    setLoading(true);
+    try {
+      const body =
+        sourceMode === "outlier"
+          ? {
+              source_type: "outlier" as const,
+              source_analysis_ids: Array.from(selectedAnalysisIds),
+              max_analyses: 12,
+              extra_instruction: extraInstruction.trim() || undefined,
+            }
+          : sourceMode === "manual"
+            ? {
+                source_type: "manual" as const,
+                max_analyses: 12,
+                extra_instruction: extraInstruction.trim() || undefined,
+              }
+            : {
+                source_type: "patterns" as const,
+                max_analyses: 12,
+                extra_instruction: extraInstruction.trim() || undefined,
+              };
+      const res = await generationStart(ctx.clientSlug, ctx.orgSlug, body);
+      if (!res.ok) {
+        show(res.error, "error");
+        return;
       }
-    })();
-  }, [items, show]);
+      setSession(res.data);
+      setStep("angles");
+      show("Angles ready — pick one.", "success");
+      const lr = await generationListSessions(ctx.clientSlug, ctx.orgSlug, 15);
+      if (lr.ok) setSessions(lr.data);
+    } finally {
+      setLoading(false);
+    }
+  }, [extraInstruction, refreshContext, selectedAnalysisIds, show, sourceMode]);
 
-  const onRefresh = useCallback(() => {
-    setItems((prev) => [...prev].sort(() => Math.random() - 0.5));
-    show("List reordered.");
-  }, [show]);
+  const onChooseAngle = useCallback(
+    async (index: number) => {
+      if (!session || !clientSlug || !orgSlug) return;
+      setLoading(true);
+      try {
+        const res = await generationChooseAngle(clientSlug, orgSlug, session.id, index);
+        if (!res.ok) {
+          show(res.error, "error");
+          return;
+        }
+        setSession(res.data);
+        setStep("content");
+        show("Script and captions generated.", "success");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [clientSlug, orgSlug, session, show],
+  );
+
+  const onRegenerate = useCallback(async () => {
+    if (!session || !clientSlug || !orgSlug) return;
+    setLoading(true);
+    try {
+      const res = await generationRegenerate(clientSlug, orgSlug, session.id, {
+        scope: regenScope,
+        feedback: regenFeedback.trim() || undefined,
+      });
+      if (!res.ok) {
+        show(res.error, "error");
+        return;
+      }
+      setSession(res.data);
+      setRegenFeedback("");
+      show("Regenerated.", "success");
+    } finally {
+      setLoading(false);
+    }
+  }, [clientSlug, orgSlug, regenFeedback, regenScope, session, show]);
+
+  const onApprove = useCallback(async () => {
+    if (!session || !clientSlug || !orgSlug) return;
+    setLoading(true);
+    try {
+      const res = await generationSetStatus(clientSlug, orgSlug, session.id, "approve");
+      if (!res.ok) {
+        show(res.error, "error");
+        return;
+      }
+      setSession(res.data);
+      show("Marked approved.", "success");
+    } finally {
+      setLoading(false);
+    }
+  }, [clientSlug, orgSlug, session, show]);
+
+  const onReject = useCallback(async () => {
+    if (!session || !clientSlug || !orgSlug) return;
+    setLoading(true);
+    try {
+      const res = await generationSetStatus(clientSlug, orgSlug, session.id, "reject");
+      if (!res.ok) {
+        show(res.error, "error");
+        return;
+      }
+      setSession(res.data);
+      show("Marked rejected.", "success");
+    } finally {
+      setLoading(false);
+    }
+  }, [clientSlug, orgSlug, session, show]);
+
+  const copyText = useCallback(
+    async (label: string, text: string) => {
+      try {
+        await navigator.clipboard.writeText(text);
+        show(`Copied ${label}.`, "success");
+      } catch {
+        show("Copy failed.", "error");
+      }
+    },
+    [show],
+  );
+
+  const loadSessionById = useCallback(
+    async (id: string) => {
+      if (!clientSlug || !orgSlug) return;
+      setLoading(true);
+      try {
+        const res = await generationGetSession(clientSlug, orgSlug, id);
+        if (!res.ok) {
+          show(res.error, "error");
+          return;
+        }
+        const s = res.data;
+        setSession(s);
+        const hasPackage = Boolean(s.hooks?.length || (s.script && s.script.trim()));
+        setStep(s.status === "angles_ready" && !hasPackage ? "angles" : "content");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [clientSlug, orgSlug, show],
+  );
+
+  const angles = Array.isArray(session?.angles) ? session!.angles! : [];
 
   return (
     <main className="mx-auto max-w-[1400px] p-4 pb-16 pt-6 md:p-8 md:pt-10 lg:p-12">
@@ -123,186 +244,370 @@ export default function GeneratePage() {
           Generate
         </span>
         <h1 className="mb-2 max-w-2xl text-lg font-semibold text-app-fg">
-          Hooks
+          Outlier-driven copy
         </h1>
-        <p className="max-w-lg text-xs leading-relaxed text-app-fg-muted">
-          Niche, tone, optional context — then generate. Copy or star lines you’ll use.
+        <p className="max-w-2xl text-xs leading-relaxed text-app-fg-muted">
+          Patterns from analyzed reels → five angles → hooks, 60s script, caption, and story
+          lines in your client&apos;s voice (from client DNA).
         </p>
       </header>
 
-      <div className="flex flex-col items-start gap-12 lg:flex-row">
-        <section className="glass w-full space-y-8 rounded-2xl p-6 lg:sticky lg:top-24 lg:w-[400px]">
-          <div className="space-y-6">
-            <div className="space-y-2">
-              <label
-                htmlFor="gen-niche"
-                className="ml-1 text-xs font-semibold uppercase tracking-wider text-app-fg-subtle"
-              >
-                Content niche
-              </label>
-              <div className="relative">
-                <select
-                  id="gen-niche"
-                  value={niche}
-                  onChange={(e) => setNiche(e.target.value)}
-                  className="glass-inset w-full appearance-none rounded-xl py-3.5 pl-4 pr-11 text-sm text-app-fg transition-shadow focus:outline-none focus:ring-2 focus:ring-amber-500/30"
+      {!clientSlug && (
+        <p className="mb-6 text-sm text-amber-600 dark:text-amber-400">
+          No active client in workspace — complete onboarding or switch client.
+        </p>
+      )}
+
+      {sessions.length > 0 && step === "source" && (
+        <section className="mb-8 rounded-2xl border border-app-divider bg-app-chip-bg/30 p-4">
+          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-app-fg-subtle">
+            Recent sessions
+          </h2>
+          <ul className="flex flex-wrap gap-2">
+            {sessions.map((s) => (
+              <li key={s.id}>
+                <button
+                  type="button"
+                  onClick={() => void loadSessionById(s.id)}
+                  className="rounded-lg border border-app-divider px-3 py-1.5 text-left text-[11px] text-app-fg transition-colors hover:bg-white/5"
                 >
-                  {niches.map((n) => (
-                    <option key={n} value={n}>
-                      {n}
-                    </option>
-                  ))}
-                </select>
-                <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-app-fg-subtle">
-                  ▼
-                </span>
-              </div>
-            </div>
+                  <span className="font-mono text-app-fg-muted">{s.id.slice(0, 12)}…</span>{" "}
+                  <span className="text-app-fg-subtle">{s.status}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
+      {step === "source" && (
+        <div className="flex flex-col gap-10 lg:flex-row lg:items-start">
+          <section className="glass w-full space-y-6 rounded-2xl p-6 lg:sticky lg:top-24 lg:max-w-md">
             <div className="space-y-3">
-              <p className="ml-1 text-xs font-semibold uppercase tracking-wider text-app-fg-subtle">
-                Tone
+              <p className="text-xs font-semibold uppercase tracking-wider text-app-fg-subtle">
+                Source
               </p>
-              <div className="grid grid-cols-2 gap-2">
-                {tones.map(({ id, label, icon: Icon }) => {
-                  const active = tone === id;
-                  return (
-                    <button
-                      key={id}
-                      type="button"
-                      onClick={() => setTone(id)}
-                      className={`flex items-center gap-2 rounded-xl p-3.5 text-left text-sm font-semibold transition-colors ${
-                        active
-                          ? "border border-amber-500/35 bg-amber-500/10 text-app-on-amber-title"
-                          : "border border-transparent bg-app-chip-bg text-app-chip-fg hover:bg-app-chip-bg-hover hover:text-app-chip-fg-hover"
-                      }`}
-                    >
-                      <Icon className="h-4 w-4 shrink-0" aria-hidden />
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
+              {(
+                [
+                  ["patterns", "Top patterns", "Use highest-scoring saved analyses."],
+                  ["outlier", "Selected analyses", "Pick specific reels you want to echo."],
+                  ["manual", "Manual focus", "Same as top patterns + your note below."],
+                ] as const
+              ).map(([id, label, hint]) => (
+                <label
+                  key={id}
+                  className={`flex cursor-pointer flex-col rounded-xl border p-3 text-sm ${
+                    sourceMode === id
+                      ? "border-amber-500/40 bg-amber-500/10"
+                      : "border-transparent bg-app-chip-bg"
+                  }`}
+                >
+                  <span className="flex items-center gap-2 font-semibold text-app-fg">
+                    <input
+                      type="radio"
+                      name="src"
+                      checked={sourceMode === id}
+                      onChange={() => setSourceMode(id)}
+                      className="accent-amber-500"
+                    />
+                    {label}
+                  </span>
+                  <span className="mt-1 pl-6 text-[11px] text-app-fg-muted">{hint}</span>
+                </label>
+              ))}
             </div>
 
             <div className="space-y-2">
               <label
-                htmlFor="gen-topic"
-                className="ml-1 text-xs font-semibold uppercase tracking-wider text-app-fg-subtle"
+                htmlFor="gen-extra"
+                className="text-xs font-semibold uppercase tracking-wider text-app-fg-subtle"
               >
-                Context (optional)
+                Focus (optional)
               </label>
               <textarea
-                id="gen-topic"
-                rows={4}
-                value={topic}
-                onChange={(e) => setTopic(e.target.value)}
-                placeholder="One line on the angle or audience…"
-                className="glass-inset w-full resize-y rounded-xl p-4 text-sm text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/30"
+                id="gen-extra"
+                rows={3}
+                value={extraInstruction}
+                onChange={(e) => setExtraInstruction(e.target.value)}
+                placeholder="e.g. Grenzen gegenüber der Chefin, Meeting-Situationen…"
+                className="glass-inset w-full resize-y rounded-xl p-3 text-sm text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/30"
               />
             </div>
-          </div>
 
-          <button
-            type="button"
-            disabled={generating}
-            onClick={() => void onGenerate()}
-            className="flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 py-4 text-sm font-bold text-zinc-950 shadow-lg shadow-amber-900/20 transition-opacity hover:opacity-95 active:scale-[0.99] disabled:opacity-60"
-          >
-            {generating ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-            ) : (
-              <Sparkles className="h-4 w-4" aria-hidden />
+            <button
+              type="button"
+              disabled={loading || !clientSlug}
+              onClick={() => void onStart()}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 py-4 text-sm font-bold text-zinc-950 shadow-lg shadow-amber-900/20 transition-opacity hover:opacity-95 disabled:opacity-50"
+            >
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+              {loading ? "Running models…" : "Generate angles"}
+            </button>
+            <p className="text-[11px] text-app-fg-muted">
+              Requires saved reel analyses in Intelligence. First run can take 1–3 minutes.
+            </p>
+          </section>
+
+          {sourceMode === "outlier" && (
+            <section className="glass flex-1 rounded-2xl p-6">
+              <h2 className="mb-3 text-sm font-semibold text-app-fg">
+                Select analyses ({selectedAnalysisIds.size} selected)
+              </h2>
+              {loadingList ? (
+                <Loader2 className="h-6 w-6 animate-spin text-app-fg-subtle" />
+              ) : analyses.length === 0 ? (
+                <p className="text-sm text-app-fg-muted">No analyses yet — analyze reels in Intelligence.</p>
+              ) : (
+                <ul className="max-h-[480px] space-y-2 overflow-y-auto pr-1">
+                  {analyses.map((a) => (
+                    <li key={a.id}>
+                      <label className="flex cursor-pointer gap-3 rounded-xl border border-app-divider p-3 hover:bg-white/[0.03]">
+                        <input
+                          type="checkbox"
+                          checked={selectedAnalysisIds.has(a.id)}
+                          onChange={() => toggleAnalysis(a.id)}
+                          className="mt-1 accent-amber-500"
+                        />
+                        <span className="min-w-0 flex-1 text-sm">
+                          <span className="font-medium text-app-fg">@{a.owner_username ?? "?"}</span>
+                          <span className="ml-2 text-app-fg-muted">
+                            score {a.total_score ?? "—"}
+                          </span>
+                          <span className="mt-1 block truncate font-mono text-[11px] text-app-fg-subtle">
+                            {a.post_url}
+                          </span>
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
+        </div>
+      )}
+
+      {step === "angles" && session && (
+        <section className="space-y-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                setStep("source");
+                setSession(null);
+              }}
+              className="text-xs font-semibold text-app-fg-muted hover:text-app-fg"
+            >
+              ← New session
+            </button>
+            {session.synthesized_patterns && (
+              <button
+                type="button"
+                onClick={() => setPatternsOpen((o) => !o)}
+                className="flex items-center gap-1 text-xs font-semibold text-app-fg-muted hover:text-app-fg"
+              >
+                Synthesized patterns {patternsOpen ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+              </button>
             )}
-            {generating ? "Generating…" : "Generate hooks"}
-          </button>
-
-          <div className="flex items-center gap-2 px-1">
-            <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-400" />
-            <span className="text-[11px] font-medium text-app-fg-muted">
-              Ready — output is demo data until the model is wired.
-            </span>
+          </div>
+          {patternsOpen && session.synthesized_patterns && (
+            <pre className="max-h-64 overflow-auto rounded-xl border border-app-divider bg-zinc-950/40 p-4 text-[11px] text-zinc-300">
+              {JSON.stringify(session.synthesized_patterns, null, 2)}
+            </pre>
+          )}
+          <h2 className="text-sm font-semibold text-app-fg">Pick an angle</h2>
+          <div className="grid gap-3 md:grid-cols-2">
+            {angles.map((raw, i) => (
+              <div
+                key={i}
+                className="glass flex flex-col gap-2 rounded-2xl p-5"
+              >
+                <p className="text-sm font-semibold text-app-fg">{str(raw.title)}</p>
+                <p className="text-xs text-app-fg-muted">{str(raw.situation)}</p>
+                <p className="text-[11px] text-app-fg-subtle">
+                  <span className="font-medium text-app-fg-muted">Hook: </span>
+                  {str(raw.draft_hook)}
+                </p>
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={() => void onChooseAngle(i)}
+                  className="mt-2 rounded-lg bg-amber-500/15 py-2 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-50"
+                >
+                  Use this angle
+                </button>
+              </div>
+            ))}
           </div>
         </section>
+      )}
 
-        <section className="w-full flex-1 space-y-6">
-          <div className="mb-6 flex flex-col gap-4 border-b border-app-divider pb-4 sm:flex-row sm:items-center sm:justify-between">
-            <h2 className="text-sm font-semibold text-app-fg">
-              Output <span className="text-app-fg-muted">({items.length})</span>
-            </h2>
-            <div className="flex flex-wrap gap-2">
+      {step === "content" && session && (
+        <section className="space-y-8">
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setStep("angles")}
+              className="text-xs font-semibold text-app-fg-muted hover:text-app-fg"
+            >
+              ← Back to angles
+            </button>
+            <span
+              className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
+                session.status === "approved"
+                  ? "bg-emerald-500/20 text-emerald-400"
+                  : session.status === "rejected"
+                    ? "bg-red-500/20 text-red-400"
+                    : "bg-app-chip-bg text-app-fg-muted"
+              }`}
+            >
+              {session.status}
+            </span>
+          </div>
+
+          <div className="glass rounded-2xl p-4">
+            <p className="mb-2 text-xs font-semibold uppercase text-app-fg-subtle">Regenerate</p>
+            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+              <select
+                value={regenScope}
+                onChange={(e) =>
+                  setRegenScope(e.target.value as typeof regenScope)
+                }
+                className="glass-inset rounded-xl px-3 py-2 text-sm text-app-fg"
+              >
+                <option value="all">Full package</option>
+                <option value="hooks">Hooks only</option>
+                <option value="script">Script only</option>
+                <option value="caption">Caption + hashtags</option>
+                <option value="story">Story lines only</option>
+              </select>
+              <input
+                type="text"
+                value={regenFeedback}
+                onChange={(e) => setRegenFeedback(e.target.value)}
+                placeholder="Feedback e.g. shorter hook, more direct…"
+                className="glass-inset min-w-[200px] flex-1 rounded-xl px-3 py-2 text-sm text-app-fg"
+              />
               <button
                 type="button"
-                onClick={() => void onExportAll()}
-                className="glass-pill rounded-full px-4 py-2 text-[11px] font-bold text-app-pill-fg transition-colors hover:text-app-pill-fg-hover"
+                disabled={loading}
+                onClick={() => void onRegenerate()}
+                className="flex items-center justify-center gap-2 rounded-xl border border-app-divider px-4 py-2 text-xs font-bold text-app-fg hover:bg-white/5 disabled:opacity-50"
               >
-                Export all
-              </button>
-              <button
-                type="button"
-                onClick={onRefresh}
-                className="glass-pill rounded-full px-4 py-2 text-[11px] font-bold text-app-pill-fg transition-colors hover:text-app-pill-fg-hover"
-              >
-                Shuffle order
+                <RefreshCw className="h-3.5 w-3.5" />
+                Regenerate
               </button>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-3">
-            {items.map((row) => {
-              const isStarred = starred.has(row.id);
-              return (
-                <div
-                  key={row.id}
-                  className="glass group flex flex-col justify-between gap-4 rounded-2xl p-5 transition-colors hover:bg-zinc-100/70 dark:hover:bg-white/[0.04] md:flex-row md:items-center"
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={loading || session.status === "approved"}
+              onClick={() => void onApprove()}
+              className="flex items-center gap-2 rounded-xl bg-emerald-500/15 px-4 py-2 text-xs font-bold text-emerald-400 hover:bg-emerald-500/25 disabled:opacity-40"
+            >
+              <ThumbsUp className="h-4 w-4" /> Approve
+            </button>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => void onReject()}
+              className="flex items-center gap-2 rounded-xl bg-red-500/10 px-4 py-2 text-xs font-bold text-red-400 hover:bg-red-500/20"
+            >
+              <ThumbsDown className="h-4 w-4" /> Reject
+            </button>
+          </div>
+
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-app-fg">
+                Hooks ({session.hooks?.length ?? 0})
+              </h2>
+            </div>
+            <ul className="space-y-2">
+              {(session.hooks ?? []).map((h, i) => (
+                <li
+                  key={`${i}-${h.text.slice(0, 20)}`}
+                  className="glass flex items-start justify-between gap-3 rounded-xl p-4"
                 >
-                  <p className="min-w-0 flex-1 text-[15px] leading-relaxed text-app-fg">
-                    {row.text}
+                  <p className="flex-1 text-sm leading-relaxed text-app-fg">
+                    <span className="mr-2 text-[10px] font-bold uppercase text-app-fg-subtle">
+                      T{h.tier}
+                    </span>
+                    {h.text}
                   </p>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <button
-                      type="button"
-                      title="Copy"
-                      onClick={() => void onCopy(row.id, row.text)}
-                      className="rounded-lg bg-app-icon-btn-bg p-2.5 text-app-icon-btn-fg transition-colors hover:bg-app-icon-btn-bg-hover hover:text-app-icon-btn-fg-hover"
-                    >
-                      {copiedId === row.id ? (
-                        <Check className="h-5 w-5 text-emerald-400" aria-hidden />
-                      ) : (
-                        <Copy className="h-5 w-5" aria-hidden />
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      title={isStarred ? "Unstar" : "Star"}
-                      onClick={() => toggleStar(row.id)}
-                      className={`rounded-lg p-2.5 transition-colors ${
-                        isStarred
-                          ? "bg-amber-500/15 text-app-accent"
-                          : "bg-app-icon-btn-bg text-app-icon-btn-fg hover:bg-app-icon-btn-bg-hover hover:text-app-accent"
-                      }`}
-                    >
-                      <Star
-                        className={`h-5 w-5 ${isStarred ? "fill-amber-500 dark:fill-amber-400" : ""}`}
-                        aria-hidden
-                      />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        show("Script step isn’t built yet — copy the hook and paste into your teleprompter.")
-                      }
-                      className="flex items-center gap-1.5 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[12px] font-bold text-app-on-amber-title transition-colors hover:bg-amber-500/15"
-                    >
-                      Use in script <ArrowRight className="h-3.5 w-3.5" aria-hidden />
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
+                  <button
+                    type="button"
+                    onClick={() => void copyText("hook", h.text)}
+                    className="shrink-0 rounded-lg bg-app-icon-btn-bg p-2 text-app-icon-btn-fg"
+                  >
+                    <Copy className="h-4 w-4" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-app-fg">60s script</h2>
+              <button
+                type="button"
+                onClick={() => void copyText("script", session.script ?? "")}
+                className="flex items-center gap-1 rounded-lg bg-app-icon-btn-bg px-3 py-1.5 text-[11px] font-bold text-app-icon-btn-fg"
+              >
+                <Copy className="h-3.5 w-3.5" /> Copy all
+              </button>
+            </div>
+            <pre className="glass max-h-[480px] overflow-auto whitespace-pre-wrap rounded-2xl p-5 text-sm leading-relaxed text-app-fg">
+              {session.script ?? "—"}
+            </pre>
+          </div>
+
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-app-fg">Caption</h2>
+              <button
+                type="button"
+                onClick={() =>
+                  void copyText(
+                    "caption",
+                    `${session.caption_body ?? ""}\n\n${(session.hashtags ?? []).join(" ")}`,
+                  )
+                }
+                className="flex items-center gap-1 rounded-lg bg-app-icon-btn-bg px-3 py-1.5 text-[11px] font-bold text-app-icon-btn-fg"
+              >
+                <Copy className="h-3.5 w-3.5" /> Copy + tags
+              </button>
+            </div>
+            <div className="glass rounded-2xl p-5 text-sm leading-relaxed text-app-fg">
+              <p className="whitespace-pre-wrap">{session.caption_body ?? "—"}</p>
+              <p className="mt-3 text-xs text-app-fg-muted">
+                {(session.hashtags ?? []).join(" ") || "—"}
+              </p>
+            </div>
+          </div>
+
+          <div>
+            <h2 className="mb-2 text-sm font-semibold text-app-fg">Story variants</h2>
+            <ul className="space-y-2">
+              {(session.story_variants ?? []).map((line, i) => (
+                <li key={i} className="glass flex items-center justify-between gap-3 rounded-xl p-4">
+                  <p className="text-sm text-app-fg">{line}</p>
+                  <button
+                    type="button"
+                    onClick={() => void copyText("story", line)}
+                    className="rounded-lg bg-app-icon-btn-bg p-2"
+                  >
+                    <Copy className="h-4 w-4" />
+                  </button>
+                </li>
+              ))}
+            </ul>
           </div>
         </section>
-      </div>
+      )}
     </main>
   );
 }
