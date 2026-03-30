@@ -218,10 +218,48 @@ def _is_views_breakout_row(r: dict) -> bool:
     return _is_legacy_views_only_row(r)
 
 
-def _views_ratio_sort_key(r: dict) -> Tuple[float, str]:
+def _views_breakout_sort_key(r: dict) -> Tuple[float, float, str]:
+    """Best first: strongest views ratio, then higher absolute views on tie."""
     if r.get("outlier_views_ratio") is not None:
-        return (_float_ratio(r.get("outlier_views_ratio")), str(r.get("id") or ""))
-    return (_float_ratio(r.get("outlier_ratio")), str(r.get("id") or ""))
+        ratio = _float_ratio(r.get("outlier_views_ratio"))
+    else:
+        ratio = _float_ratio(r.get("outlier_ratio"))
+    metric = float(r.get("views") or 0)
+    return (ratio, metric, str(r.get("id") or ""))
+
+
+def _likes_breakout_sort_key(r: dict) -> Tuple[float, float, str]:
+    ratio = _float_ratio(r.get("outlier_likes_ratio"))
+    metric = float(r.get("likes") or 0)
+    return (ratio, metric, str(r.get("id") or ""))
+
+
+def _comments_breakout_sort_key(r: dict) -> Tuple[float, float, str]:
+    ratio = _float_ratio(r.get("outlier_comments_ratio"))
+    metric = float(r.get("comments") or 0)
+    return (ratio, metric, str(r.get("id") or ""))
+
+
+def _views_breakout_display_key(r: dict) -> Tuple[float, float, str]:
+    """Order for API/UI: más → menos on absolute views, then × ratio."""
+    if r.get("outlier_views_ratio") is not None:
+        ratio = _float_ratio(r.get("outlier_views_ratio"))
+    else:
+        ratio = _float_ratio(r.get("outlier_ratio"))
+    metric = _float_ratio(r.get("views"))
+    return (metric, ratio, str(r.get("id") or ""))
+
+
+def _likes_breakout_display_key(r: dict) -> Tuple[float, float, str]:
+    metric = _float_ratio(r.get("likes"))
+    ratio = _float_ratio(r.get("outlier_likes_ratio"))
+    return (metric, ratio, str(r.get("id") or ""))
+
+
+def _comments_breakout_display_key(r: dict) -> Tuple[float, float, str]:
+    metric = _float_ratio(r.get("comments"))
+    ratio = _float_ratio(r.get("outlier_comments_ratio"))
+    return (metric, ratio, str(r.get("id") or ""))
 
 
 def _weekly_breakout_tops(
@@ -257,19 +295,23 @@ def _weekly_breakout_tops(
 
     tv = top_by(
         _is_views_breakout_row,
-        _views_ratio_sort_key,
+        _views_breakout_sort_key,
         top_n_views,
     )
     tl = top_by(
         lambda r: r.get("is_outlier_likes") is True,
-        lambda r: (_float_ratio(r.get("outlier_likes_ratio")), str(r.get("id") or "")),
+        _likes_breakout_sort_key,
         top_n_likes,
     )
     tc = top_by(
         lambda r: r.get("is_outlier_comments") is True,
-        lambda r: (_float_ratio(r.get("outlier_comments_ratio")), str(r.get("id") or "")),
+        _comments_breakout_sort_key,
         top_n_comments,
     )
+    # Descending: más → menos on the column metric (views / likes / comments), then × ratio.
+    tv = sorted(tv, key=_views_breakout_display_key, reverse=True)
+    tl = sorted(tl, key=_likes_breakout_display_key, reverse=True)
+    tc = sorted(tc, key=_comments_breakout_display_key, reverse=True)
     return tv, tl, tc, window_start, now
 
 

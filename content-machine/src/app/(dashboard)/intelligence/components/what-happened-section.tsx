@@ -43,18 +43,46 @@ function normalizeTopList(raw: unknown): ScrapedReelRow[] {
   return [];
 }
 
+/** Coerce API strings / numbers to finite float (Postgres numeric often serializes as string). */
+function toFiniteRatio(raw: unknown): number | null {
+  if (raw == null || raw === "") return null;
+  const n = typeof raw === "number" ? raw : parseFloat(String(raw).replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+}
+
 function breakoutRatioForColumn(
   reel: ScrapedReelRow,
   highlight: "views" | "likes" | "comments",
 ): number | null {
   if (highlight === "views") {
     const v = reel.outlier_views_ratio ?? reel.outlier_ratio;
-    return v != null ? Number(v) : null;
+    return toFiniteRatio(v);
   }
   if (highlight === "likes") {
-    return reel.outlier_likes_ratio != null ? Number(reel.outlier_likes_ratio) : null;
+    return toFiniteRatio(reel.outlier_likes_ratio);
   }
-  return reel.outlier_comments_ratio != null ? Number(reel.outlier_comments_ratio) : null;
+  return toFiniteRatio(reel.outlier_comments_ratio);
+}
+
+function rawMetricForHighlight(reel: ScrapedReelRow, highlight: "views" | "likes" | "comments"): number {
+  if (highlight === "views") return Number(reel.views) || 0;
+  if (highlight === "likes") return Number(reel.likes) || 0;
+  return Number(reel.comments) || 0;
+}
+
+/** Más → menos: primary sort on the column metric (what "Most views/likes/comments" shows), then × ratio. */
+function sortBreakoutsBestFirst(
+  reels: ScrapedReelRow[],
+  highlight: "views" | "likes" | "comments",
+): ScrapedReelRow[] {
+  return [...reels].sort((a, b) => {
+    const ma = rawMetricForHighlight(a, highlight);
+    const mb = rawMetricForHighlight(b, highlight);
+    if (mb !== ma) return mb - ma;
+    const ra = breakoutRatioForColumn(a, highlight) ?? -1;
+    const rb = breakoutRatioForColumn(b, highlight) ?? -1;
+    return rb - ra;
+  });
 }
 
 function CompactBreakoutRow({
@@ -237,9 +265,9 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
   }
 
   const wb = data?.week_breakouts;
-  const topViews = normalizeTopList(wb?.top_by_views);
-  const topLikes = normalizeTopList(wb?.top_by_likes);
-  const topComments = normalizeTopList(wb?.top_by_comments);
+  const topViews = sortBreakoutsBestFirst(normalizeTopList(wb?.top_by_views), "views");
+  const topLikes = sortBreakoutsBestFirst(normalizeTopList(wb?.top_by_likes), "likes");
+  const topComments = sortBreakoutsBestFirst(normalizeTopList(wb?.top_by_comments), "comments");
 
   return (
     <section className="mb-8">

@@ -66,6 +66,26 @@ def _load_session(supabase: Client, client_id: str, session_id: str) -> Dict[str
     return dict(res.data[0])
 
 
+def _row_has_regenerated_content(row: Dict[str, Any]) -> bool:
+    """True if the session already has a content package (not only angles)."""
+    hooks = row.get("hooks")
+    if isinstance(hooks, list):
+        for h in hooks:
+            if isinstance(h, dict) and str(h.get("text") or "").strip():
+                return True
+    if str(row.get("script") or "").strip():
+        return True
+    if str(row.get("caption_body") or "").strip():
+        return True
+    tags = row.get("hashtags")
+    if isinstance(tags, list) and any(str(t).strip() for t in tags):
+        return True
+    stories = row.get("story_variants")
+    if isinstance(stories, list) and any(str(s).strip() for s in stories):
+        return True
+    return False
+
+
 def _load_client_for_generation(supabase: Client, client_id: str) -> Dict[str, Any]:
     res = (
         supabase.table("clients")
@@ -249,7 +269,7 @@ def generation_regenerate(
         raise HTTPException(status_code=503, detail="OPENROUTER_API_KEY not configured")
 
     row = _load_session(supabase, client_id, session_id)
-    if row.get("status") == "angles_ready" or not row.get("hooks"):
+    if row.get("status") == "angles_ready" or not _row_has_regenerated_content(row):
         raise HTTPException(
             status_code=400,
             detail="Choose an angle first — session has no generated content yet.",
@@ -383,3 +403,17 @@ def generation_get_session(
 ) -> dict:
     _ = slug
     return _row_to_out(_load_session(supabase, client_id, session_id))
+
+
+@router.delete("/clients/{slug}/generate/sessions/{session_id}", status_code=204)
+def generation_delete_session(
+    slug: str,
+    session_id: str,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+) -> None:
+    _ = slug
+    _ = _load_session(supabase, client_id, session_id)
+    supabase.table("generation_sessions").delete().eq("id", session_id).eq(
+        "client_id", client_id
+    ).execute()

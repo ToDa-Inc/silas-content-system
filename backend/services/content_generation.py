@@ -332,9 +332,12 @@ def angles_from_session_row(row: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def get_chosen_angle(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     angles = angles_from_session_row(row)
-    idx = row.get("chosen_angle_index")
-    if idx is None or not angles:
+    if not angles:
         return None
+    idx = row.get("chosen_angle_index")
+    if idx is None:
+        # Rare: index missing in DB but only one angle exists (still regeneratable).
+        return angles[0] if len(angles) == 1 else None
     try:
         i = int(idx)
     except (TypeError, ValueError):

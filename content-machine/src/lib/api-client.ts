@@ -349,6 +349,9 @@ export async function generationRegenerate(
     if (!res.ok) {
       return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
     }
+    if (!json || typeof json !== "object" || typeof (json as GenerationSession).id !== "string") {
+      return { ok: false, error: "Invalid response from server after regenerate." };
+    }
     return { ok: true, data: json as GenerationSession };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
@@ -404,6 +407,31 @@ export async function generationGetSession(
       };
     }
     return { ok: true, data: json as GenerationSession };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function generationDeleteSession(
+  clientSlug: string,
+  orgSlug: string,
+  sessionId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/generate/sessions/${encodeURIComponent(sessionId)}`,
+      { method: "DELETE", headers },
+    );
+    if (res.status === 204 || res.ok) {
+      return { ok: true };
+    }
+    const json = (await res.json().catch(() => ({}))) as { detail?: unknown };
+    return {
+      ok: false,
+      error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`),
+    };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
   }
