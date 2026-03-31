@@ -201,6 +201,43 @@ def _float_ratio(val: Any) -> float:
         return 0.0
 
 
+def _normalize_instagram_handle(val: Any) -> Optional[str]:
+    if val is None:
+        return None
+    s = str(val).strip().lstrip("@").lower()
+    return s or None
+
+
+def _client_instagram_handle(supabase: Client, client_id: str) -> Optional[str]:
+    """Configured creator handle for this client — own reels should match this when set."""
+    try:
+        res = (
+            supabase.table("clients")
+            .select("instagram_handle")
+            .eq("id", client_id)
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            return None
+        return _normalize_instagram_handle((res.data[0] or {}).get("instagram_handle"))
+    except Exception:
+        return None
+
+
+def _filter_scraped_rows_to_configured_handle(
+    rows: List[dict], configured: Optional[str]
+) -> List[dict]:
+    if not configured:
+        return rows
+    out: List[dict] = []
+    for r in rows:
+        au = _normalize_instagram_handle(r.get("account_username"))
+        if au == configured:
+            out.append(r)
+    return out
+
+
 def _is_legacy_views_only_row(r: dict) -> bool:
     """Pre multi-metric scrape: is_outlier + outlier_ratio (views) only; per-metric ratios unset."""
     if r.get("is_outlier") is not True:
@@ -216,28 +253,6 @@ def _is_views_breakout_row(r: dict) -> bool:
     if r.get("is_outlier_views") is True:
         return True
     return _is_legacy_views_only_row(r)
-
-
-def _views_breakout_sort_key(r: dict) -> Tuple[float, float, str]:
-    """Best first: strongest views ratio, then higher absolute views on tie."""
-    if r.get("outlier_views_ratio") is not None:
-        ratio = _float_ratio(r.get("outlier_views_ratio"))
-    else:
-        ratio = _float_ratio(r.get("outlier_ratio"))
-    metric = float(r.get("views") or 0)
-    return (ratio, metric, str(r.get("id") or ""))
-
-
-def _likes_breakout_sort_key(r: dict) -> Tuple[float, float, str]:
-    ratio = _float_ratio(r.get("outlier_likes_ratio"))
-    metric = float(r.get("likes") or 0)
-    return (ratio, metric, str(r.get("id") or ""))
-
-
-def _comments_breakout_sort_key(r: dict) -> Tuple[float, float, str]:
-    ratio = _float_ratio(r.get("outlier_comments_ratio"))
-    metric = float(r.get("comments") or 0)
-    return (ratio, metric, str(r.get("id") or ""))
 
 
 def _views_breakout_display_key(r: dict) -> Tuple[float, float, str]:
@@ -271,7 +286,7 @@ def _weekly_breakout_tops(
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], datetime, datetime]:
     """
     Among competitor outlier reels in `rows`, keep those whose reference date is in the last `days`,
-    then pick the top reels per outlier type by ratio strength (up to N per column).
+    then pick the top N per column by absolute views / likes / comments (tie-breaker: stronger × ratio).
     """
     now = datetime.now(timezone.utc)
     window_start = now - timedelta(days=days)
@@ -295,17 +310,17 @@ def _weekly_breakout_tops(
 
     tv = top_by(
         _is_views_breakout_row,
-        _views_breakout_sort_key,
+        _views_breakout_display_key,
         top_n_views,
     )
     tl = top_by(
         lambda r: r.get("is_outlier_likes") is True,
-        _likes_breakout_sort_key,
+        _likes_breakout_display_key,
         top_n_likes,
     )
     tc = top_by(
         lambda r: r.get("is_outlier_comments") is True,
-        _comments_breakout_sort_key,
+        _comments_breakout_display_key,
         top_n_comments,
     )
     # Descending: más → menos on the column metric (views / likes / comments), then × ratio.
@@ -316,24 +331,38 @@ def _weekly_breakout_tops(
 
 
 def _compute_client_stats(supabase: Client, client_id: str) -> Dict[str, Any]:
-    count_res = (
-        supabase.table("scraped_reels")
-        .select("id", count="exact")
-        .eq("client_id", client_id)
-        .is_("competitor_id", "null")
-        .execute()
-    )
-    total_own = int(count_res.count or 0)
+    handle = _client_instagram_handle(supabase, client_id)
+    fetch_cap = 120 if handle else 30
+    if handle:
+        id_rows = (
+            supabase.table("scraped_reels")
+            .select("id, account_username")
+            .eq("client_id", client_id)
+            .is_("competitor_id", "null")
+            .limit(800)
+            .execute()
+        )
+        total_own = len(_filter_scraped_rows_to_configured_handle(id_rows.data or [], handle))
+    else:
+        count_res = (
+            supabase.table("scraped_reels")
+            .select("id", count="exact")
+            .eq("client_id", client_id)
+            .is_("competitor_id", "null")
+            .execute()
+        )
+        total_own = int(count_res.count or 0)
     res = (
         supabase.table("scraped_reels")
-        .select("views, likes, posted_at")
+        .select("views, likes, posted_at, account_username")
         .eq("client_id", client_id)
         .is_("competitor_id", "null")
         .order("posted_at", desc=True, nullsfirst=False)
-        .limit(30)
+        .limit(fetch_cap)
         .execute()
     )
-    window: List[dict] = res.data or []
+    window_all: List[dict] = res.data or []
+    window: List[dict] = _filter_scraped_rows_to_configured_handle(window_all, handle)[:30]
     n = len(window)
     if n == 0:
         return {
@@ -1094,15 +1123,19 @@ def get_intelligence_activity(
 
     growth: List[Dict[str, Any]] = []
     try:
+        ig_handle = _client_instagram_handle(supabase, client_id)
+        own_cap = 120 if ig_handle else 40
         own = (
             supabase.table("scraped_reels")
-            .select("id")
+            .select("id, account_username")
             .eq("client_id", client_id)
             .is_("competitor_id", "null")
-            .limit(40)
+            .order("posted_at", desc=True, nullsfirst=False)
+            .limit(own_cap)
             .execute()
         )
-        own_ids = [str(x["id"]) for x in (own.data or [])][:20]
+        own_rows = _filter_scraped_rows_to_configured_handle(own.data or [], ig_handle)
+        own_ids = [str(x["id"]) for x in own_rows][:20]
         if own_ids:
             snap_all = (
                 supabase.table("reel_snapshots")
@@ -1457,16 +1490,19 @@ def list_own_reels_metrics(
                 detail=f"reel_ids accepts at most {_METRICS_MAX_REEL_IDS} reel ids",
             )
     else:
+        ig_handle = _client_instagram_handle(supabase, client_id)
+        fetch_n = _METRICS_DEFAULT_OWN_LIMIT * 4 if ig_handle else _METRICS_DEFAULT_OWN_LIMIT
         own = (
             supabase.table("scraped_reels")
-            .select("id")
+            .select("id, account_username")
             .eq("client_id", client_id)
             .is_("competitor_id", "null")
             .order("posted_at", desc=True)
-            .limit(_METRICS_DEFAULT_OWN_LIMIT)
+            .limit(fetch_n)
             .execute()
         )
-        target_ids = [str(x["id"]) for x in (own.data or [])]
+        filtered = _filter_scraped_rows_to_configured_handle(own.data or [], ig_handle)
+        target_ids = [str(x["id"]) for x in filtered[:_METRICS_DEFAULT_OWN_LIMIT]]
 
     metas = _own_reel_metas_batch(supabase, client_id, target_ids)
     snap_ids = list(metas.keys())

@@ -26,7 +26,9 @@ export function DashboardHotReels({ items }: Props) {
           </div>
           <div>
             <h2 className="text-sm font-semibold text-app-fg">Heating up</h2>
-            <p className="text-[10px] text-app-fg-muted">Largest view gains (last 24h vs prior snapshot)</p>
+            <p className="text-[10px] text-app-fg-muted">
+              Your configured Instagram — largest view gains (latest vs prior snapshot)
+            </p>
           </div>
         </div>
         <TrendingUp className="h-4 w-4 text-app-fg-faint" aria-hidden />

@@ -18,6 +18,10 @@ type Props = {
   id?: string;
   /** When `label` is omitted, set this for the trigger button (accessibility). */
   ariaLabel?: string;
+  /** Open the menu above the trigger (helps inside overflow / bottom of cards). */
+  menuAbove?: boolean;
+  /** Smaller chevron + tighter trigger (e.g. competitor card inline pickers). */
+  dense?: boolean;
 };
 
 export function AppSelect({
@@ -31,6 +35,8 @@ export function AppSelect({
   disabled,
   id: idProp,
   ariaLabel,
+  menuAbove,
+  dense,
 }: Props) {
   const autoId = useId();
   const listId = `${autoId}-list`;
@@ -60,7 +66,12 @@ export function AppSelect({
   return (
     <div ref={wrapRef} className={cn("relative inline-block text-left", className)}>
       {label ? (
-        <span className="mb-1 block text-[10px] font-medium uppercase tracking-wider text-zinc-500 dark:text-app-fg-subtle">
+        <span
+          className={cn(
+            "block text-[10px] font-medium uppercase tracking-wider text-zinc-500 dark:text-app-fg-subtle",
+            dense ? "mb-0.5" : "mb-1",
+          )}
+        >
           {label}
         </span>
       ) : null}
@@ -83,7 +94,11 @@ export function AppSelect({
       >
         <span className="truncate">{labelText}</span>
         <ChevronDown
-          className={cn("h-4 w-4 shrink-0 text-zinc-500 transition-transform", open && "rotate-180")}
+          className={cn(
+            "shrink-0 text-zinc-500 transition-transform dark:text-zinc-400",
+            dense ? "h-3 w-3" : "h-4 w-4",
+            open && "rotate-180",
+          )}
           aria-hidden
         />
       </button>
@@ -92,7 +107,10 @@ export function AppSelect({
           id={listId}
           role="listbox"
           aria-labelledby={btnId}
-          className="absolute left-0 z-50 mt-1 max-h-60 min-w-full overflow-auto rounded-lg border border-zinc-200/90 bg-white py-1 shadow-lg dark:border-white/12 dark:bg-zinc-900"
+          className={cn(
+            "absolute left-0 z-50 max-h-60 min-w-full overflow-auto rounded-lg border border-zinc-200/90 bg-white py-1 shadow-lg dark:border-white/12 dark:bg-zinc-900",
+            menuAbove ? "bottom-full mb-1" : "top-full mt-1",
+          )}
         >
           {options.map((o) => {
             const active = o.value === value;

@@ -80,7 +80,7 @@ export function CompetitorsList({
         return (
           <div
             key={row.id}
-            className="glass rounded-xl px-4 py-3 transition-colors hover:bg-zinc-100/70 dark:hover:bg-white/[0.06]"
+            className="glass !overflow-visible rounded-xl px-4 py-3 transition-colors hover:bg-zinc-100/70 dark:hover:bg-white/[0.06]"
           >
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
               <span className="w-8 shrink-0 text-[11px] text-app-fg-subtle">#{rank}</span>
@@ -135,9 +135,11 @@ export function CompetitorsList({
             </div>
 
             {recent.length > 0 ? (
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <span className="text-[10px] uppercase tracking-wider text-app-fg-faint">Recent</span>
-                <div className="flex gap-1">
+              <div className="mt-2 flex flex-col gap-1.5">
+                <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-500 dark:text-app-fg-subtle">
+                  Recent
+                </span>
+                <div className="flex flex-wrap gap-1">
                   {recent.map((r) => (
                     <ReelThumbnail
                       key={r.id}
@@ -168,7 +170,7 @@ export function CompetitorsList({
             ) : null}
 
             {clientSlug.trim() && orgSlug.trim() ? (
-              <div className="mt-2 flex flex-wrap items-end justify-between gap-3">
+              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end sm:gap-3">
                 <ScrapeCompetitorReelsButton
                   clientSlug={clientSlug}
                   orgSlug={orgSlug}
@@ -176,7 +178,7 @@ export function CompetitorsList({
                   username={row.username}
                   disabled={syncDisabled}
                 />
-                <div className="ml-auto shrink-0">
+                <div className="flex justify-start sm:justify-end">
                   <DeleteCompetitorButton
                     clientSlug={clientSlug}
                     orgSlug={orgSlug}

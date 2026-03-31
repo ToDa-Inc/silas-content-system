@@ -103,9 +103,12 @@ function CompactBreakoutRow({
   const ratioLabel =
     highlight === "views" ? "views" : highlight === "likes" ? "likes" : "comments";
 
+  const ratioTitle =
+    colRatio != null ? `${colRatio.toFixed(1)}× vs this account's average ${ratioLabel}` : undefined;
+
   return (
     <ReelCardWithAnalysis row={reel} clientSlug={clientSlug} orgSlug={orgSlug} compact>
-      <div className="relative shrink-0">
+      <div className="group/thumb relative shrink-0 overflow-hidden rounded">
         <ReelThumbnail
           src={reel.thumbnail_url}
           alt={`@${reel.account_username} reel`}
@@ -114,8 +117,8 @@ function CompactBreakoutRow({
         />
         {colRatio != null ? (
           <span
-            className="absolute -right-0.5 -top-0.5 max-w-[4.5rem] rounded bg-amber-500 px-0.5 py-px text-[6px] font-bold leading-tight text-zinc-950 shadow"
-            title={`${colRatio.toFixed(1)}× vs their avg ${ratioLabel}`}
+            className="pointer-events-none absolute left-0 right-0 bottom-0 z-10 rounded-b-[inherit] bg-gradient-to-t from-zinc-950/95 via-zinc-950/75 to-transparent px-1 pb-0.5 pt-3 text-center text-[7px] font-semibold leading-tight text-amber-200/95 opacity-0 shadow-sm transition-opacity duration-200 group-hover/thumb:opacity-100 group-focus-within/thumb:opacity-100"
+            title={ratioTitle}
           >
             {colRatio.toFixed(1)}× {ratioLabel}
           </span>
@@ -134,26 +137,6 @@ function CompactBreakoutRow({
           <span className={hc ? "font-semibold text-amber-600 dark:text-amber-400" : ""}>
             {reel.comments != null ? `${Number(reel.comments).toLocaleString()} comments` : "—"}
           </span>
-        </div>
-        <div className="mt-1 flex flex-wrap gap-2">
-          {reel.competitor_id ? (
-            <Link
-              href={`/intelligence/reels?competitor=${encodeURIComponent(reel.competitor_id)}`}
-              className="text-[9px] font-semibold text-amber-600 hover:underline dark:text-amber-400"
-            >
-              More →
-            </Link>
-          ) : null}
-          {reel.post_url ? (
-            <a
-              href={reel.post_url}
-              target="_blank"
-              rel="noreferrer"
-              className="text-[9px] font-semibold text-app-fg-muted hover:underline"
-            >
-              IG ↗
-            </a>
-          ) : null}
         </div>
       </div>
     </ReelCardWithAnalysis>
@@ -283,7 +266,8 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
       </div>
       <p className="mb-1 text-[11px] text-app-fg-subtle">{formatWindowHint(wb)}</p>
       <p className="mb-4 text-[11px] leading-relaxed text-app-fg-muted">
-        Up to 3 breakouts per column (views, likes, comments — vs each account&apos;s average; 5× threshold).
+        Up to 3 competitor breakouts per column (5× vs that account&apos;s average). Each column is ranked by
+        highest absolute views, likes, or comments in this window — hover a thumbnail for the × vs average badge.
       </p>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3 lg:items-start">
@@ -308,6 +292,21 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
           clientSlug={clientSlug}
           orgSlug={orgSlug}
         />
+      </div>
+
+      <div className="mt-4 flex justify-end border-t border-zinc-200/50 pt-3 dark:border-white/[0.08]">
+        <Link
+          href="/intelligence/reels"
+          className="group inline-flex items-center gap-1 text-xs font-semibold text-amber-700 transition-colors hover:text-amber-600 dark:text-amber-400 dark:hover:text-amber-300"
+        >
+          View all reels
+          <span
+            className="text-app-fg-muted transition-transform group-hover:translate-x-0.5 group-hover:text-amber-600 dark:group-hover:text-amber-400"
+            aria-hidden
+          >
+            →
+          </span>
+        </Link>
       </div>
     </section>
   );

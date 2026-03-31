@@ -88,6 +88,11 @@ function pickSeries(
     .slice(0, MAX_SERIES);
 }
 
+/**
+ * Merge series onto a shared time axis using “as-of” values: at each snapshot time, each reel shows
+ * its latest known metric at or before that time. Keeps lines continuous across staggered syncs
+ * (no sparse nulls that fragment strokes in Recharts).
+ */
 function buildMergedRows(
   series: OwnReelsMetricsSeries[],
   m: MetricKey,
@@ -104,12 +109,24 @@ function buildMergedRows(
   const dataKeys = series.map((_, i) => `s${i}`);
   const labels = series.map((r, i) => reelDisplayLabel(r, i));
 
+  const sortedPoints = series.map((r) =>
+    [...r.points].sort(
+      (a, b) => new Date(a.scraped_at).getTime() - new Date(b.scraped_at).getTime(),
+    ),
+  );
+
   const rows: ChartRow[] = sortedT.map((t) => {
     const short = formatTickDate(t);
     const row: ChartRow = { t, tShort: short };
-    series.forEach((r, i) => {
-      const pt = r.points.find((p) => p.scraped_at === t);
-      row[dataKeys[i]] = pt ? metricAtPoint(pt, m) : null;
+    const tMs = new Date(t).getTime();
+    sortedPoints.forEach((points, i) => {
+      let last: number | null = null;
+      for (const p of points) {
+        if (new Date(p.scraped_at).getTime() > tMs) break;
+        const v = metricAtPoint(p, m);
+        if (v !== null) last = v;
+      }
+      row[dataKeys[i]] = last;
     });
     return row;
   });
@@ -275,8 +292,8 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
         <div>
           <h2 className="text-sm font-semibold text-app-fg">Trends over time</h2>
           <p className="text-[11px] text-app-fg-muted">
-            Line / area need 2+ syncs · One snapshot shows a reel comparison instead · Bars = latest
-            per reel
+            Lines carry each reel&apos;s last known value forward between syncs so trends stay readable ·
+            2+ syncs recommended · One snapshot → bar comparison · Bars = latest per reel
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -532,10 +549,10 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
                         dataKey={key}
                         name={key}
                         stroke={c}
-                        strokeWidth={2}
-                        dot={{ r: 4, fill: c, stroke: c, strokeWidth: 1 }}
-                        activeDot={{ r: 6, fill: c, stroke: "#fff", strokeWidth: 2 }}
-                        connectNulls={false}
+                        strokeWidth={2.25}
+                        dot={{ r: 2.5, fill: c, stroke: isDark ? "#18181b" : "#fff", strokeWidth: 1 }}
+                        activeDot={{ r: 5, fill: c, stroke: isDark ? "#fafafa" : "#fff", strokeWidth: 2 }}
+                        connectNulls
                       />
                     );
                   })}
@@ -612,9 +629,9 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
                       dataKey={key}
                       name={key}
                       stroke={lineColors[i % lineColors.length]}
-                      strokeWidth={2}
+                      strokeWidth={2.25}
                       fill={`url(#area-grad-${key})`}
-                      connectNulls={false}
+                      connectNulls
                     />
                   ))}
                 </AreaChart>
