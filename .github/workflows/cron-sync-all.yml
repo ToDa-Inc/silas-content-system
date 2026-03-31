@@ -1,0 +1,33 @@
+# Triggers POST /api/v1/cron/sync-all on Railway (enqueue baseline + competitor scrapes).
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   SYNC_ALL_URL  — full URL, e.g. https://silas-content-system-production.up.railway.app/api/v1/cron/sync-all
+#   CRON_SECRET   — same value as CRON_SECRET on the API service
+#
+# Schedules only run from the repository’s default branch.
+
+name: Cron sync-all
+
+on:
+  schedule:
+    # 05:00 UTC daily — change as needed (GitHub cron is UTC only)
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST sync-all
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          SYNC_ALL_URL: ${{ secrets.SYNC_ALL_URL }}
+        run: |
+          if [ -z "$CRON_SECRET" ] || [ -z "$SYNC_ALL_URL" ]; then
+            echo "::error::Set Actions secrets CRON_SECRET and SYNC_ALL_URL"
+            exit 1
+          fi
+          curl -fsS --max-time 300 -X POST "$SYNC_ALL_URL" \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            -w "\nHTTP %{http_code}\n"
