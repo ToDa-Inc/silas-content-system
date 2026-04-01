@@ -167,6 +167,16 @@ html.dark .glass {
     0 4px 28px rgba(0, 0, 0, 0.42);
 }
 
+/* Competitor rows (and similar): default .glass uses overflow:hidden — clips custom selects. */
+.glass.glass-clip-none {
+  overflow: visible;
+}
+
+/* While a listbox is open, sit above the next card so the menu isn’t covered. */
+.glass.glass-clip-none:has([aria-expanded="true"]) {
+  z-index: 40;
+}
+
 .glass::before {
   content: "";
   position: absolute;

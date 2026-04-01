@@ -80,7 +80,7 @@ export function CompetitorsList({
         return (
           <div
             key={row.id}
-            className="glass !overflow-visible rounded-xl px-4 py-3 transition-colors hover:bg-zinc-100/70 dark:hover:bg-white/[0.06]"
+            className="glass glass-clip-none rounded-xl px-4 py-3 transition-colors hover:bg-zinc-100/70 dark:hover:bg-white/[0.06]"
           >
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
               <span className="w-8 shrink-0 text-[11px] text-app-fg-subtle">#{rank}</span>

@@ -23,6 +23,12 @@ type Props = {
 };
 
 function formatWindowHint(wb: WeekBreakoutsPayload | undefined): string {
+  if (wb?.scope === "growth_7d") {
+    return "Top 3 by growth (last 7 days)";
+  }
+  if (wb?.scope === "all_stored") {
+    return "All synced reels · same catalog as Reels";
+  }
   if (!wb?.window_start || !wb?.window_end) {
     return "Last 7 days · competitor breakouts";
   }
@@ -43,46 +49,41 @@ function normalizeTopList(raw: unknown): ScrapedReelRow[] {
   return [];
 }
 
-/** Coerce API strings / numbers to finite float (Postgres numeric often serializes as string). */
-function toFiniteRatio(raw: unknown): number | null {
-  if (raw == null || raw === "") return null;
-  const n = typeof raw === "number" ? raw : parseFloat(String(raw).replace(",", "."));
-  return Number.isFinite(n) ? n : null;
+/** Preserve backend order (growth-ranked); pad to 3 slots when catalog is non-empty. */
+function topThreeSlotsOrdered(reels: ScrapedReelRow[]): (ScrapedReelRow | null)[] {
+  if (!reels.length) return [];
+  const out: (ScrapedReelRow | null)[] = reels.slice(0, 3).map((r) => r);
+  while (out.length < 3) out.push(null);
+  return out.slice(0, 3);
 }
 
-function breakoutRatioForColumn(
+/** Compact absolute value (no sign). */
+function formatCompactAbs(n: number): string {
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return `${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${(abs / 1_000).toFixed(1)}K`;
+  return String(Math.round(abs));
+}
+
+/** +12K / −1.2K / 0 for badge and titles. */
+function formatCompactDeltaSigned(n: number): string {
+  if (n === 0) return "0";
+  const body = formatCompactAbs(n);
+  if (n > 0) return `+${body}`;
+  return `−${body}`;
+}
+
+function growthDeltaForMetric(
   reel: ScrapedReelRow,
-  highlight: "views" | "likes" | "comments",
+  metric: "views" | "likes" | "comments",
 ): number | null {
-  if (highlight === "views") {
-    const v = reel.outlier_views_ratio ?? reel.outlier_ratio;
-    return toFiniteRatio(v);
+  if (metric === "views") {
+    return reel.growth_views != null ? Number(reel.growth_views) : null;
   }
-  if (highlight === "likes") {
-    return toFiniteRatio(reel.outlier_likes_ratio);
+  if (metric === "likes") {
+    return reel.growth_likes != null ? Number(reel.growth_likes) : null;
   }
-  return toFiniteRatio(reel.outlier_comments_ratio);
-}
-
-function rawMetricForHighlight(reel: ScrapedReelRow, highlight: "views" | "likes" | "comments"): number {
-  if (highlight === "views") return Number(reel.views) || 0;
-  if (highlight === "likes") return Number(reel.likes) || 0;
-  return Number(reel.comments) || 0;
-}
-
-/** Más → menos: primary sort on the column metric (what "Most views/likes/comments" shows), then × ratio. */
-function sortBreakoutsBestFirst(
-  reels: ScrapedReelRow[],
-  highlight: "views" | "likes" | "comments",
-): ScrapedReelRow[] {
-  return [...reels].sort((a, b) => {
-    const ma = rawMetricForHighlight(a, highlight);
-    const mb = rawMetricForHighlight(b, highlight);
-    if (mb !== ma) return mb - ma;
-    const ra = breakoutRatioForColumn(a, highlight) ?? -1;
-    const rb = breakoutRatioForColumn(b, highlight) ?? -1;
-    return rb - ra;
-  });
+  return reel.growth_comments != null ? Number(reel.growth_comments) : null;
 }
 
 function CompactBreakoutRow({
@@ -99,12 +100,15 @@ function CompactBreakoutRow({
   const hv = highlight === "views";
   const hl = highlight === "likes";
   const hc = highlight === "comments";
-  const colRatio = breakoutRatioForColumn(reel, highlight);
-  const ratioLabel =
-    highlight === "views" ? "views" : highlight === "likes" ? "likes" : "comments";
-
-  const ratioTitle =
-    colRatio != null ? `${colRatio.toFixed(1)}× vs this account's average ${ratioLabel}` : undefined;
+  const growth = growthDeltaForMetric(reel, highlight);
+  const gv = growthDeltaForMetric(reel, "views");
+  const gl = growthDeltaForMetric(reel, "likes");
+  const gc = growthDeltaForMetric(reel, "comments");
+  const metricWord = highlight === "views" ? "views" : highlight === "likes" ? "likes" : "comments";
+  const growthTitle =
+    growth != null
+      ? `${formatCompactDeltaSigned(growth)} ${metricWord} vs prior snapshot (≈7d window or last sync)`
+      : undefined;
 
   return (
     <ReelCardWithAnalysis row={reel} clientSlug={clientSlug} orgSlug={orgSlug} compact>
@@ -115,27 +119,75 @@ function CompactBreakoutRow({
           href={reel.post_url}
           size="sm"
         />
-        {colRatio != null ? (
+        {growth != null ? (
           <span
-            className="pointer-events-none absolute left-0 right-0 bottom-0 z-10 rounded-b-[inherit] bg-gradient-to-t from-zinc-950/95 via-zinc-950/75 to-transparent px-1 pb-0.5 pt-3 text-center text-[7px] font-semibold leading-tight text-amber-200/95 opacity-0 shadow-sm transition-opacity duration-200 group-hover/thumb:opacity-100 group-focus-within/thumb:opacity-100"
-            title={ratioTitle}
+            className={`pointer-events-none absolute left-0 right-0 bottom-0 z-10 rounded-b-[inherit] bg-gradient-to-t from-zinc-950/95 via-zinc-950/75 to-transparent px-1 pb-0.5 pt-3 text-center text-[7px] font-semibold leading-tight opacity-0 shadow-sm transition-opacity duration-200 group-hover/thumb:opacity-100 group-focus-within/thumb:opacity-100 ${
+              growth > 0
+                ? "text-emerald-300/95"
+                : growth < 0
+                  ? "text-zinc-300/90"
+                  : "text-amber-200/95"
+            }`}
+            title={growthTitle}
           >
-            {colRatio.toFixed(1)}× {ratioLabel}
+            {formatCompactDeltaSigned(growth)} · 7d
           </span>
         ) : null}
       </div>
       <div className="min-w-0 flex-1">
         <p className="text-[11px] font-semibold leading-tight text-app-fg">@{reel.account_username}</p>
         <p className="mt-0.5 line-clamp-1 text-[10px] text-app-fg-muted">{reel.hook_text || reel.caption || "—"}</p>
-        <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0 text-[9px] tabular-nums text-app-fg-subtle">
-          <span className={hv ? "font-semibold text-amber-600 dark:text-amber-400" : ""}>
-            {reel.views != null ? `${Number(reel.views).toLocaleString()} views` : "—"}
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[9px] tabular-nums text-app-fg-subtle">
+          <span className={`inline-flex flex-col gap-0 ${hv ? "font-semibold text-amber-600 dark:text-amber-400" : ""}`}>
+            <span>{reel.views != null ? `${Number(reel.views).toLocaleString()} views` : "—"}</span>
+            {gv != null ? (
+              <span
+                className={`font-medium text-[8px] leading-tight ${
+                  gv > 0
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : gv < 0
+                      ? "text-zinc-500 dark:text-zinc-400"
+                      : "text-app-fg-muted"
+                }`}
+                title="Change vs baseline snapshot"
+              >
+                {formatCompactDeltaSigned(gv)} · 7d
+              </span>
+            ) : null}
           </span>
-          <span className={hl ? "font-semibold text-amber-600 dark:text-amber-400" : ""}>
-            {reel.likes != null ? `${Number(reel.likes).toLocaleString()} likes` : "—"}
+          <span className={`inline-flex flex-col gap-0 ${hl ? "font-semibold text-amber-600 dark:text-amber-400" : ""}`}>
+            <span>{reel.likes != null ? `${Number(reel.likes).toLocaleString()} likes` : "—"}</span>
+            {gl != null ? (
+              <span
+                className={`font-medium text-[8px] leading-tight ${
+                  gl > 0
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : gl < 0
+                      ? "text-zinc-500 dark:text-zinc-400"
+                      : "text-app-fg-muted"
+                }`}
+                title="Change vs baseline snapshot"
+              >
+                {formatCompactDeltaSigned(gl)} · 7d
+              </span>
+            ) : null}
           </span>
-          <span className={hc ? "font-semibold text-amber-600 dark:text-amber-400" : ""}>
-            {reel.comments != null ? `${Number(reel.comments).toLocaleString()} comments` : "—"}
+          <span className={`inline-flex flex-col gap-0 ${hc ? "font-semibold text-amber-600 dark:text-amber-400" : ""}`}>
+            <span>{reel.comments != null ? `${Number(reel.comments).toLocaleString()} comments` : "—"}</span>
+            {gc != null ? (
+              <span
+                className={`font-medium text-[8px] leading-tight ${
+                  gc > 0
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : gc < 0
+                      ? "text-zinc-500 dark:text-zinc-400"
+                      : "text-app-fg-muted"
+                }`}
+                title="Change vs baseline snapshot"
+              >
+                {formatCompactDeltaSigned(gc)} · 7d
+              </span>
+            ) : null}
           </span>
         </div>
       </div>
@@ -143,25 +195,33 @@ function CompactBreakoutRow({
   );
 }
 
+function TopMetricPlaceholderRow() {
+  return (
+    <div className="flex min-h-[72px] items-center rounded-xl border border-dashed border-zinc-300/60 bg-zinc-50/30 px-3 py-2 dark:border-white/10 dark:bg-white/[0.02]">
+      <p className="text-[10px] leading-relaxed text-app-fg-muted">—</p>
+    </div>
+  );
+}
+
 function WeeklyBreakoutColumn({
   title,
-  reels,
+  slots,
   clientSlug,
   orgSlug,
   highlight,
 }: {
   title: string;
-  reels: ScrapedReelRow[];
+  slots: (ScrapedReelRow | null)[];
   clientSlug: string;
   orgSlug: string;
   highlight: "views" | "likes" | "comments";
 }) {
-  if (!reels.length) {
+  if (!slots.length) {
     return (
       <div className="flex min-h-[120px] flex-col rounded-xl border border-dashed border-zinc-300/80 bg-zinc-50/50 p-3 dark:border-white/15 dark:bg-white/[0.02]">
         <p className="text-[11px] font-semibold uppercase tracking-wider text-app-fg-subtle">{title}</p>
         <p className="mt-2 flex-1 text-xs leading-relaxed text-app-fg-muted">
-          No breakout in this window. Sync competitors to refresh.
+          No reels in your catalog yet. Sync content or open Reels to browse.
         </p>
       </div>
     );
@@ -171,15 +231,19 @@ function WeeklyBreakoutColumn({
     <div className="flex min-w-0 flex-col gap-2">
       <p className="text-[11px] font-semibold uppercase tracking-wider text-app-fg-subtle">{title}</p>
       <div className="flex flex-col gap-2">
-        {reels.map((reel) => (
-          <CompactBreakoutRow
-            key={reel.id}
-            reel={reel}
-            clientSlug={clientSlug}
-            orgSlug={orgSlug}
-            highlight={highlight}
-          />
-        ))}
+        {slots.map((reel, i) =>
+          reel ? (
+            <CompactBreakoutRow
+              key={reel.id}
+              reel={reel}
+              clientSlug={clientSlug}
+              orgSlug={orgSlug}
+              highlight={highlight}
+            />
+          ) : (
+            <TopMetricPlaceholderRow key={`empty-${title}-${i}`} />
+          ),
+        )}
       </div>
     </div>
   );
@@ -203,7 +267,7 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
       try {
         const apiBase = getContentApiBase();
         const headers = await clientApiHeaders({ orgSlug });
-        const res = await contentApiFetch(`${apiBase}/api/v1/clients/${clientSlug}/activity`, {
+        const res = await contentApiFetch(`${apiBase}/api/v1/clients/${encodeURIComponent(clientSlug)}/activity`, {
           headers,
         });
         if (!res.ok) {
@@ -248,9 +312,9 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
   }
 
   const wb = data?.week_breakouts;
-  const topViews = sortBreakoutsBestFirst(normalizeTopList(wb?.top_by_views), "views");
-  const topLikes = sortBreakoutsBestFirst(normalizeTopList(wb?.top_by_likes), "likes");
-  const topComments = sortBreakoutsBestFirst(normalizeTopList(wb?.top_by_comments), "comments");
+  const topViews = topThreeSlotsOrdered(normalizeTopList(wb?.top_by_views));
+  const topLikes = topThreeSlotsOrdered(normalizeTopList(wb?.top_by_likes));
+  const topComments = topThreeSlotsOrdered(normalizeTopList(wb?.top_by_comments));
 
   return (
     <section className="mb-8">
@@ -266,28 +330,29 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
       </div>
       <p className="mb-1 text-[11px] text-app-fg-subtle">{formatWindowHint(wb)}</p>
       <p className="mb-4 text-[11px] leading-relaxed text-app-fg-muted">
-        Up to 3 competitor breakouts per column (5× vs that account&apos;s average). Each column is ranked by
-        highest absolute views, likes, or comments in this window — hover a thumbnail for the × vs average badge.
+        Ranked by how much each reel grew in views, likes, or comments over the last 7 days (vs the latest stored
+        snapshot from before that window). Reels without snapshot history fall back to ranking by absolute totals.
+        Hover a thumbnail for the 7-day delta badge.
       </p>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3 lg:items-start">
         <WeeklyBreakoutColumn
-          title="Most views"
-          reels={topViews}
+          title="Most views growth"
+          slots={topViews}
           highlight="views"
           clientSlug={clientSlug}
           orgSlug={orgSlug}
         />
         <WeeklyBreakoutColumn
-          title="Most likes"
-          reels={topLikes}
+          title="Most likes growth"
+          slots={topLikes}
           highlight="likes"
           clientSlug={clientSlug}
           orgSlug={orgSlug}
         />
         <WeeklyBreakoutColumn
-          title="Most comments"
-          reels={topComments}
+          title="Most comments growth"
+          slots={topComments}
           highlight="comments"
           clientSlug={clientSlug}
           orgSlug={orgSlug}

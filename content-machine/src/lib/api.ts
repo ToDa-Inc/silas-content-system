@@ -165,6 +165,10 @@ export type ScrapedReelRow = {
   last_updated_at: string | null;
   source?: string | null;
   analysis?: ReelAnalysisSummary | null;
+  /** Present on GET /activity week_breakouts tops — delta vs snapshot at or before ~7d ago. */
+  growth_views?: number | null;
+  growth_likes?: number | null;
+  growth_comments?: number | null;
 };
 
 export type ScrapeQueueStats = {
@@ -386,8 +390,10 @@ export type OwnReelGrowthItem = {
 };
 
 export type WeekBreakoutsPayload = {
-  window_start: string;
-  window_end: string;
+  /** When set, tops are from all stored reels (GET /reels), not weekly competitor breakouts. */
+  scope?: "all_stored" | "weekly_breakouts" | "growth_7d";
+  window_start?: string | null;
+  window_end?: string | null;
   days: number;
   /** @deprecated use top_n_by_type */
   top_n?: number;

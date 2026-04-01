@@ -330,6 +330,212 @@ def _weekly_breakout_tops(
     return tv, tl, tc, window_start, now
 
 
+def _top_stored_reels_by_metrics(
+    supabase: Client,
+    client_id: str,
+    top_n: int = 3,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Top N reels by raw views, likes, and comments — same catalog as GET /reels (all rows for client_id).
+    Attaches Silas analysis summaries when present (same as list_reels with include_analysis).
+    """
+    def _fetch_ordered(column: str) -> List[dict]:
+        res = (
+            supabase.table("scraped_reels")
+            .select("*")
+            .eq("client_id", client_id)
+            .order(column, desc=True)
+            .limit(top_n)
+            .execute()
+        )
+        return [dict(x) for x in (res.data or [])]
+
+    tv = _fetch_ordered("views")
+    tl = _fetch_ordered("likes")
+    tc = _fetch_ordered("comments")
+
+    by_id: Dict[str, dict] = {}
+    for row in tv + tl + tc:
+        rid = str(row.get("id") or "")
+        if rid and rid not in by_id:
+            by_id[rid] = row
+
+    if by_id:
+        try:
+            _attach_reel_analyses(supabase, client_id, list(by_id.values()))
+        except Exception:
+            pass
+
+    return tv, tl, tc
+
+
+def _chunked_ids(ids: List[str], size: int) -> List[List[str]]:
+    return [ids[i : i + size] for i in range(0, len(ids), size)]
+
+
+def _int_metric_val(val: Any) -> int:
+    try:
+        return int(val or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _snapshots_grouped_by_reel(supabase: Client, reel_ids: List[str]) -> Dict[str, List[dict]]:
+    """All snapshot rows per reel_id, unsorted in DB; we sort each list by scraped_at descending in memory."""
+    by_reel: Dict[str, List[dict]] = defaultdict(list)
+    if not reel_ids:
+        return by_reel
+    for chunk in _chunked_ids(reel_ids, 80):
+        offset = 0
+        while True:
+            try:
+                res = (
+                    supabase.table("reel_snapshots")
+                    .select("reel_id, views, likes, comments, scraped_at")
+                    .in_("reel_id", chunk)
+                    .range(offset, offset + 999)
+                    .execute()
+                )
+            except Exception:
+                break
+            batch = res.data or []
+            for row in batch:
+                rid = str(row.get("reel_id") or "")
+                if rid:
+                    by_reel[rid].append(row)
+            if len(batch) < 1000:
+                break
+            offset += 1000
+    min_ts = datetime.min.replace(tzinfo=timezone.utc)
+
+    def _snap_key(r: dict) -> datetime:
+        t = _dt_from_row(r.get("scraped_at"))
+        return t if t is not None else min_ts
+
+    for rid in list(by_reel.keys()):
+        by_reel[rid].sort(key=_snap_key, reverse=True)
+    return by_reel
+
+
+def _pick_baseline_snapshot(snaps_desc: List[dict], cutoff: datetime) -> Optional[dict]:
+    """
+    Prefer the newest snapshot at or before ``cutoff`` (true multi-day growth window).
+
+    If every snapshot is newer than ``cutoff`` (e.g. all syncs in the last week), use the **second-newest**
+    snapshot so deltas reflect "since last sync" instead of falling back to all-time absolute ranks.
+
+    If only one snapshot exists, use it (delta vs that scrape).
+    """
+    if not snaps_desc:
+        return None
+    for s in snaps_desc:
+        t = _dt_from_row(s.get("scraped_at"))
+        if t is not None and t <= cutoff:
+            return s
+    if len(snaps_desc) >= 2:
+        return snaps_desc[1]
+    return snaps_desc[0]
+
+
+def _top_reels_by_growth(
+    supabase: Client,
+    client_id: str,
+    top_n: int = 3,
+    growth_days: int = 7,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], datetime]:
+    """
+    Top N reels per column by views/likes/comments **growth** vs a baseline snapshot.
+
+    Baseline: newest snapshot at or before (now - growth_days); else second-newest snapshot; else the only
+    snapshot. Reels with no snapshots fall back to absolute-metric ranking. Attaches growth_views / likes /
+    growth_comments.
+    """
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=growth_days)
+
+    rows: List[dict] = []
+    try:
+        res = (
+            supabase.table("scraped_reels")
+            .select("*")
+            .eq("client_id", client_id)
+            .execute()
+        )
+        rows = [dict(x) for x in (res.data or [])]
+    except Exception:
+        rows = []
+    if not rows:
+        return [], [], [], now
+
+    ids = [str(r.get("id") or "") for r in rows if r.get("id")]
+    ids = [i for i in ids if i]
+
+    snapshots_by_reel: Dict[str, List[dict]] = {}
+    if ids:
+        try:
+            snapshots_by_reel = _snapshots_grouped_by_reel(supabase, ids)
+        except Exception:
+            snapshots_by_reel = {}
+
+    enriched: List[dict] = []
+    for r in rows:
+        rid = str(r.get("id") or "")
+        snaps = snapshots_by_reel.get(rid, []) if rid else []
+        base = _pick_baseline_snapshot(snaps, cutoff) if rid else None
+        if base:
+            gv = _int_metric_val(r.get("views")) - _int_metric_val(base.get("views"))
+            gl = _int_metric_val(r.get("likes")) - _int_metric_val(base.get("likes"))
+            gc = _int_metric_val(r.get("comments")) - _int_metric_val(base.get("comments"))
+            r = dict(r)
+            r["growth_views"] = gv
+            r["growth_likes"] = gl
+            r["growth_comments"] = gc
+        else:
+            r = dict(r)
+            r["growth_views"] = None
+            r["growth_likes"] = None
+            r["growth_comments"] = None
+        enriched.append(r)
+
+    def pick(metric: str, gkey: str) -> List[dict]:
+        with_g = [x for x in enriched if x.get(gkey) is not None]
+        without_g = [x for x in enriched if x.get(gkey) is None]
+        with_g.sort(key=lambda x: _int_metric_val(x.get(gkey)), reverse=True)
+        without_g.sort(key=lambda x: _int_metric_val(x.get(metric)), reverse=True)
+        out: List[dict] = []
+        seen: set[str] = set()
+        for pool in (with_g, without_g):
+            for r in pool:
+                if len(out) >= top_n:
+                    break
+                rid = str(r.get("id") or "")
+                if not rid or rid in seen:
+                    continue
+                seen.add(rid)
+                out.append(dict(r))
+            if len(out) >= top_n:
+                break
+        return out[:top_n]
+
+    tv = pick("views", "growth_views")
+    tl = pick("likes", "growth_likes")
+    tc = pick("comments", "growth_comments")
+
+    by_id: Dict[str, dict] = {}
+    for row in tv + tl + tc:
+        rid = str(row.get("id") or "")
+        if rid and rid not in by_id:
+            by_id[rid] = row
+
+    if by_id:
+        try:
+            _attach_reel_analyses(supabase, client_id, list(by_id.values()))
+        except Exception:
+            pass
+
+    return tv, tl, tc, cutoff
+
+
 def _compute_client_stats(supabase: Client, client_id: str) -> Dict[str, Any]:
     handle = _client_instagram_handle(supabase, client_id)
     fetch_cap = 120 if handle else 30
@@ -1108,18 +1314,10 @@ def get_intelligence_activity(
         description="Deprecated for breakouts; rolling 7-day window is used. Still affects response `since` echo.",
     ),
 ) -> Dict[str, Any]:
-    """Competitor breakout highlights (rolling 7 days) plus optional own-reel growth from snapshots."""
+    """Top reels by 7-day metric growth (reel_snapshots baseline) plus optional own-reel growth highlights."""
     since_dt = _parse_since(since)
-    res = (
-        supabase.table("scraped_reels")
-        .select("*")
-        .eq("client_id", client_id)
-        .eq("is_outlier", True)
-        .not_.is_("competitor_id", "null")
-        .execute()
-    )
-    rows: List[dict] = res.data or []
-    tv, tl, tc, window_start, window_end = _weekly_breakout_tops(rows, days=7)
+    tv, tl, tc, growth_cutoff = _top_reels_by_growth(supabase, client_id, top_n=3, growth_days=7)
+    window_end = datetime.now(timezone.utc)
 
     growth: List[Dict[str, Any]] = []
     try:
@@ -1205,7 +1403,8 @@ def get_intelligence_activity(
         "since": since_dt.isoformat(),
         "new_breakout_reels": [],
         "week_breakouts": {
-            "window_start": window_start.isoformat(),
+            "scope": "growth_7d",
+            "window_start": growth_cutoff.isoformat(),
             "window_end": window_end.isoformat(),
             "days": 7,
             "top_n_by_type": {"views": 3, "likes": 3, "comments": 3},
