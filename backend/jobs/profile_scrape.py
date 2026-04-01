@@ -162,6 +162,11 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
 
         thumb = reel_thumbnail_url_from_apify_item(item)
         hook = (caption.split("\n")[0][:500] if caption else "") or None
+        try:
+            vd = int(item.get("videoDuration") or 0)
+        except (TypeError, ValueError):
+            vd = 0
+        video_duration = vd if vd > 0 else None
 
         row = {
             "post_url": canonical_instagram_post_url(url),
@@ -189,6 +194,7 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
             "posted_at": apify_instagram_item_posted_at_iso(item),
             "format": "reel",
             "source": "profile",
+            "video_duration": video_duration,
         }
         batch.append(row)
 

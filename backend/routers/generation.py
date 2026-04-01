@@ -31,6 +31,7 @@ from services.content_generation import (
     run_pattern_synthesis,
     run_regenerate,
 )
+from services.reel_metrics import compute_niche_benchmarks
 
 router = APIRouter(prefix="/api/v1", tags=["generation"])
 logger = logging.getLogger(__name__)
@@ -98,7 +99,12 @@ def _load_client_for_generation(supabase: Client, client_id: str) -> Dict[str, A
     )
     if not res.data:
         raise HTTPException(status_code=404, detail="Client not found")
-    return dict(res.data[0])
+    row = dict(res.data[0])
+    try:
+        row["_niche_benchmarks"] = compute_niche_benchmarks(supabase, client_id)
+    except Exception:
+        row["_niche_benchmarks"] = {}
+    return row
 
 
 @router.post("/clients/{slug}/generate/start", response_model=GenerationSessionOut)
@@ -135,7 +141,7 @@ def generation_start(
         )
 
     client_row = _load_client_for_generation(supabase, client_id)
-    packed = [compact_analysis_for_prompt(r) for r in rows]
+    packed = [compact_analysis_for_prompt(r, reel_meta=r.get("_reel_meta")) for r in rows]
     reel_ids = [str(r["reel_id"]) for r in rows if r.get("reel_id")]
     analysis_ids = [str(r["id"]) for r in rows if r.get("id")]
 

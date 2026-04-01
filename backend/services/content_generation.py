@@ -8,8 +8,9 @@ from typing import Any, Dict, List, Optional, Sequence
 from core.config import Settings
 from services.client_dna_compile import _context_texts_only
 from services.openrouter import chat_json_completion
+from services.reel_metrics import enrich_engagement_metrics
 
-GENERATION_PROMPT_VERSION = "silas_gen_v1_2026_03_30"
+GENERATION_PROMPT_VERSION = "silas_gen_v2_2026_04_01"
 
 _SYSTEM_JSON = (
     "You are Silas — a senior Instagram Reels strategist. "
@@ -51,25 +52,53 @@ def _pack_client_row_for_llm(client_row: Dict[str, Any]) -> str:
         "\n=== PRODUCTS (JSON) ===\n" + json.dumps(products, ensure_ascii=False, default=str)[:8000],
         "\n=== OFFER_DOCUMENTATION (from client brain) ===\n" + (offer[:20_000] if offer else "(empty)"),
     ]
+    nb = client_row.get("_niche_benchmarks")
+    if isinstance(nb, dict) and nb.get("reel_count", 0) > 0:
+        parts.append(
+            "\n=== NICHE_BENCHMARKS (from tracked competitors) ===\n"
+            + json.dumps(nb, ensure_ascii=False, default=str)[:4000]
+        )
     return "\n".join(parts)
 
 
-def compact_analysis_for_prompt(row: Dict[str, Any]) -> Dict[str, Any]:
+def compact_analysis_for_prompt(
+    row: Dict[str, Any],
+    reel_meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     fa = row.get("full_analysis_json") if isinstance(row.get("full_analysis_json"), dict) else {}
-    full_text = str(fa.get("full_text") or "")[:4500]
+    full_text = str(fa.get("full_text") or "")[:3000]
     wt = fa.get("weighted_total")
+    raw_scores = fa.get("raw_scores") if isinstance(fa.get("raw_scores"), dict) else {}
     out: Dict[str, Any] = {
         "analysis_id": str(row.get("id") or ""),
         "post_url": str(row.get("post_url") or ""),
         "owner_username": row.get("owner_username"),
         "total_score_db": row.get("total_score"),
+        "replicability_rating": row.get("replicability_rating"),
         "weighted_total": wt,
+        "raw_scores": {k: v for k, v in raw_scores.items() if v is not None},
         "hook_type": row.get("hook_type"),
+        "emotional_trigger": row.get("emotional_trigger"),
+        "content_angle": row.get("content_angle"),
+        "caption_structure": row.get("caption_structure"),
         "why_it_worked": row.get("why_it_worked"),
         "replicable_elements": row.get("replicable_elements"),
         "suggested_adaptations": row.get("suggested_adaptations"),
         "full_text_excerpt": full_text,
     }
+    if reel_meta:
+        out["performance"] = {
+            "views": reel_meta.get("views"),
+            "likes": reel_meta.get("likes"),
+            "comments": reel_meta.get("comments"),
+            "saves": reel_meta.get("saves"),
+            "shares": reel_meta.get("shares"),
+            "engagement_rate": reel_meta.get("engagement_rate"),
+            "save_rate": reel_meta.get("save_rate"),
+            "share_rate": reel_meta.get("share_rate"),
+            "video_duration": reel_meta.get("video_duration"),
+            "posted_at": reel_meta.get("posted_at"),
+        }
     return out
 
 
@@ -82,7 +111,8 @@ def fetch_reel_analyses_for_generation(
     max_analyses: int,
 ) -> List[Dict[str, Any]]:
     sel = (
-        "id, reel_id, post_url, owner_username, total_score, hook_type, why_it_worked, "
+        "id, reel_id, post_url, owner_username, total_score, replicability_rating, hook_type, "
+        "emotional_trigger, content_angle, caption_structure, why_it_worked, "
         "replicable_elements, suggested_adaptations, full_analysis_json"
     )
     q = supabase.table("reel_analyses").select(sel).eq("client_id", client_id)
@@ -90,11 +120,27 @@ def fetch_reel_analyses_for_generation(
         ids = [str(x).strip() for x in (source_analysis_ids or []) if str(x).strip()]
         if not ids:
             return []
-        q = q.in_("id", ids[:5])
+        take = min(max_analyses, len(ids))
+        q = q.in_("id", ids[:take])
         res = q.execute()
     else:
         res = q.order("total_score", desc=True).limit(max_analyses).execute()
-    return list(res.data or [])
+    rows = list(res.data or [])
+    reel_ids = [str(r.get("reel_id")) for r in rows if r.get("reel_id")]
+    by_reel: Dict[str, Dict[str, Any]] = {}
+    if reel_ids:
+        try:
+            rres = supabase.table("scraped_reels").select("*").in_("id", reel_ids).execute()
+            for rr in rres.data or []:
+                rid = str(rr.get("id") or "")
+                if rid:
+                    by_reel[rid] = enrich_engagement_metrics(dict(rr))
+        except Exception:
+            pass
+    for r in rows:
+        rid = str(r.get("reel_id") or "")
+        r["_reel_meta"] = by_reel.get(rid)
+    return rows
 
 
 def run_pattern_synthesis(
@@ -114,9 +160,16 @@ def run_pattern_synthesis(
         '  "tension_mechanisms": [{"name": string, "description": string}],\n'
         '  "value_delivery_formats": [{"name": string, "description": string}],\n'
         '  "patterns_to_avoid": [string],\n'
+        '  "format_insights": {"dominant_type": string, "optimal_duration": string, '
+        '"engagement_drivers": string},\n'
+        '  "performance_summary": string,\n'
         '  "one_paragraph_synthesis": string\n'
         "}\n\n"
         "Use 3–5 items per list where possible. Be concrete; quote mechanisms from the data.\n\n"
+        "Use the PERFORMANCE block in each analysis to weight your synthesis: patterns from "
+        "high-engagement reels (e.g. save_rate above ~0.03 or engagement_rate above ~0.05 when present) "
+        "matter more than patterns from low-engagement ones. Note which insights come from reels "
+        "posted in roughly the last 30 days (see posted_at) vs older.\n\n"
         f"CLIENT_CONTEXT:\n{_pack_client_row_for_llm(client_row)[:100_000]}\n\n"
         f"ANALYSES_JSON:\n{json.dumps(packed_analyses, ensure_ascii=False)[:120_000]}\n"
     )
@@ -245,10 +298,13 @@ def run_content_package(
         "}\n\n"
         "Rules:\n"
         "- hooks: 10–18 items. Tier 1 = direct relatable question; 2 = insight/tension; 3 = concrete script/list hook.\n"
-        "- script: ~60 second talking head in the output language. Use markdown with headings: "
+        "- script: Use the optimal format and duration implied by PATTERNS_JSON.format_insights "
+        "(and NICHE_BENCHMARKS if present). If format_insights suggests talking-head ~30s, write ~30s; "
+        "if text-overlay, write overlay copy. Default to ~45 second talking head only if format_insights is empty. "
+        "Use markdown with headings: "
         "## Hook, ## Situation, ## Insight 1, ## Insight 2, ## Insight 3, ## Conclusion, ## CTA.\n"
         "- caption_body: mini-story + value; match client's caption style from generation_brief.\n"
-        "- hashtags: at most 5 entries, niche-relevant.\n"
+        "- hashtags: at most 5 entries, niche-relevant; align with NICHE_BENCHMARKS and PATTERNS_JSON when available.\n"
         "- story_variants: 3 short on-screen text lines for IG Story teasers.\n\n"
         "HARD RULES FOR SCRIPT INSIGHTS (non-negotiable):\n"
         "1. Every insight MUST include at least one sentence the viewer can say out loud "

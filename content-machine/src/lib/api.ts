@@ -169,6 +169,12 @@ export type ScrapedReelRow = {
   growth_views?: number | null;
   growth_likes?: number | null;
   growth_comments?: number | null;
+  /** Seconds from Apify (GET /reels). */
+  video_duration?: number | null;
+  /** API-computed: (likes+comments+saves+shares)/views when views > 0. */
+  engagement_rate?: number | null;
+  save_rate?: number | null;
+  share_rate?: number | null;
 };
 
 export type ScrapeQueueStats = {
@@ -403,9 +409,18 @@ export type WeekBreakoutsPayload = {
   top_by_comments: ScrapedReelRow[];
 };
 
+export type NicheBenchmarksPayload = {
+  reel_count: number;
+  niche_avg_views: number | null;
+  niche_avg_likes: number | null;
+  niche_avg_engagement_rate: number | null;
+  niche_avg_duration_seconds: number | null;
+};
+
 export type IntelligenceActivityRow = {
   since: string;
   new_breakout_reels: ScrapedReelRow[];
+  niche_benchmarks?: NicheBenchmarksPayload;
   week_breakouts?: WeekBreakoutsPayload;
   own_reel_growth: OwnReelGrowthItem[];
   is_quiet: boolean;

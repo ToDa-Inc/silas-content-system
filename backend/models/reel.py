@@ -172,4 +172,8 @@ class ScrapedReelOut(BaseModel):
     first_seen_at: Optional[str] = None
     last_updated_at: Optional[str] = None
     created_at: Optional[str] = None
+    video_duration: Optional[int] = None
+    engagement_rate: Optional[float] = None
+    save_rate: Optional[float] = None
+    share_rate: Optional[float] = None
     analysis: Optional[ReelAnalysisSummary] = None

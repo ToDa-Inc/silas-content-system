@@ -190,6 +190,11 @@ function CompactBreakoutRow({
             ) : null}
           </span>
         </div>
+        {reel.engagement_rate != null ? (
+          <p className="mt-1 text-[9px] tabular-nums text-app-fg-subtle" title="(likes+comments+saves+shares)/views">
+            Eng. {(reel.engagement_rate * 100).toFixed(2)}%
+          </p>
+        ) : null}
       </div>
     </ReelCardWithAnalysis>
   );

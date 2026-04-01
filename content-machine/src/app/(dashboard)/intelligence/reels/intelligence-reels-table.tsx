@@ -28,7 +28,22 @@ function formatPosted(d: string | null | undefined): string {
   }
 }
 
-type SortKey = "views" | "likes" | "comments" | "outlier_ratio" | "posted_at" | "total_score";
+function formatEngPct(rate: number | null | undefined): string {
+  if (rate == null || Number.isNaN(rate)) return "—";
+  return `${(rate * 100).toFixed(2)}%`;
+}
+
+type SortKey =
+  | "views"
+  | "likes"
+  | "comments"
+  | "saves"
+  | "shares"
+  | "engagement_rate"
+  | "video_duration"
+  | "outlier_ratio"
+  | "posted_at"
+  | "total_score";
 type AnalysisFilter = "all" | "analyzed" | "pending";
 
 type Props = {
@@ -67,6 +82,38 @@ function compareForSort(a: ScrapedReelRow, b: ScrapedReelRow, key: SortKey): num
       if (va == null) return 1;
       if (vb == null) return -1;
       return va - vb;
+    }
+    case "saves": {
+      const va = a.saves;
+      const vb = b.saves;
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      return va - vb;
+    }
+    case "shares": {
+      const va = a.shares;
+      const vb = b.shares;
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      return va - vb;
+    }
+    case "engagement_rate": {
+      const va = a.engagement_rate;
+      const vb = b.engagement_rate;
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      return Number(va) - Number(vb);
+    }
+    case "video_duration": {
+      const va = a.video_duration;
+      const vb = b.video_duration;
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      return Number(va) - Number(vb);
     }
     case "outlier_ratio": {
       const va = a.outlier_ratio;
@@ -591,7 +638,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-zinc-200/90 bg-zinc-50/90 dark:border-white/10 dark:bg-zinc-950/60">
-        <table className="w-full min-w-[860px] border-collapse text-left [&_td]:cursor-default">
+        <table className="w-full min-w-[1120px] border-collapse text-left [&_td]:cursor-default">
           <thead>
             <tr className="border-b border-zinc-200/90 text-[10px] uppercase tracking-widest text-zinc-500 dark:border-white/10 dark:text-app-fg-subtle">
               <th className="w-10 px-2 py-3 font-medium">
@@ -638,6 +685,30 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                 active={sortKey === "comments"}
                 dir={sortDir}
                 onClick={() => handleSort("comments")}
+              />
+              <SortHeader
+                label="Saves"
+                active={sortKey === "saves"}
+                dir={sortDir}
+                onClick={() => handleSort("saves")}
+              />
+              <SortHeader
+                label="Shares"
+                active={sortKey === "shares"}
+                dir={sortDir}
+                onClick={() => handleSort("shares")}
+              />
+              <SortHeader
+                label="Eng%"
+                active={sortKey === "engagement_rate"}
+                dir={sortDir}
+                onClick={() => handleSort("engagement_rate")}
+              />
+              <SortHeader
+                label="Dur."
+                active={sortKey === "video_duration"}
+                dir={sortDir}
+                onClick={() => handleSort("video_duration")}
               />
               <SortHeader
                 label="Posted"
@@ -759,6 +830,18 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                   </td>
                   <td className="py-2.5 pr-2 align-middle tabular-nums">
                     {row.comments != null ? row.comments.toLocaleString() : "—"}
+                  </td>
+                  <td className="py-2.5 pr-2 align-middle tabular-nums">
+                    {row.saves != null ? row.saves.toLocaleString() : "—"}
+                  </td>
+                  <td className="py-2.5 pr-2 align-middle tabular-nums">
+                    {row.shares != null ? row.shares.toLocaleString() : "—"}
+                  </td>
+                  <td className="py-2.5 pr-2 align-middle tabular-nums">
+                    {formatEngPct(row.engagement_rate)}
+                  </td>
+                  <td className="py-2.5 pr-2 align-middle tabular-nums">
+                    {row.video_duration != null ? `${row.video_duration}s` : "—"}
                   </td>
                   <td className="py-2.5 pr-2 align-middle text-zinc-600 dark:text-app-fg-muted">
                     {formatPosted(row.posted_at)}

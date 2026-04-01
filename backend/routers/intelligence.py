@@ -48,6 +48,7 @@ from services.job_queue import (
     has_active_job,
 )
 from services.scrape_cycle import find_stale_competitors
+from services.reel_metrics import compute_niche_benchmarks, enrich_engagement_metrics
 
 router = APIRouter(prefix="/api/v1", tags=["intelligence"])
 logger = logging.getLogger(__name__)
@@ -520,6 +521,10 @@ def _top_reels_by_growth(
     tv = pick("views", "growth_views")
     tl = pick("likes", "growth_likes")
     tc = pick("comments", "growth_comments")
+
+    tv = [enrich_engagement_metrics(dict(x)) for x in tv]
+    tl = [enrich_engagement_metrics(dict(x)) for x in tl]
+    tc = [enrich_engagement_metrics(dict(x)) for x in tc]
 
     by_id: Dict[str, dict] = {}
     for row in tv + tl + tc:
@@ -1399,9 +1404,16 @@ def get_intelligence_activity(
         growth = []
 
     has_weekly = bool(tv or tl or tc)
+    niche_benchmarks: Dict[str, Any] = {}
+    try:
+        niche_benchmarks = compute_niche_benchmarks(supabase, client_id)
+    except Exception:
+        niche_benchmarks = {}
+
     return {
         "since": since_dt.isoformat(),
         "new_breakout_reels": [],
+        "niche_benchmarks": niche_benchmarks,
         "week_breakouts": {
             "scope": "growth_7d",
             "window_start": growth_cutoff.isoformat(),
@@ -1647,6 +1659,8 @@ def list_reels(
     else:
         res = q.order("outlier_ratio", desc=True).execute()
     data = res.data or []
+    for row in data:
+        enrich_engagement_metrics(row)
     if include_analysis and data:
         try:
             _attach_reel_analyses(supabase, client_id, data)
