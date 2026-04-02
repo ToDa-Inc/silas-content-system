@@ -218,6 +218,9 @@ export type GenerationSession = {
   source_type: string;
   source_analysis_ids?: string[] | null;
   source_reel_ids?: string[] | null;
+  source_format_key?: string | null;
+  source_url?: string | null;
+  source_idea?: string | null;
   synthesized_patterns?: Record<string, unknown> | null;
   angles?: Array<Record<string, unknown>> | null;
   chosen_angle_index?: number | null;
@@ -232,6 +235,82 @@ export type GenerationSession = {
   created_at?: string | null;
   updated_at?: string | null;
 };
+
+export type FormatDigestSummary = {
+  format_key: string;
+  reel_count?: number | null;
+  mature_count?: number | null;
+  avg_engagement?: number | null;
+  avg_save_rate?: number | null;
+  avg_share_rate?: number | null;
+  avg_duration_s?: number | null;
+  computed_at?: string | null;
+};
+
+export async function fetchFormatDigests(
+  clientSlug: string,
+  orgSlug: string,
+  refresh = false,
+): Promise<{ ok: true; data: FormatDigestSummary[] } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  const q = refresh ? "?refresh=true" : "";
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/generate/format-digests${q}`,
+      { headers },
+    );
+    const json = (await res.json().catch(() => [])) as unknown;
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(
+          json as Record<string, unknown>,
+          `Request failed (${res.status})`,
+        ),
+      };
+    }
+    return { ok: true, data: Array.isArray(json) ? (json as FormatDigestSummary[]) : [] };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export type FormatRecommendation = {
+  format_key?: string;
+  score?: number;
+  reasoning?: string;
+  suggested_angle_hint?: string;
+};
+
+export async function recommendFormatForIdea(
+  clientSlug: string,
+  orgSlug: string,
+  idea: string,
+): Promise<{ ok: true; data: FormatRecommendation[] } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/generate/recommend-format`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ idea }),
+      },
+    );
+    const json = (await res.json().catch(() => ({}))) as {
+      recommendations?: FormatRecommendation[];
+      detail?: unknown;
+    };
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
+    }
+    return { ok: true, data: Array.isArray(json.recommendations) ? json.recommendations : [] };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
 
 export type ReelAnalysisListRow = {
   id: string;
@@ -274,10 +353,19 @@ export async function generationStart(
   clientSlug: string,
   orgSlug: string,
   body: {
-    source_type: "outlier" | "patterns" | "manual";
+    source_type:
+      | "outlier"
+      | "patterns"
+      | "manual"
+      | "format_pick"
+      | "idea_match"
+      | "url_adapt";
     source_analysis_ids?: string[];
     max_analyses?: number;
     extra_instruction?: string;
+    format_key?: string;
+    idea_text?: string;
+    url?: string;
   },
 ): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
   const base = getContentApiBase();

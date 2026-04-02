@@ -10,6 +10,7 @@ from supabase import Client
 from core.id_generator import generate_reel_id
 from services.apify_posted_at import apify_instagram_item_posted_at_iso
 from services.instagram_post_url import canonical_instagram_post_url
+from services.apify_reel_fields import saves_and_shares_from_item, video_duration_seconds_from_item
 from services.reel_thumbnail_url import reel_thumbnail_url_from_apify_item
 
 
@@ -68,16 +69,11 @@ def upsert_client_own_reels(
             continue
         likes = int(item.get("likesCount") or 0)
         comments = int(item.get("commentsCount") or 0)
-        saves = int(item.get("saveCount") or 0)
-        shares = int(item.get("shareCount") or 0)
+        saves, shares = saves_and_shares_from_item(item)
         caption = _caption_text(item)
         thumb = reel_thumbnail_url_from_apify_item(item)
         hook = (caption.split("\n")[0][:500] if caption else "") or None
-        try:
-            vd = int(item.get("videoDuration") or 0)
-        except (TypeError, ValueError):
-            vd = 0
-        video_duration = vd if vd > 0 else None
+        video_duration = video_duration_seconds_from_item(item)
         url_key = canonical_instagram_post_url(url)
         normalized_keys.add(url_key)
         rows.append(

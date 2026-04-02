@@ -6,7 +6,14 @@ from pydantic import BaseModel, ConfigDict, Field
 class GenerationStartBody(BaseModel):
     """POST …/generate/start"""
 
-    source_type: Literal["outlier", "patterns", "manual"] = "patterns"
+    source_type: Literal[
+        "outlier",
+        "patterns",
+        "manual",
+        "format_pick",
+        "idea_match",
+        "url_adapt",
+    ] = "patterns"
     source_analysis_ids: Optional[List[str]] = Field(
         None,
         description="reel_analyses.id (uuid as string). Required when source_type=outlier.",
@@ -17,6 +24,25 @@ class GenerationStartBody(BaseModel):
         max_length=2000,
         description="Optional focus for manual mode.",
     )
+    format_key: Optional[str] = Field(
+        None,
+        max_length=64,
+        description="Canonical format (format_pick / idea_match).",
+    )
+    idea_text: Optional[str] = Field(
+        None,
+        max_length=4000,
+        description="User idea for idea_match (also passed as extra focus).",
+    )
+    url: Optional[str] = Field(
+        None,
+        max_length=2048,
+        description="Instagram reel URL for url_adapt.",
+    )
+
+
+class GenerationRecommendFormatBody(BaseModel):
+    idea: str = Field(..., min_length=3, max_length=4000)
 
 
 class GenerationChooseAngleBody(BaseModel):
@@ -40,6 +66,9 @@ class GenerationSessionOut(BaseModel):
     source_type: str
     source_analysis_ids: Optional[List[str]] = None
     source_reel_ids: Optional[List[str]] = None
+    source_format_key: Optional[str] = None
+    source_url: Optional[str] = None
+    source_idea: Optional[str] = None
     synthesized_patterns: Optional[Dict[str, Any]] = None
     angles: Optional[List[Dict[str, Any]]] = None
     chosen_angle_index: Optional[int] = None

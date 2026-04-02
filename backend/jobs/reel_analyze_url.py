@@ -22,7 +22,7 @@ import httpx
 from core.config import Settings
 from core.database import get_supabase_for_settings
 from core.id_generator import generate_reel_id
-from services.apify import REEL_ACTOR, run_actor
+from services.apify import instagram_reel_scraper_input, run_actor
 from services.apify_posted_at import apify_instagram_item_posted_at_iso
 from services.openrouter import analyze_reel_silas
 from services.reel_analyze_parse import parse_silas_analysis_text
@@ -32,6 +32,7 @@ from services.reel_analyze_prompt import (
     build_reel_analysis_prompt,
 )
 from services.instagram_post_url import canonical_instagram_post_url
+from services.apify_reel_fields import saves_and_shares_from_item, video_duration_seconds_from_item
 from services.reel_thumbnail_url import reel_thumbnail_url_from_apify_item
 
 
@@ -119,15 +120,10 @@ def _upsert_scraped_reel_for_url_paste(
     views = _views_int(item)
     likes = int(item.get("likesCount") or item.get("likes") or 0)
     comments = int(item.get("commentsCount") or item.get("comments") or 0)
-    saves = int(item.get("saveCount") or 0)
-    shares = int(item.get("shareCount") or 0)
+    saves, shares = saves_and_shares_from_item(item)
     thumb = reel_thumbnail_url_from_apify_item(item)
     hook = (caption.split("\n")[0][:500] if caption else "") or None
-    try:
-        vd = int(item.get("videoDuration") or 0)
-    except (TypeError, ValueError):
-        vd = 0
-    video_duration = vd if vd > 0 else None
+    video_duration = video_duration_seconds_from_item(item)
 
     existing_res = (
         supabase.table("scraped_reels")
@@ -225,6 +221,12 @@ def _upsert_reel_analysis(
     if isinstance(r_s, dict) and r_s:
         full_analysis_json["raw_scores"] = r_s
 
+    nf = parsed.get("normalized_format")
+    if isinstance(nf, str) and nf.strip():
+        nf_norm = str(nf).strip()
+    else:
+        nf_norm = None
+
     row: Dict[str, Any] = {
         "client_id": client_id,
         "reel_id": reel_id,
@@ -250,6 +252,8 @@ def _upsert_reel_analysis(
         "video_analyzed": video_analyzed,
         "analyzed_at": now,
     }
+    if nf_norm:
+        row["normalized_format"] = nf_norm
 
     supabase.table("reel_analyses").upsert(row, on_conflict="client_id,post_url").execute()
 
@@ -444,10 +448,7 @@ def _execute_reel_analyze_url_core(
         rs = parsed.get("raw_scores")
         if isinstance(rs, dict) and rs:
             analysis_payload["raw_scores"] = rs
-        try:
-            duration_int = int(sr.get("videoDuration") or 0)
-        except (TypeError, ValueError):
-            duration_int = 0
+        duration_int = video_duration_seconds_from_item(dict(sr)) or 0
         ts_out = sr.get("posted_at")
         if ts_out is not None:
             ts_out = str(ts_out)
@@ -474,8 +475,12 @@ def _execute_reel_analyze_url_core(
 
     items = run_actor(
         settings.apify_api_token,
-        REEL_ACTOR,
-        {"username": [reel_url], "resultsLimit": 1},
+        settings.apify_reel_actor,
+        instagram_reel_scraper_input(
+            [reel_url],
+            1,
+            include_shares_count=settings.apify_include_shares_count,
+        ),
     )
     if not items:
         raise ReelAnalyzeTerminalError("reel_not_found")
@@ -523,11 +528,7 @@ def _execute_reel_analyze_url_core(
 
         parsed = parse_silas_analysis_text(full_text)
 
-        duration = item.get("videoDuration")
-        try:
-            duration_int = int(duration) if duration is not None else 0
-        except (TypeError, ValueError):
-            duration_int = 0
+        duration_int = video_duration_seconds_from_item(item) or 0
         ts = apify_instagram_item_posted_at_iso(item)
 
         reel_row_id: Optional[str] = None

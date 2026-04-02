@@ -10,13 +10,18 @@ import {
   getContentApiBase,
 } from "@/lib/api-client";
 import { AnalyzeReelTrigger } from "./analyze-reel-trigger";
-import { INTELLIGENCE_TOOLBAR_ICON_CLASS } from "./intelligence-toolbar-styles";
+import {
+  INTELLIGENCE_TOOLBAR_ICON_CLASS,
+  INTELLIGENCE_TOOLBAR_SYNC_LABELED_CLASS,
+} from "./intelligence-toolbar-styles";
 
 type Props = {
   clientSlug: string;
   orgSlug: string;
   disabled?: boolean;
   disabledHint?: string | null;
+  /** Icon + “Sync” label (e.g. Intelligence → Reels). */
+  showSyncLabel?: boolean;
 };
 
 type SyncAllJson = {
@@ -27,7 +32,24 @@ type SyncAllJson = {
   competitor_sync_message?: string;
 };
 
-export function IntelligenceToolbar({ clientSlug, orgSlug, disabled, disabledHint }: Props) {
+function apifyErrorHint(baselineErr: string): string {
+  const t = baselineErr.toLowerCase();
+  if (t.includes("403") || t.includes("forbidden")) {
+    return " Check APIFY_API_TOKEN on the API server (Apify → Settings → Integrations) and that your Apify account has credits.";
+  }
+  if (t.includes("401") || t.includes("unauthorized")) {
+    return " Check APIFY_API_TOKEN — it may be invalid or revoked.";
+  }
+  return "";
+}
+
+export function IntelligenceToolbar({
+  clientSlug,
+  orgSlug,
+  disabled,
+  disabledHint,
+  showSyncLabel = false,
+}: Props) {
   const router = useRouter();
   const [toolbarMessage, setToolbarMessage] = useState<string | null>(null);
   const [toolbarTone, setToolbarTone] = useState<"neutral" | "success" | "error">("neutral");
@@ -92,7 +114,9 @@ export function IntelligenceToolbar({ clientSlug, orgSlug, disabled, disabledHin
           ? String((json.baseline as { error?: string }).error || "").trim()
           : "";
       if (baselineErr) {
-        parts.push(`Your reels: ${baselineErr.slice(0, 140)}`);
+        parts.push(
+          `Your reels: ${baselineErr.slice(0, 220)}${apifyErrorHint(baselineErr)}`,
+        );
       } else {
         parts.push("Your reels were refreshed.");
       }
@@ -118,7 +142,9 @@ export function IntelligenceToolbar({ clientSlug, orgSlug, disabled, disabledHin
         parts.push(apiMsg || "Competitor sync finished.");
       }
 
-      setToolbarTone(baselineErr ? "neutral" : "success");
+      const apifyAuthFail =
+        !!baselineErr && /403|401|forbidden|unauthorized/i.test(baselineErr);
+      setToolbarTone(baselineErr ? (apifyAuthFail ? "error" : "neutral") : "success");
       setToolbarMessage(parts.join(" "));
       router.refresh();
     } catch {
@@ -140,15 +166,16 @@ export function IntelligenceToolbar({ clientSlug, orgSlug, disabled, disabledHin
           type="button"
           disabled={disabled || !clientSlug.trim() || !orgSlug.trim() || syncing}
           title={syncTitle}
-          aria-label="Full sync — your reels and all competitors"
+          aria-label={showSyncLabel ? "Sync — your reels and all competitors" : "Full sync — your reels and all competitors"}
           onClick={() => void runFullSync()}
-          className={INTELLIGENCE_TOOLBAR_ICON_CLASS}
+          className={showSyncLabel ? INTELLIGENCE_TOOLBAR_SYNC_LABELED_CLASS : INTELLIGENCE_TOOLBAR_ICON_CLASS}
         >
           {syncing ? (
-            <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
+            <Loader2 className="h-5 w-5 animate-spin shrink-0" aria-hidden />
           ) : (
-            <RefreshCw className="h-5 w-5" aria-hidden />
+            <RefreshCw className="h-5 w-5 shrink-0" aria-hidden />
           )}
+          {showSyncLabel ? <span>Sync</span> : null}
         </button>
         <AnalyzeReelTrigger
           clientSlug={clientSlug}

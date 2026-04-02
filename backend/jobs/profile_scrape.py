@@ -10,11 +10,13 @@ from typing import Any, Dict, List, Optional
 from core.config import Settings
 from core.database import get_supabase_for_settings
 from core.id_generator import generate_reel_id
-from services.apify import REEL_ACTOR, run_actor
+from services.apify import instagram_reel_scraper_input, run_actor
 from services.apify_posted_at import apify_instagram_item_posted_at_iso
 from services.instagram_post_url import canonical_instagram_post_url
 from services.reel_snapshots import insert_snapshots_for_scrape_job
+from services.apify_reel_fields import saves_and_shares_from_item, video_duration_seconds_from_item
 from services.reel_thumbnail_url import reel_thumbnail_url_from_apify_item
+from services.format_digest_jobs import enqueue_auto_analyze_scraped, enqueue_format_digest_recompute
 
 # When `clients.outlier_ratio_threshold` is null, use this (also the recommended DB default).
 DEFAULT_OUTLIER_RATIO_THRESHOLD = 5.0
@@ -115,8 +117,12 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
 
     items = run_actor(
         settings.apify_api_token,
-        REEL_ACTOR,
-        {"username": [username], "resultsLimit": results_limit},
+        settings.apify_reel_actor,
+        instagram_reel_scraper_input(
+            [username],
+            results_limit,
+            include_shares_count=settings.apify_include_shares_count,
+        ),
     )
     videos = _reel_items(items)
 
@@ -143,8 +149,7 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
         views = int(item.get("videoViewCount") or item.get("playsCount") or 0)
         likes = int(item.get("likesCount") or 0)
         comments = int(item.get("commentsCount") or 0)
-        saves = int(item.get("saveCount") or 0)
-        shares = int(item.get("shareCount") or 0)
+        saves, shares = saves_and_shares_from_item(item)
         caption = _caption_text(item)
 
         rv = _ratio_decimal(views, account_avg_views)
@@ -162,11 +167,7 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
 
         thumb = reel_thumbnail_url_from_apify_item(item)
         hook = (caption.split("\n")[0][:500] if caption else "") or None
-        try:
-            vd = int(item.get("videoDuration") or 0)
-        except (TypeError, ValueError):
-            vd = 0
-        video_duration = vd if vd > 0 else None
+        video_duration = video_duration_seconds_from_item(item)
 
         row = {
             "post_url": canonical_instagram_post_url(url),
@@ -259,3 +260,11 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
             },
         }
     ).eq("id", job_id).execute()
+
+    org_id = job.get("org_id")
+    if org_id and client_id:
+        try:
+            enqueue_format_digest_recompute(supabase, org_id=str(org_id), client_id=str(client_id))
+            enqueue_auto_analyze_scraped(supabase, org_id=str(org_id), client_id=str(client_id))
+        except Exception:
+            pass

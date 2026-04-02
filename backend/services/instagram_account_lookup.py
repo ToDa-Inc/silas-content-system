@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from services.apify import REEL_ACTOR, SEARCH_ACTOR, run_actor
+from services.apify import REEL_ACTOR, SEARCH_ACTOR, instagram_reel_scraper_input, run_actor
 
 
 def _account_from_reel_actor_items(
@@ -58,6 +58,8 @@ def fetch_instagram_user_by_username(
     exclude_username: str = "",
     *,
     enforce_follower_bounds: bool = True,
+    reel_actor: str = REEL_ACTOR,
+    include_shares_count: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """Instagram user search; return the row whose username exactly matches (case-insensitive).
 
@@ -98,8 +100,12 @@ def fetch_instagram_user_by_username(
     if not enforce_follower_bounds:
         reel_items = run_actor(
             token,
-            REEL_ACTOR,
-            {"username": [want], "resultsLimit": 25},
+            reel_actor,
+            instagram_reel_scraper_input(
+                [want],
+                25,
+                include_shares_count=include_shares_count,
+            ),
         )
         return _account_from_reel_actor_items(want, exclude, reel_items)
 

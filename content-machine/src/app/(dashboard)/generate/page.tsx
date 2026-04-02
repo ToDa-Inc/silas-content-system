@@ -7,7 +7,6 @@ import {
   Copy,
   Loader2,
   RefreshCw,
-  Search,
   Sparkles,
   ThumbsDown,
   ThumbsUp,
@@ -16,7 +15,7 @@ import {
 import { useToast } from "@/components/ui/toast-provider";
 import {
   clientApiContext,
-  fetchReelAnalysesList,
+  fetchFormatDigests,
   generationChooseAngle,
   generationDeleteSession,
   generationGetSession,
@@ -24,13 +23,15 @@ import {
   generationRegenerate,
   generationSetStatus,
   generationStart,
+  recommendFormatForIdea,
+  type FormatDigestSummary,
+  type FormatRecommendation,
   type GenerationSession,
-  type ReelAnalysisListRow,
 } from "@/lib/api-client";
 
 type Step = "source" | "angles" | "content";
 
-type SourceMode = "patterns" | "outlier" | "manual";
+type SourceMode = "format_pick" | "idea_match" | "url_adapt";
 
 function str(v: unknown): string {
   return typeof v === "string" ? v : v != null ? String(v) : "";
@@ -87,10 +88,18 @@ function getChosenAngleRecord(session: GenerationSession): Record<string, unknow
 }
 
 function sourceTypeLabel(t: string): string {
+  if (t === "format_pick") return "Format";
+  if (t === "idea_match") return "Idea";
+  if (t === "url_adapt") return "Adapt URL";
   if (t === "patterns") return "Patterns";
   if (t === "outlier") return "Selected";
   if (t === "manual") return "Manual";
   return t;
+}
+
+function formatKeyLabel(key: string): string {
+  if (!key.trim()) return "—";
+  return key.replace(/_/g, " ");
 }
 
 function statusBadgeClass(status: string): string {
@@ -209,6 +218,32 @@ function SynthesizedPatternsView({ patterns }: { patterns: Record<string, unknow
         </div>
       ) : null}
 
+      {Array.isArray(patterns.top_performer_features) && patterns.top_performer_features.length > 0 ? (
+        <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+          <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-app-fg-subtle">
+            Top performer signals
+          </h3>
+          <ul className="list-inside list-disc space-y-1 text-sm text-app-fg-muted">
+            {(patterns.top_performer_features as unknown[]).map((x, i) => (
+              <li key={i}>{str(x)}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {Array.isArray(patterns.weak_performer_issues) && patterns.weak_performer_issues.length > 0 ? (
+        <div className="rounded-xl border border-app-divider bg-app-chip-bg/40 p-4">
+          <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-app-fg-subtle">
+            Underperformer patterns
+          </h3>
+          <ul className="list-inside list-disc space-y-1 text-sm text-app-fg-muted">
+            {(patterns.weak_performer_issues as unknown[]).map((x, i) => (
+              <li key={i}>{str(x)}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       {summary != null && String(summary).trim() ? (
         <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
           <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-app-fg-subtle">
@@ -230,10 +265,13 @@ const TIER_GROUPS: { tier: 1 | 2 | 3; title: string; subtitle: string }[] = [
 export default function GeneratePage() {
   const { show } = useToast();
   const [step, setStep] = useState<Step>("source");
-  const [sourceMode, setSourceMode] = useState<SourceMode>("patterns");
+  const [sourceMode, setSourceMode] = useState<SourceMode>("format_pick");
   const [extraInstruction, setExtraInstruction] = useState("");
-  const [analyses, setAnalyses] = useState<ReelAnalysisListRow[]>([]);
-  const [selectedAnalysisIds, setSelectedAnalysisIds] = useState<Set<string>>(() => new Set());
+  const [formatDigests, setFormatDigests] = useState<FormatDigestSummary[]>([]);
+  const [selectedFormatKey, setSelectedFormatKey] = useState<string | null>(null);
+  const [ideaText, setIdeaText] = useState("");
+  const [formatRecommendations, setFormatRecommendations] = useState<FormatRecommendation[]>([]);
+  const [adaptUrl, setAdaptUrl] = useState("");
   const [session, setSession] = useState<GenerationSession | null>(null);
   const [sessions, setSessions] = useState<GenerationSession[]>([]);
   const [loading, setLoading] = useState(false);
@@ -243,8 +281,6 @@ export default function GeneratePage() {
   const [orgSlug, setOrgSlug] = useState("");
   const [regenScope, setRegenScope] = useState<"all" | "hooks" | "script" | "caption" | "story">("all");
   const [regenFeedback, setRegenFeedback] = useState("");
-  const [analysisSearch, setAnalysisSearch] = useState("");
-  const [competitorFilter, setCompetitorFilter] = useState<string | null>(null);
 
   const refreshSessions = useCallback(async () => {
     if (!clientSlug || !orgSlug) return;
@@ -259,32 +295,42 @@ export default function GeneratePage() {
     return ctx;
   }, []);
 
+  const loadFormatDigests = useCallback(
+    async (refresh: boolean) => {
+      if (!clientSlug || !orgSlug) return;
+      setLoadingList(true);
+      try {
+        const res = await fetchFormatDigests(clientSlug, orgSlug, refresh);
+        if (res.ok) {
+          setFormatDigests(res.data);
+          if (refresh) show("Format digests refreshed.", "success");
+        } else if (!refresh) {
+          setFormatDigests([]);
+        }
+      } finally {
+        setLoadingList(false);
+      }
+    },
+    [clientSlug, orgSlug, show],
+  );
+
   useEffect(() => {
     void (async () => {
       const ctx = await refreshContext();
       if (!ctx.clientSlug || !ctx.orgSlug) return;
       setLoadingList(true);
       try {
-        const [listRes, anaRes] = await Promise.all([
+        const [listRes, digRes] = await Promise.all([
           generationListSessions(ctx.clientSlug, ctx.orgSlug, 15),
-          fetchReelAnalysesList(ctx.clientSlug, ctx.orgSlug, 60),
+          fetchFormatDigests(ctx.clientSlug, ctx.orgSlug, false),
         ]);
         if (listRes.ok) setSessions(listRes.data);
-        if (anaRes.ok) setAnalyses(anaRes.data);
+        if (digRes.ok) setFormatDigests(digRes.data);
       } finally {
         setLoadingList(false);
       }
     })();
   }, [refreshContext]);
-
-  const toggleAnalysis = useCallback((id: string) => {
-    setSelectedAnalysisIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
 
   const onDeleteSession = useCallback(
     async (id: string) => {
@@ -310,35 +356,84 @@ export default function GeneratePage() {
     [clientSlug, orgSlug, refreshSessions, session?.id, show],
   );
 
+  const onSuggestFormats = useCallback(async () => {
+    const ctx = await refreshContext();
+    if (!ctx.clientSlug || !ctx.orgSlug) {
+      show("No workspace client — finish onboarding.", "error");
+      return;
+    }
+    const idea = ideaText.trim();
+    if (idea.length < 3) {
+      show("Describe your idea in a few words (at least 3 characters).", "error");
+      return;
+    }
+    setLoadingList(true);
+    try {
+      const res = await recommendFormatForIdea(ctx.clientSlug, ctx.orgSlug, idea);
+      if (!res.ok) {
+        show(res.error, "error");
+        setFormatRecommendations([]);
+        return;
+      }
+      setFormatRecommendations(res.data);
+      if (res.data.length === 0) show("No recommendations returned — try refreshing digests.", "error");
+    } finally {
+      setLoadingList(false);
+    }
+  }, [ideaText, refreshContext, show]);
+
   const onStart = useCallback(async () => {
     const ctx = await refreshContext();
     if (!ctx.clientSlug || !ctx.orgSlug) {
       show("No workspace client — finish onboarding.", "error");
       return;
     }
-    if (sourceMode === "outlier" && selectedAnalysisIds.size === 0) {
-      show("Select at least one analyzed reel.", "error");
-      return;
+    if (sourceMode === "format_pick") {
+      if (!selectedFormatKey) {
+        show("Select a format.", "error");
+        return;
+      }
+    }
+    if (sourceMode === "idea_match") {
+      if (!ideaText.trim()) {
+        show("Enter what you want to communicate in the video.", "error");
+        return;
+      }
+      if (!selectedFormatKey) {
+        show("Pick a suggested format or select one from the list.", "error");
+        return;
+      }
+    }
+    if (sourceMode === "url_adapt") {
+      const u = adaptUrl.trim();
+      if (!u || !u.includes("instagram.com")) {
+        show("Paste a valid Instagram reel URL.", "error");
+        return;
+      }
     }
     setLoading(true);
     try {
-      const body =
-        sourceMode === "outlier"
-          ? {
-              source_type: "outlier" as const,
-              source_analysis_ids: Array.from(selectedAnalysisIds),
-              max_analyses: 12,
-            }
-          : sourceMode === "manual"
-            ? {
-                source_type: "manual" as const,
-                max_analyses: 12,
-                extra_instruction: extraInstruction.trim() || undefined,
-              }
-            : {
-                source_type: "patterns" as const,
-                max_analyses: 12,
-              };
+      let body: Parameters<typeof generationStart>[2];
+      if (sourceMode === "format_pick") {
+        body = {
+          source_type: "format_pick",
+          format_key: selectedFormatKey!,
+          extra_instruction: extraInstruction.trim() || undefined,
+        };
+      } else if (sourceMode === "idea_match") {
+        body = {
+          source_type: "idea_match",
+          format_key: selectedFormatKey!,
+          idea_text: ideaText.trim(),
+          extra_instruction: extraInstruction.trim() || undefined,
+        };
+      } else {
+        body = {
+          source_type: "url_adapt",
+          url: adaptUrl.trim(),
+          extra_instruction: extraInstruction.trim() || undefined,
+        };
+      }
       const res = await generationStart(ctx.clientSlug, ctx.orgSlug, body);
       if (!res.ok) {
         show(res.error, "error");
@@ -352,7 +447,15 @@ export default function GeneratePage() {
     } finally {
       setLoading(false);
     }
-  }, [extraInstruction, refreshContext, selectedAnalysisIds, show, sourceMode]);
+  }, [
+    adaptUrl,
+    extraInstruction,
+    ideaText,
+    refreshContext,
+    selectedFormatKey,
+    show,
+    sourceMode,
+  ]);
 
   const onChooseAngle = useCallback(
     async (index: number) => {
@@ -492,43 +595,6 @@ export default function GeneratePage() {
 
   const chosenAngle = session ? getChosenAngleRecord(session) : null;
 
-  const analysisCompetitors = useMemo(() => {
-    const seen = new Set<string>();
-    for (const a of analyses) {
-      const u = a.owner_username?.trim();
-      if (u) seen.add(u);
-    }
-    return Array.from(seen).sort((x, y) => x.localeCompare(y, undefined, { sensitivity: "base" }));
-  }, [analyses]);
-
-  const filteredAnalyses = useMemo(() => {
-    let rows = analyses;
-    if (competitorFilter) {
-      rows = rows.filter((a) => (a.owner_username?.trim() || "") === competitorFilter);
-    }
-    const q = analysisSearch.trim().toLowerCase();
-    if (q) {
-      rows = rows.filter((a) => {
-        const u = (a.owner_username || "").toLowerCase();
-        const p = (a.post_url || "").toLowerCase();
-        return u.includes(q) || p.includes(q);
-      });
-    }
-    const rank = (a: ReelAnalysisListRow) => {
-      const s = a.total_score;
-      if (s == null || Number.isNaN(Number(s))) return null;
-      return Number(s);
-    };
-    return [...rows].sort((a, b) => {
-      const ra = rank(a);
-      const rb = rank(b);
-      if (ra != null && rb != null) return rb - ra;
-      if (ra != null) return -1;
-      if (rb != null) return 1;
-      return 0;
-    });
-  }, [analyses, analysisSearch, competitorFilter]);
-
   return (
     <main className="mx-auto max-w-[1400px] p-4 pb-16 pt-6 md:p-8 md:pt-10 lg:p-12">
       <header className="mb-8 md:mb-10">
@@ -537,8 +603,9 @@ export default function GeneratePage() {
         </span>
         <h1 className="mb-2 max-w-2xl text-lg font-semibold text-app-fg">Outlier-driven copy</h1>
         <p className="max-w-2xl text-xs leading-relaxed text-app-fg-muted">
-          Patterns from analyzed reels → five angles → hooks, 60s script, caption, and story lines in your
-          client&apos;s voice (from client DNA).
+          Format intelligence from mature competitor reels → five angles → hooks, script, caption, and story
+          lines in your client&apos;s voice (client DNA). Digests use reels posted 7+ days ago for reliable
+          performance signals.
         </p>
       </header>
 
@@ -556,14 +623,29 @@ export default function GeneratePage() {
                 Source
               </h2>
               <p className="mb-6 max-w-2xl text-sm text-app-fg-muted">
-                Choose how we pull reel intelligence, then run angle generation. For manual focus, add your note
-                below.
+                Pick how we use your niche&apos;s format intelligence, then generate angles. Optional focus note
+                applies to format modes.
               </p>
+
+              <div className="mb-4 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={loadingList || !clientSlug}
+                  onClick={() => void loadFormatDigests(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-app-divider px-3 py-1.5 text-xs font-semibold text-app-fg hover:bg-white/5 disabled:opacity-50"
+                >
+                  <RefreshCw className={`size-3.5 ${loadingList ? "animate-spin" : ""}`} />
+                  Refresh format digests
+                </button>
+                <span className="text-[11px] text-app-fg-muted">
+                  Sync scrapes in Intelligence, then refresh (first run may take 1–3 minutes).
+                </span>
+              </div>
 
               <div className="flex flex-col gap-2">
                 <label
                   className={`flex cursor-pointer flex-col rounded-xl border p-3 transition-colors ${
-                    sourceMode === "patterns"
+                    sourceMode === "format_pick"
                       ? "border-amber-500/40 bg-amber-500/10"
                       : "border-app-divider bg-app-chip-bg/40 hover:bg-app-chip-bg/70"
                   }`}
@@ -572,144 +654,62 @@ export default function GeneratePage() {
                     <input
                       type="radio"
                       name="src"
-                      checked={sourceMode === "patterns"}
-                      onChange={() => setSourceMode("patterns")}
+                      checked={sourceMode === "format_pick"}
+                      onChange={() => setSourceMode("format_pick")}
                       className="mt-0.5 size-3.5 shrink-0 accent-amber-500"
                     />
                     <span className="min-w-0">
-                      <span className="block text-sm font-semibold text-app-fg">Top patterns</span>
+                      <span className="block text-sm font-semibold text-app-fg">Choose a format</span>
                       <span className="mt-0.5 block text-xs leading-relaxed text-app-fg-muted">
-                        Use highest-scoring saved analyses.
+                        Use pre-aggregated patterns for one format (weighted by mature performance).
                       </span>
                     </span>
                   </span>
                 </label>
 
-                <div className="flex flex-col gap-2">
-                  <label
-                    className={`flex cursor-pointer flex-col rounded-xl border p-3 transition-colors ${
-                      sourceMode === "outlier"
-                        ? "border-amber-500/40 bg-amber-500/10"
-                        : "border-app-divider bg-app-chip-bg/40 hover:bg-app-chip-bg/70"
-                    }`}
-                  >
-                    <span className="flex items-start gap-2.5">
-                      <input
-                        type="radio"
-                        name="src"
-                        checked={sourceMode === "outlier"}
-                        onChange={() => setSourceMode("outlier")}
-                        className="mt-0.5 size-3.5 shrink-0 accent-amber-500"
-                      />
-                      <span className="min-w-0">
-                        <span className="block text-sm font-semibold text-app-fg">Selected analyses</span>
-                        <span className="mt-0.5 block text-xs leading-relaxed text-app-fg-muted">
-                          Pick specific reels you want to echo.
-                        </span>
-                      </span>
-                    </span>
-                  </label>
-                  {sourceMode === "outlier" ? (
-                    <div className="rounded-xl border border-app-divider bg-app-chip-bg/25 p-3 md:p-4">
-                  <h3 className="text-sm font-semibold text-app-fg">
-                    Select analyses{" "}
-                    <span className="font-normal text-app-fg-muted">
-                      ({selectedAnalysisIds.size} selected)
-                    </span>
-                  </h3>
-                  <p className="mb-3 text-xs text-app-fg-muted">
-                    Pick the saved analyses that should shape this run. Sorted by score (highest first).
-                  </p>
-                  {analysisCompetitors.length > 0 ? (
-                    <div className="mb-3">
-                      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-app-fg-subtle">
-                        Competitor
-                      </p>
-                      <div className="flex flex-wrap gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => setCompetitorFilter(null)}
-                          className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
-                            competitorFilter == null
-                              ? "bg-amber-500/25 text-app-fg ring-1 ring-amber-500/40"
-                              : "bg-app-chip-bg text-app-fg-muted hover:bg-white/5"
-                          }`}
-                        >
-                          All
-                        </button>
-                        {analysisCompetitors.map((c) => (
-                          <button
-                            key={c}
-                            type="button"
-                            onClick={() =>
-                              setCompetitorFilter((prev) => (prev === c ? null : c))
-                            }
-                            className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
-                              competitorFilter === c
-                                ? "bg-amber-500/25 text-app-fg ring-1 ring-amber-500/40"
-                                : "bg-app-chip-bg text-app-fg-muted hover:bg-white/5"
-                            }`}
-                          >
-                            @{c}
-                          </button>
-                        ))}
+                {sourceMode === "format_pick" ? (
+                  <div className="rounded-xl border border-app-divider bg-app-chip-bg/25 p-3 md:p-4">
+                    {loadingList ? (
+                      <div className="flex justify-center py-8">
+                        <Loader2 className="size-6 animate-spin text-app-fg-subtle" />
                       </div>
-                    </div>
-                  ) : null}
-                  <div className="relative mb-2">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-app-fg-subtle" />
-                    <input
-                      type="search"
-                      value={analysisSearch}
-                      onChange={(e) => setAnalysisSearch(e.target.value)}
-                      placeholder="Search username or URL…"
-                      className="glass-inset w-full rounded-lg py-2 pl-9 pr-3 text-sm text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/30"
-                    />
-                  </div>
-                  {loadingList ? (
-                    <div className="flex justify-center py-6">
-                      <Loader2 className="size-6 animate-spin text-app-fg-subtle" />
-                    </div>
-                  ) : analyses.length === 0 ? (
-                    <p className="py-2 text-sm text-app-fg-muted">
-                      No analyses yet — analyze reels in Intelligence.
-                    </p>
-                  ) : filteredAnalyses.length === 0 ? (
-                    <p className="py-2 text-sm text-app-fg-muted">No analyses match your search or filter.</p>
-                  ) : (
-                    <div className="max-h-[20rem] overflow-y-auto rounded-lg border border-app-divider/60 pr-1">
-                      <ul className="space-y-1.5 p-1">
-                        {filteredAnalyses.map((a) => (
-                          <li key={a.id}>
-                            <label className="flex cursor-pointer gap-2.5 rounded-lg border border-transparent p-2 transition-colors hover:border-app-divider hover:bg-white/[0.03]">
-                              <input
-                                type="checkbox"
-                                checked={selectedAnalysisIds.has(a.id)}
-                                onChange={() => toggleAnalysis(a.id)}
-                                className="mt-0.5 size-3.5 shrink-0 accent-amber-500"
-                              />
-                              <span className="min-w-0 flex-1 text-sm">
-                                <span className="font-medium text-app-fg">@{a.owner_username ?? "?"}</span>
-                                <span className="ml-2 tabular-nums text-xs text-app-fg-muted">
-                                  score {a.total_score ?? "—"}
-                                </span>
-                                <span className="mt-0.5 block truncate font-mono text-[11px] text-app-fg-subtle">
-                                  {a.post_url}
-                                </span>
+                    ) : formatDigests.length === 0 ? (
+                      <p className="text-sm text-app-fg-muted">
+                        No format digests yet — scrape competitors in Intelligence, wait for analyses, then
+                        refresh digests above.
+                      </p>
+                    ) : (
+                      <ul className="max-h-[22rem] space-y-2 overflow-y-auto pr-1">
+                        {formatDigests.map((d) => (
+                          <li key={d.format_key}>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedFormatKey(d.format_key)}
+                              className={`w-full rounded-xl border px-3 py-2.5 text-left text-sm transition-colors ${
+                                selectedFormatKey === d.format_key
+                                  ? "border-amber-500/50 bg-amber-500/10"
+                                  : "border-app-divider hover:bg-white/[0.04]"
+                              }`}
+                            >
+                              <span className="font-semibold capitalize text-app-fg">
+                                {formatKeyLabel(d.format_key)}
                               </span>
-                            </label>
+                              <span className="mt-0.5 block tabular-nums text-[11px] text-app-fg-muted">
+                                mature {d.mature_count ?? "—"} · avg Eng%{" "}
+                                {d.avg_engagement != null ? (d.avg_engagement * 100).toFixed(2) : "—"} · ~
+                                {d.avg_duration_s ?? "—"}s
+                              </span>
+                            </button>
                           </li>
                         ))}
                       </ul>
-                    </div>
-                  )}
-                    </div>
-                  ) : null}
-                </div>
+                    )}
+                  </div>
+                ) : null}
 
                 <label
                   className={`flex cursor-pointer flex-col rounded-xl border p-3 transition-colors ${
-                    sourceMode === "manual"
+                    sourceMode === "idea_match"
                       ? "border-amber-500/40 bg-amber-500/10"
                       : "border-app-divider bg-app-chip-bg/40 hover:bg-app-chip-bg/70"
                   }`}
@@ -718,32 +718,160 @@ export default function GeneratePage() {
                     <input
                       type="radio"
                       name="src"
-                      checked={sourceMode === "manual"}
-                      onChange={() => setSourceMode("manual")}
+                      checked={sourceMode === "idea_match"}
+                      onChange={() => setSourceMode("idea_match")}
                       className="mt-0.5 size-3.5 shrink-0 accent-amber-500"
                     />
                     <span className="min-w-0">
-                      <span className="block text-sm font-semibold text-app-fg">Manual focus</span>
+                      <span className="block text-sm font-semibold text-app-fg">Idea → best format</span>
                       <span className="mt-0.5 block text-xs leading-relaxed text-app-fg-muted">
-                        Same as top patterns + your note below.
+                        Describe what you want to say; we suggest formats from your metrics, then you confirm.
                       </span>
                     </span>
                   </span>
                 </label>
+
+                {sourceMode === "idea_match" ? (
+                  <div className="space-y-3 rounded-xl border border-app-divider bg-app-chip-bg/25 p-3 md:p-4">
+                    <label htmlFor="gen-idea" className="text-sm font-semibold text-app-fg">
+                      Your idea
+                    </label>
+                    <textarea
+                      id="gen-idea"
+                      rows={4}
+                      value={ideaText}
+                      onChange={(e) => setIdeaText(e.target.value)}
+                      placeholder="What message or situation should this reel cover?"
+                      className="glass-inset min-h-[5rem] w-full resize-y rounded-xl p-3 text-sm text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+                    />
+                    <button
+                      type="button"
+                      disabled={loadingList || !clientSlug}
+                      onClick={() => void onSuggestFormats()}
+                      className="rounded-lg border border-app-divider px-3 py-2 text-xs font-bold text-app-fg hover:bg-white/5 disabled:opacity-50"
+                    >
+                      {loadingList ? "Thinking…" : "Suggest formats"}
+                    </button>
+                    {formatRecommendations.length > 0 ? (
+                      <ul className="space-y-2">
+                        {formatRecommendations.map((r, i) => (
+                          <li key={`${r.format_key ?? i}-${i}`}>
+                            <button
+                              type="button"
+                              onClick={() => r.format_key && setSelectedFormatKey(r.format_key)}
+                              className={`w-full rounded-lg border px-3 py-2 text-left text-xs ${
+                                r.format_key && selectedFormatKey === r.format_key
+                                  ? "border-amber-500/40 bg-amber-500/10"
+                                  : "border-app-divider hover:bg-white/[0.04]"
+                              }`}
+                            >
+                              <span className="font-semibold capitalize">
+                                {r.format_key ? formatKeyLabel(r.format_key) : "—"}
+                              </span>
+                              {r.score != null ? (
+                                <span className="ml-2 tabular-nums text-app-fg-muted">{r.score}/100</span>
+                              ) : null}
+                              <p className="mt-1 text-app-fg-muted">{str(r.reasoning)}</p>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {formatDigests.length > 0 ? (
+                      <div>
+                        <p className="mb-2 text-[10px] font-semibold uppercase text-app-fg-subtle">
+                          Or pick manually
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {formatDigests.map((d) => (
+                            <button
+                              key={d.format_key}
+                              type="button"
+                              onClick={() => setSelectedFormatKey(d.format_key)}
+                              className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+                                selectedFormatKey === d.format_key
+                                  ? "bg-amber-500/25 text-app-fg ring-1 ring-amber-500/40"
+                                  : "bg-app-chip-bg text-app-fg-muted hover:bg-white/5"
+                              }`}
+                            >
+                              {formatKeyLabel(d.format_key)}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                <label
+                  className={`flex cursor-pointer flex-col rounded-xl border p-3 transition-colors ${
+                    sourceMode === "url_adapt"
+                      ? "border-amber-500/40 bg-amber-500/10"
+                      : "border-app-divider bg-app-chip-bg/40 hover:bg-app-chip-bg/70"
+                  }`}
+                >
+                  <span className="flex items-start gap-2.5">
+                    <input
+                      type="radio"
+                      name="src"
+                      checked={sourceMode === "url_adapt"}
+                      onChange={() => setSourceMode("url_adapt")}
+                      className="mt-0.5 size-3.5 shrink-0 accent-amber-500"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-semibold text-app-fg">Adapt a reel</span>
+                      <span className="mt-0.5 block text-xs leading-relaxed text-app-fg-muted">
+                        Paste an Instagram reel URL; we analyze structure and adapt to your client&apos;s voice.
+                      </span>
+                    </span>
+                  </span>
+                </label>
+
+                {sourceMode === "url_adapt" ? (
+                  <div className="rounded-xl border border-app-divider bg-app-chip-bg/25 p-3 md:p-4">
+                    <label htmlFor="gen-url" className="text-sm font-semibold text-app-fg">
+                      Reel URL
+                    </label>
+                    <input
+                      id="gen-url"
+                      type="url"
+                      value={adaptUrl}
+                      onChange={(e) => setAdaptUrl(e.target.value)}
+                      placeholder="https://www.instagram.com/reel/…"
+                      className="glass-inset mt-2 w-full rounded-xl px-3 py-2.5 font-mono text-sm text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+                    />
+                  </div>
+                ) : null}
               </div>
 
-              {sourceMode === "manual" ? (
+              {(sourceMode === "format_pick" || sourceMode === "idea_match") && (
                 <div className="mt-6 space-y-3">
                   <label htmlFor="gen-extra" className="text-sm font-semibold text-app-fg">
-                    Focus <span className="font-normal text-app-fg-muted">(optional)</span>
+                    Extra focus <span className="font-normal text-app-fg-muted">(optional)</span>
                   </label>
                   <textarea
                     id="gen-extra"
-                    rows={4}
+                    rows={3}
                     value={extraInstruction}
                     onChange={(e) => setExtraInstruction(e.target.value)}
-                    placeholder="e.g. Grenzen gegenüber der Chefin, Meeting-Situationen…"
-                    className="glass-inset min-h-[6.5rem] w-full resize-y rounded-xl p-3 text-sm leading-relaxed text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+                    placeholder="Optional nuance for angles…"
+                    className="glass-inset min-h-[4.5rem] w-full resize-y rounded-xl p-3 text-sm leading-relaxed text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+                  />
+                </div>
+              )}
+
+              {sourceMode === "url_adapt" ? (
+                <div className="mt-6 space-y-3">
+                  <label htmlFor="gen-extra-url" className="text-sm font-semibold text-app-fg">
+                    Extra focus <span className="font-normal text-app-fg-muted">(optional)</span>
+                  </label>
+                  <textarea
+                    id="gen-extra-url"
+                    rows={3}
+                    value={extraInstruction}
+                    onChange={(e) => setExtraInstruction(e.target.value)}
+                    placeholder="Optional direction for adaptation…"
+                    className="glass-inset min-h-[4.5rem] w-full resize-y rounded-xl p-3 text-sm leading-relaxed text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
                   />
                 </div>
               ) : null}
@@ -763,7 +891,7 @@ export default function GeneratePage() {
                   {loading ? "Running models…" : "Generate angles"}
                 </button>
                 <p className="max-w-md text-right text-xs leading-relaxed text-app-fg-muted">
-                  Requires saved reel analyses in Intelligence. First run can take 1–3 minutes.
+                  URL adapt may analyze the reel first (longer wait). Format modes use cached digests when fresh.
                 </p>
               </div>
             </div>

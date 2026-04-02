@@ -14,6 +14,15 @@ def _int_metric_val(val: Any) -> int:
         return 0
 
 
+def normalize_scraped_reel_row_for_api(reel: dict) -> dict:
+    """Legacy rows may have NULL saves/shares; UI expects numbers (0 = none / not reported)."""
+    if reel.get("saves") is None:
+        reel["saves"] = 0
+    if reel.get("shares") is None:
+        reel["shares"] = 0
+    return reel
+
+
 def enrich_engagement_metrics(reel: dict) -> dict:
     """Mutates and returns ``reel`` with engagement_rate, save_rate, share_rate (0–1 floats)."""
     v = _int_metric_val(reel.get("views"))

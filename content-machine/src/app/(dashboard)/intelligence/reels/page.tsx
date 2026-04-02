@@ -5,6 +5,7 @@ import {
   getCachedServerApiContext,
   type ScrapedReelRow,
 } from "@/lib/api";
+import { IntelligenceToolbar } from "../components/intelligence-toolbar";
 import { IntelligenceReelsTable } from "./intelligence-reels-table";
 
 type PageProps = {
@@ -16,7 +17,16 @@ export default async function IntelligenceReelsPage({ searchParams }: PageProps)
   const outliersOnly = sp.outliers === "1" || sp.outliers === "true";
   const competitorId = (sp.competitor ?? "").trim();
 
-  const { clientSlug, orgSlug } = await getCachedServerApiContext();
+  const { clientSlug, orgSlug, user, tenancy } = await getCachedServerApiContext();
+  const syncDisabled = !clientSlug.trim() || !orgSlug.trim();
+  const syncDisabledHint =
+    user && !tenancy
+      ? "No workspace membership visible for this login — see the alert on Intelligence."
+      : !orgSlug.trim()
+        ? "Missing organization slug — refresh or check Supabase session."
+        : !clientSlug.trim()
+          ? "Pick a creator in the header or finish onboarding."
+          : null;
   const [reelsRes, compRes] = await Promise.all([fetchScrapedReels(false, true), fetchCompetitors()]);
 
   const reelsAll = reelsRes.ok ? reelsRes.data : [];
@@ -44,16 +54,25 @@ export default async function IntelligenceReelsPage({ searchParams }: PageProps)
 
   return (
     <main className="mx-auto max-w-[1200px] px-4 py-8 md:px-8">
-      <header className="mb-8 flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-        <div className="flex flex-wrap items-center gap-3 text-sm">
-          <Link
-            href="/intelligence"
-            className="font-medium text-app-fg-muted transition-colors hover:text-amber-400"
-          >
-            ← Intelligence
-          </Link>
-          <span className="text-zinc-400 dark:text-zinc-600">|</span>
-          <span className="font-semibold text-app-fg">Reels</span>
+      <header className="mb-8 flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
+        <div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <Link
+              href="/intelligence"
+              className="font-medium text-app-fg-muted transition-colors hover:text-amber-400"
+            >
+              ← Intelligence
+            </Link>
+            <span className="text-zinc-400 dark:text-zinc-600">|</span>
+            <span className="font-semibold text-app-fg">Reels</span>
+          </div>
+          <IntelligenceToolbar
+            clientSlug={clientSlug}
+            orgSlug={orgSlug}
+            disabled={syncDisabled}
+            disabledHint={syncDisabledHint}
+            showSyncLabel
+          />
         </div>
         <div className="flex flex-wrap gap-2 text-xs">
           <Link

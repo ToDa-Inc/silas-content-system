@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 from core.config import Settings
 from core.database import get_supabase_for_settings
-from services.apify import REEL_ACTOR, run_actor
+from services.apify import instagram_reel_scraper_input, run_actor
 from services.instagram_account_lookup import fetch_instagram_user_by_username
 from services.openrouter import analyze_creator_profile
 
@@ -136,14 +136,24 @@ def run_client_auto_profile(settings: Settings, job: Dict[str, Any]) -> None:
     if len(captions) < 5:
         items = run_actor(
             settings.apify_api_token,
-            REEL_ACTOR,
-            {"username": [ig], "resultsLimit": 30},
+            settings.apify_reel_actor,
+            instagram_reel_scraper_input(
+                [ig],
+                30,
+                include_shares_count=settings.apify_include_shares_count,
+            ),
         )
         captions = _captions_from_apify_items(items or [], 30)
     if len(captions) < 3:
         raise RuntimeError("Not enough captions to profile — run baseline refresh first or check the Instagram handle")
 
-    snap = fetch_instagram_user_by_username(settings.apify_api_token, ig, exclude_username="")
+    snap = fetch_instagram_user_by_username(
+        settings.apify_api_token,
+        ig,
+        exclude_username="",
+        reel_actor=settings.apify_reel_actor,
+        include_shares_count=settings.apify_include_shares_count,
+    )
     bio = (snap.get("bio") if snap else "") or ""
 
     icp = client.get("icp") or {}

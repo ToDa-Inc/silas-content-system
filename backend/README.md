@@ -49,7 +49,10 @@ Optional: `backend/.env` or `config/.env` for overrides (see load order in root 
 
 5. **`APIFY_API_TOKEN`** (needed for **worker**: discovery + baseline + profile reel scrape)  
    - [Apify Console](https://console.apify.com/) → **Settings** → **Integrations** → API token.  
-   - Same value as `APIFY_API_TOKEN` in `config/.env` if you already use the Node scripts.
+   - Same value as `APIFY_API_TOKEN` in `config/.env` if you already use the Node scripts.  
+   - **403 Forbidden** from `api.apify.com/v2/acts/.../runs`: token invalid/revoked, no Apify credits, or wrong actor. Create a new token, confirm billing, then restart the API. The backend uses actor **`apify~instagram-reel-scraper`** by default (override with **`APIFY_REEL_ACTOR`** in `.env` if needed).
+   - **Saves / shares show 0:** Instagram often does not expose save counts in scraped public data. **Shares** need Apify’s **`includeSharesCount`** (enabled by default via **`APIFY_INCLUDE_SHARES_COUNT=true`**) and typically a **paid Apify plan** — see [Instagram Reel Scraper pricing](https://apify.com/apify/instagram-reel-scraper/pricing). Re-sync after changing plan.
+   - **Duration missing for some reels:** The actor only fills **`videoDuration`** when Instagram returns it for that item; we also read a few alternate fields. Gaps are normal for some post types.
 
 6. **`OPENROUTER_API_KEY`** (needed for **worker**: Gemini relevance scoring)  
    - [openrouter.ai/keys](https://openrouter.ai/keys) → create key.  

@@ -157,6 +157,8 @@ def _enrich_manual_row_from_instagram(
             canon_username,
             exclude_username=excl,
             enforce_follower_bounds=False,
+            reel_actor=settings.apify_reel_actor,
+            include_shares_count=settings.apify_include_shares_count,
         )
         if not account:
             return
@@ -164,7 +166,14 @@ def _enrich_manual_row_from_instagram(
         row["profile_url"] = (account.get("profileUrl") or "").strip() or row["profile_url"]
         row["followers"] = int(account.get("followers") or 0)
 
-        posts = _scrape_account_posts(token, un, 25, account.get("_latestPosts"))
+        posts = _scrape_account_posts(
+            token,
+            settings.apify_reel_actor,
+            un,
+            25,
+            account.get("_latestPosts"),
+            include_shares_count=settings.apify_include_shares_count,
+        )
         if len(posts) < 1:
             return
         total_views = sum(int(p.get("views") or 0) for p in posts)

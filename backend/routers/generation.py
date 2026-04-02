@@ -11,11 +11,18 @@ from supabase import Client
 
 from core.config import Settings, get_settings
 from core.database import get_supabase
-from core.deps import require_org_access, resolve_client_id
-from core.id_generator import generate_generation_session_id
+from core.deps import resolve_client_id
+from core.id_generator import generate_generation_session_id, generate_job_id
+from jobs.reel_analyze_url import (
+    ReelAnalyzeTerminalError,
+    _execute_reel_analyze_url_core,
+    _niche_context_for_reel_analysis,
+    instagram_reel_url_is_valid,
+)
 from models.generation import (
     GenerationChooseAngleBody,
     GenerationFeedbackBody,
+    GenerationRecommendFormatBody,
     GenerationRegenerateBody,
     GenerationSessionOut,
     GenerationStartBody,
@@ -26,12 +33,21 @@ from services.content_generation import (
     angles_from_session_row,
     fetch_reel_analyses_for_generation,
     get_chosen_angle,
+    run_adaptation_synthesis,
     run_angle_generation,
     run_content_package,
+    run_format_recommendation,
     run_pattern_synthesis,
     run_regenerate,
 )
-from services.reel_metrics import compute_niche_benchmarks
+from services.format_digest import (
+    compute_format_digests,
+    ensure_format_digests_fresh,
+    get_digest_for_format,
+    list_format_digest_summaries,
+)
+from services.instagram_post_url import canonical_instagram_post_url
+from services.reel_metrics import compute_niche_benchmarks, enrich_engagement_metrics
 
 router = APIRouter(prefix="/api/v1", tags=["generation"])
 logger = logging.getLogger(__name__)
@@ -87,6 +103,46 @@ def _row_has_regenerated_content(row: Dict[str, Any]) -> bool:
     return False
 
 
+_ANALYSIS_SEL = (
+    "id, reel_id, post_url, owner_username, total_score, replicability_rating, hook_type, "
+    "emotional_trigger, content_angle, caption_structure, why_it_worked, replicable_elements, "
+    "suggested_adaptations, full_analysis_json"
+)
+
+
+def _load_analysis_with_meta(
+    supabase: Client, client_id: str, post_url_key: str
+) -> Optional[Dict[str, Any]]:
+    res = (
+        supabase.table("reel_analyses")
+        .select(_ANALYSIS_SEL)
+        .eq("client_id", client_id)
+        .eq("post_url", post_url_key)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        return None
+    r = dict(res.data[0])
+    rid = r.get("reel_id")
+    if rid:
+        try:
+            rres = (
+                supabase.table("scraped_reels")
+                .select("*")
+                .eq("id", str(rid))
+                .limit(1)
+                .execute()
+            )
+            if rres.data:
+                r["_reel_meta"] = enrich_engagement_metrics(dict(rres.data[0]))
+        except Exception:
+            r["_reel_meta"] = None
+    else:
+        r["_reel_meta"] = None
+    return r
+
+
 def _load_client_for_generation(supabase: Client, client_id: str) -> Dict[str, Any]:
     res = (
         supabase.table("clients")
@@ -107,6 +163,53 @@ def _load_client_for_generation(supabase: Client, client_id: str) -> Dict[str, A
     return row
 
 
+@router.get("/clients/{slug}/generate/format-digests")
+def list_format_digests(
+    slug: str,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    refresh: bool = Query(False, description="If true, recompute digests when stale."),
+) -> list[dict]:
+    _ = slug
+    if refresh and settings.openrouter_api_key:
+        client_row = _load_client_for_generation(supabase, client_id)
+        ensure_format_digests_fresh(settings, supabase, client_id, client_row=client_row)
+    return list_format_digest_summaries(supabase, client_id)
+
+
+@router.post("/clients/{slug}/generate/recommend-format")
+def recommend_format(
+    slug: str,
+    body: GenerationRecommendFormatBody,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict:
+    _ = slug
+    if not settings.openrouter_api_key:
+        raise HTTPException(status_code=503, detail="OPENROUTER_API_KEY not configured")
+    client_row = _load_client_for_generation(supabase, client_id)
+    ensure_format_digests_fresh(settings, supabase, client_id, client_row=client_row)
+    summaries = list_format_digest_summaries(supabase, client_id)
+    if not summaries:
+        raise HTTPException(
+            status_code=400,
+            detail="No format digests yet. Run competitor scrapes and wait for analyses, or refresh digests.",
+        )
+    try:
+        recs = run_format_recommendation(
+            settings,
+            client_row=client_row,
+            idea=body.idea,
+            format_summaries=summaries,
+        )
+    except Exception as e:
+        logger.exception("recommend_format failed")
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    return {"recommendations": recs}
+
+
 @router.post("/clients/{slug}/generate/start", response_model=GenerationSessionOut)
 def generation_start(
     slug: str,
@@ -119,47 +222,164 @@ def generation_start(
     if not settings.openrouter_api_key:
         raise HTTPException(status_code=503, detail="OPENROUTER_API_KEY not configured")
 
-    if body.source_type == "outlier":
-        ids = body.source_analysis_ids or []
-        if not ids:
-            raise HTTPException(
-                status_code=400,
-                detail="source_analysis_ids required when source_type=outlier",
-            )
-
-    rows = fetch_reel_analyses_for_generation(
-        supabase,
-        client_id=client_id,
-        source_type=body.source_type,
-        source_analysis_ids=body.source_analysis_ids,
-        max_analyses=body.max_analyses,
-    )
-    if not rows:
-        raise HTTPException(
-            status_code=400,
-            detail="No reel analyses found. Run Intelligence → analyze reels first.",
-        )
-
+    st = body.source_type
     client_row = _load_client_for_generation(supabase, client_id)
-    packed = [compact_analysis_for_prompt(r, reel_meta=r.get("_reel_meta")) for r in rows]
-    reel_ids = [str(r["reel_id"]) for r in rows if r.get("reel_id")]
-    analysis_ids = [str(r["id"]) for r in rows if r.get("id")]
+
+    source_format_key: Optional[str] = None
+    source_url: Optional[str] = None
+    source_idea: Optional[str] = None
+    patterns: Dict[str, Any] = {}
+    angles: List[Dict[str, Any]] = []
+    analysis_ids: List[str] = []
+    reel_ids: List[str] = []
 
     try:
-        patterns = run_pattern_synthesis(
-            settings,
-            client_row=client_row,
-            packed_analyses=packed,
-            extra_instruction=body.extra_instruction,
-        )
-        if not isinstance(patterns, dict):
-            patterns = {}
-        angles = run_angle_generation(
-            settings,
-            client_row=client_row,
-            synthesized_patterns=patterns,
-            extra_instruction=body.extra_instruction,
-        )
+        if st in ("format_pick", "idea_match"):
+            fk = (body.format_key or "").strip()
+            if not fk:
+                raise HTTPException(status_code=400, detail="format_key required")
+            if st == "idea_match" and not (body.idea_text and body.idea_text.strip()):
+                raise HTTPException(status_code=400, detail="idea_text required for idea_match")
+            source_format_key = fk
+            if st == "idea_match":
+                source_idea = (body.idea_text or "").strip()
+            ensure_format_digests_fresh(settings, supabase, client_id, client_row=client_row)
+            drow = get_digest_for_format(supabase, client_id, fk)
+            if not drow or not isinstance(drow.get("digest_json"), dict):
+                compute_format_digests(settings, supabase, client_id, client_row=client_row)
+                drow = get_digest_for_format(supabase, client_id, fk)
+            if not drow or not isinstance(drow.get("digest_json"), dict):
+                raise HTTPException(
+                    status_code=400,
+                    detail="No digest for this format yet. Scrape reels, ensure analyses exist, then retry.",
+                )
+            patterns = dict(drow.get("digest_json") or {})
+            extra_focus: Optional[str] = None
+            if st == "idea_match" and source_idea:
+                extra_focus = source_idea
+            elif body.extra_instruction and body.extra_instruction.strip():
+                extra_focus = body.extra_instruction.strip()
+            angles = run_angle_generation(
+                settings,
+                client_row=client_row,
+                synthesized_patterns=patterns,
+                extra_instruction=extra_focus,
+            )
+            tr = drow.get("top_reel_ids")
+            if isinstance(tr, list):
+                for x in tr:
+                    if not isinstance(x, dict):
+                        continue
+                    aid = x.get("analysis_id")
+                    rid = x.get("reel_id")
+                    if aid:
+                        analysis_ids.append(str(aid))
+                    if rid:
+                        reel_ids.append(str(rid))
+
+        elif st == "url_adapt":
+            raw_u = (body.url or "").strip()
+            if not raw_u or not instagram_reel_url_is_valid(raw_u):
+                raise HTTPException(status_code=400, detail="Valid Instagram reel URL required")
+            url_key = canonical_instagram_post_url(raw_u)
+            source_url = url_key
+            one = _load_analysis_with_meta(supabase, client_id, url_key)
+            if not one:
+                sr = (
+                    supabase.table("scraped_reels")
+                    .select("id")
+                    .eq("client_id", client_id)
+                    .eq("post_url", url_key)
+                    .limit(1)
+                    .execute()
+                )
+                skip_apify = bool(sr and sr.data)
+                if not skip_apify and not settings.apify_api_token:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Reel not in your database yet. Analyze it in Intelligence first, or configure APIFY.",
+                    )
+                niche_ctx = _niche_context_for_reel_analysis(supabase, client_id)
+                try:
+                    _execute_reel_analyze_url_core(
+                        settings,
+                        supabase,
+                        client_id=client_id,
+                        analysis_job_id=generate_job_id(),
+                        reel_url=raw_u,
+                        analysis_source="generate_url_adapt",
+                        niche_context=niche_ctx,
+                        skip_apify=skip_apify,
+                    )
+                except ReelAnalyzeTerminalError as e:
+                    raise HTTPException(status_code=400, detail=str(e.code)) from e
+                one = _load_analysis_with_meta(supabase, client_id, url_key)
+            if not one:
+                raise HTTPException(status_code=400, detail="Could not load analysis for this URL")
+            packed = compact_analysis_for_prompt(one, reel_meta=one.get("_reel_meta"))
+            patterns = run_adaptation_synthesis(
+                settings, client_row=client_row, packed_analysis=packed
+            )
+            if not isinstance(patterns, dict):
+                patterns = {}
+            extra_adapt = (
+                body.extra_instruction.strip()
+                if body.extra_instruction and body.extra_instruction.strip()
+                else None
+            )
+            angles = run_angle_generation(
+                settings,
+                client_row=client_row,
+                synthesized_patterns=patterns,
+                extra_instruction=extra_adapt,
+            )
+            if one.get("id"):
+                analysis_ids.append(str(one["id"]))
+            if one.get("reel_id"):
+                reel_ids.append(str(one["reel_id"]))
+
+        else:
+            if st == "outlier":
+                ids = body.source_analysis_ids or []
+                if not ids:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="source_analysis_ids required when source_type=outlier",
+                    )
+
+            rows = fetch_reel_analyses_for_generation(
+                supabase,
+                client_id=client_id,
+                source_type=st,
+                source_analysis_ids=body.source_analysis_ids,
+                max_analyses=body.max_analyses,
+            )
+            if not rows:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No reel analyses found. Run Intelligence → analyze reels first.",
+                )
+
+            packed = [compact_analysis_for_prompt(r, reel_meta=r.get("_reel_meta")) for r in rows]
+            reel_ids = [str(r["reel_id"]) for r in rows if r.get("reel_id")]
+            analysis_ids = [str(r["id"]) for r in rows if r.get("id")]
+
+            patterns = run_pattern_synthesis(
+                settings,
+                client_row=client_row,
+                packed_analyses=packed,
+                extra_instruction=body.extra_instruction,
+            )
+            if not isinstance(patterns, dict):
+                patterns = {}
+            angles = run_angle_generation(
+                settings,
+                client_row=client_row,
+                synthesized_patterns=patterns,
+                extra_instruction=body.extra_instruction,
+            )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("generation start failed")
         raise HTTPException(status_code=502, detail=str(e)) from e
@@ -167,16 +387,16 @@ def generation_start(
     if len(angles) < 3:
         raise HTTPException(
             status_code=502,
-            detail="Model returned too few angles; retry or adjust analyses.",
+            detail="Model returned too few angles; retry or adjust inputs.",
         )
 
     sid = generate_generation_session_id()
     now = _now_iso()
-    insert_row = {
+    insert_row: Dict[str, Any] = {
         "id": sid,
         "client_id": client_id,
-        "source_type": body.source_type,
-        "source_analysis_ids": analysis_ids,
+        "source_type": st,
+        "source_analysis_ids": analysis_ids or None,
         "source_reel_ids": reel_ids or None,
         "synthesized_patterns": patterns,
         "angles": angles,
@@ -192,13 +412,19 @@ def generation_start(
         "created_at": now,
         "updated_at": now,
     }
+    if source_format_key:
+        insert_row["source_format_key"] = source_format_key
+    if source_url:
+        insert_row["source_url"] = source_url
+    if source_idea:
+        insert_row["source_idea"] = source_idea
     try:
         ins = supabase.table("generation_sessions").insert(insert_row).execute()
     except Exception as e:
-        logger.exception("generation_sessions insert failed — run sql/phase6_generation_sessions.sql?")
+        logger.exception("generation_sessions insert failed — run sql migrations?")
         raise HTTPException(
             status_code=503,
-            detail="Database error (is generation_sessions table created?).",
+            detail="Database error (generation_sessions / phase8 columns?).",
         ) from e
     if not ins.data:
         raise HTTPException(status_code=500, detail="Insert failed")

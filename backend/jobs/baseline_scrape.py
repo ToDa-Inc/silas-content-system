@@ -8,10 +8,11 @@ from typing import Any, Dict
 from core.config import Settings
 from core.database import get_supabase_for_settings
 from core.id_generator import generate_baseline_id
-from services.apify import REEL_ACTOR, run_actor
+from services.apify import instagram_reel_scraper_input, run_actor
 from services.client_own_reels import upsert_client_own_reels
 from services.reel_snapshots import insert_snapshots_for_scrape_job
 from services.competitor_tier_backfill import backfill_competitor_tiers
+from services.format_digest_jobs import enqueue_auto_analyze_scraped, enqueue_format_digest_recompute
 
 
 def _avg(arr: list[int]) -> int:
@@ -51,8 +52,12 @@ def run_baseline_scrape(settings: Settings, job: Dict[str, Any]) -> None:
 
     items = run_actor(
         settings.apify_api_token,
-        REEL_ACTOR,
-        {"username": [ig.replace("@", "")], "resultsLimit": 30},
+        settings.apify_reel_actor,
+        instagram_reel_scraper_input(
+            [ig.replace("@", "")],
+            30,
+            include_shares_count=settings.apify_include_shares_count,
+        ),
     )
     videos = [
         x
@@ -107,7 +112,7 @@ def run_baseline_scrape(settings: Settings, job: Dict[str, Any]) -> None:
             "result": {
                 "pipeline": "baseline_scrape",
                 "apify": {
-                    "reel_actor": REEL_ACTOR,
+                    "reel_actor": settings.apify_reel_actor,
                     "input": {
                         "username": [ig.replace("@", "").strip()],
                         "resultsLimit": 30,
@@ -122,3 +127,11 @@ def run_baseline_scrape(settings: Settings, job: Dict[str, Any]) -> None:
             },
         }
     ).eq("id", job_id).execute()
+
+    org_id = job.get("org_id")
+    if org_id and client_id:
+        try:
+            enqueue_format_digest_recompute(supabase, org_id=str(org_id), client_id=str(client_id))
+            enqueue_auto_analyze_scraped(supabase, org_id=str(org_id), client_id=str(client_id))
+        except Exception:
+            pass

@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Union
 
+from .format_classifier import normalize_format_from_analysis
 from .reel_analyze_prompt import CRITERIA_WEIGHTS
 
 
@@ -362,6 +363,13 @@ def parse_silas_analysis_text(text: str) -> Dict[str, Any]:
         "suggested_adaptation": suggested_raw,
     }
 
+    # full_analysis_json not built yet — pass partial dict for format normalization
+    partial_fa: Dict[str, Any] = {"structured_summary": structured_summary}
+    normalized_format = normalize_format_from_analysis(
+        content_angle=content_angle,
+        full_analysis_json=partial_fa,
+    )
+
     return {
         # DB column values (backward compatible)
         "total_score": score_data["total_score"],
@@ -380,4 +388,5 @@ def parse_silas_analysis_text(text: str) -> Dict[str, Any]:
         "replicable_elements": replicable_json,
         "suggested_adaptations": suggested_adaptations,
         "structured_summary": structured_summary,
+        "normalized_format": normalized_format,
     }

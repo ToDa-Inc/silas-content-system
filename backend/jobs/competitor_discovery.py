@@ -9,7 +9,8 @@ from typing import Any, Dict, List, Optional
 from core.config import Settings
 from core.database import get_supabase_for_settings
 from core.id_generator import generate_competitor_id
-from services.apify import REEL_ACTOR, SEARCH_ACTOR, run_actor, run_keyword_reel_search
+from services.apify import SEARCH_ACTOR, instagram_reel_scraper_input, run_actor, run_keyword_reel_search
+from services.apify_reel_fields import video_duration_seconds_from_item
 from services.instagram_account_lookup import fetch_instagram_user_by_username
 from services.competitor_scoring import evaluate_competitor
 from services.openrouter import analyze_relevance
@@ -128,7 +129,13 @@ def _discover_by_keyword(
 
 
 def _scrape_account_posts(
-    token: str, user: str, count: int, cached_posts: Optional[List] = None
+    token: str,
+    reel_actor: str,
+    user: str,
+    count: int,
+    cached_posts: Optional[List] = None,
+    *,
+    include_shares_count: bool = True,
 ) -> List[dict]:
     cached_posts = cached_posts or []
     if len(cached_posts) >= 3:
@@ -143,7 +150,7 @@ def _scrape_account_posts(
                     "views": int(r.get("videoViewCount") or r.get("videoPlayCount") or 0),
                     "likes": int(r.get("likesCount") or 0),
                     "comments": int(r.get("commentsCount") or 0),
-                    "duration": int(r.get("videoDuration") or 0),
+                    "duration": video_duration_seconds_from_item(r) or 0,
                     "url": r.get("url")
                     or (
                         f"https://www.instagram.com/p/{r.get('shortCode')}/"
@@ -155,7 +162,15 @@ def _scrape_account_posts(
             )
         return out
 
-    results = run_actor(token, REEL_ACTOR, {"username": [user], "resultsLimit": count})
+    results = run_actor(
+        token,
+        reel_actor,
+        instagram_reel_scraper_input(
+            [user],
+            count,
+            include_shares_count=include_shares_count,
+        ),
+    )
     posts: List[dict] = []
     for r in results:
         if r.get("type") not in ("Video", "GraphVideo") and not r.get("caption"):
@@ -171,7 +186,7 @@ def _scrape_account_posts(
                 "views": int(r.get("videoViewCount") or r.get("playsCount") or 0),
                 "likes": int(r.get("likesCount") or 0),
                 "comments": int(r.get("commentsCount") or 0),
-                "duration": int(r.get("videoDuration") or 0),
+                "duration": video_duration_seconds_from_item(r) or 0,
                 "url": r.get("url") or "",
                 "timestamp": r.get("timestamp") or "",
             }
@@ -318,7 +333,7 @@ def run_competitor_discovery(settings: Settings, job: Dict[str, Any]) -> None:
         "phase": "searching",
         "apify": {
             "search_actor": SEARCH_ACTOR,
-            "reel_actor": REEL_ACTOR,
+            "reel_actor": settings.apify_reel_actor,
             "reference": "services/apify.py — same actor IDs as scripts/competitor-discovery.js",
         },
         "openrouter_model": settings.openrouter_model,
@@ -341,7 +356,13 @@ def run_competitor_discovery(settings: Settings, job: Dict[str, Any]) -> None:
     accounts: List[dict] = []
     excl = cfg["instagram"]
     for su in seed_usernames:
-        acc = fetch_instagram_user_by_username(settings.apify_api_token, su, exclude_username=excl)
+        acc = fetch_instagram_user_by_username(
+            settings.apify_api_token,
+            su,
+            exclude_username=excl,
+            reel_actor=settings.apify_reel_actor,
+            include_shares_count=settings.apify_include_shares_count,
+        )
         found = False
         if acc:
             u = (acc.get("username") or "").lower()
@@ -408,9 +429,11 @@ def run_competitor_discovery(settings: Settings, job: Dict[str, Any]) -> None:
         account["_client_lang"] = cfg["language"]
         posts = _scrape_account_posts(
             settings.apify_api_token,
+            settings.apify_reel_actor,
             account["username"],
             posts_per,
             account.get("_latestPosts"),
+            include_shares_count=settings.apify_include_shares_count,
         )
         if len(posts) < 2:
             continue

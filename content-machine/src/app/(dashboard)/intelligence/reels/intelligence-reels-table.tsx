@@ -151,17 +151,21 @@ function SortHeader({
   active,
   dir,
   onClick,
+  title,
 }: {
   label: string;
   active: boolean;
   dir: "asc" | "desc";
   onClick: () => void;
+  /** Native tooltip for metric caveats (Apify / Instagram). */
+  title?: string;
 }) {
   return (
     <th className="py-3 pr-2 font-medium">
       <button
         type="button"
         onClick={onClick}
+        title={title}
         className="inline-flex items-center gap-0.5 text-left uppercase tracking-widest hover:text-zinc-700 dark:hover:text-app-fg-muted"
       >
         {label}
@@ -688,12 +692,14 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
               />
               <SortHeader
                 label="Saves"
+                title="From Instagram via Apify. Public scrape often returns 0 — saves are not always exposed."
                 active={sortKey === "saves"}
                 dir={sortDir}
                 onClick={() => handleSort("saves")}
               />
               <SortHeader
                 label="Shares"
+                title="Requires includeSharesCount in Apify (paid plan). Sync again after upgrading Apify."
                 active={sortKey === "shares"}
                 dir={sortDir}
                 onClick={() => handleSort("shares")}
@@ -706,6 +712,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
               />
               <SortHeader
                 label="Dur."
+                title="Length in seconds when Apify provides videoDuration (not all reels include it)."
                 active={sortKey === "video_duration"}
                 dir={sortDir}
                 onClick={() => handleSort("video_duration")}

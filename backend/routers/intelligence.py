@@ -48,7 +48,11 @@ from services.job_queue import (
     has_active_job,
 )
 from services.scrape_cycle import find_stale_competitors
-from services.reel_metrics import compute_niche_benchmarks, enrich_engagement_metrics
+from services.reel_metrics import (
+    compute_niche_benchmarks,
+    enrich_engagement_metrics,
+    normalize_scraped_reel_row_for_api,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["intelligence"])
 logger = logging.getLogger(__name__)
@@ -522,9 +526,9 @@ def _top_reels_by_growth(
     tl = pick("likes", "growth_likes")
     tc = pick("comments", "growth_comments")
 
-    tv = [enrich_engagement_metrics(dict(x)) for x in tv]
-    tl = [enrich_engagement_metrics(dict(x)) for x in tl]
-    tc = [enrich_engagement_metrics(dict(x)) for x in tc]
+    tv = [normalize_scraped_reel_row_for_api(enrich_engagement_metrics(dict(x))) for x in tv]
+    tl = [normalize_scraped_reel_row_for_api(enrich_engagement_metrics(dict(x))) for x in tl]
+    tc = [normalize_scraped_reel_row_for_api(enrich_engagement_metrics(dict(x))) for x in tc]
 
     by_id: Dict[str, dict] = {}
     for row in tv + tl + tc:
@@ -1661,6 +1665,7 @@ def list_reels(
     data = res.data or []
     for row in data:
         enrich_engagement_metrics(row)
+        normalize_scraped_reel_row_for_api(row)
     if include_analysis and data:
         try:
             _attach_reel_analyses(supabase, client_id, data)

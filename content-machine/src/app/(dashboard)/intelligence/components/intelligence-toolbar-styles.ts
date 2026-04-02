@@ -3,6 +3,10 @@
 export const INTELLIGENCE_TOOLBAR_ICON_CLASS =
   "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-300/90 bg-white text-zinc-700 shadow-sm outline-none transition-all hover:border-zinc-400 hover:bg-zinc-50 hover:shadow-md focus-visible:ring-2 focus-visible:ring-amber-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50 dark:border-white/15 dark:bg-zinc-900/90 dark:text-zinc-100 dark:hover:border-white/28 dark:hover:bg-zinc-800 dark:focus-visible:ring-offset-zinc-950 disabled:pointer-events-none disabled:opacity-45";
 
+/** Same as toolbar icon but with room for label + icon (Reels page, etc.). */
+export const INTELLIGENCE_TOOLBAR_SYNC_LABELED_CLASS =
+  "inline-flex h-10 min-w-[7rem] shrink-0 items-center justify-center gap-2 rounded-lg border border-zinc-300/90 bg-white px-3 text-sm font-semibold text-zinc-700 shadow-sm outline-none transition-all hover:border-zinc-400 hover:bg-zinc-50 hover:shadow-md focus-visible:ring-2 focus-visible:ring-amber-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50 dark:border-white/15 dark:bg-zinc-900/90 dark:text-zinc-100 dark:hover:border-white/28 dark:hover:bg-zinc-800 dark:focus-visible:ring-offset-zinc-950 disabled:pointer-events-none disabled:opacity-45";
+
 /** Slightly smaller — section sync controls (What happened, breakouts, competitors page, dashboard). */
 export const INTELLIGENCE_SECTION_SYNC_ICON_CLASS =
   "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-zinc-300/90 bg-white text-zinc-700 shadow-sm outline-none transition-all hover:border-zinc-400 hover:bg-zinc-50 hover:shadow-md focus-visible:ring-2 focus-visible:ring-amber-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50 dark:border-white/15 dark:bg-zinc-900/90 dark:text-zinc-100 dark:hover:border-white/28 dark:hover:bg-zinc-800 dark:focus-visible:ring-offset-zinc-950 disabled:pointer-events-none disabled:opacity-45";

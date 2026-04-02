@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -30,6 +30,33 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("APIFY_API_TOKEN", "APIFY_API_KEY"),
     )
+
+    apify_reel_actor: str = Field(
+        default="apify~instagram-reel-scraper",
+        validation_alias=AliasChoices("APIFY_REEL_ACTOR"),
+        description="Apify actor id or username~name for Instagram reel profile scrapes.",
+    )
+
+    apify_include_shares_count: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("APIFY_INCLUDE_SHARES_COUNT"),
+        description="Sets includeSharesCount on Instagram Reel Scraper (requires paid Apify plan for real values).",
+    )
+
+    @field_validator("apify_api_token", mode="before")
+    @classmethod
+    def strip_apify_token(cls, v: object) -> object:
+        if isinstance(v, str):
+            return v.strip()
+        return v
+
+    @field_validator("apify_reel_actor", mode="before")
+    @classmethod
+    def strip_reel_actor(cls, v: object) -> object:
+        if isinstance(v, str):
+            s = v.strip()
+            return s if s else "apify~instagram-reel-scraper"
+        return v
     openrouter_api_key: str = ""
     openrouter_model: str = "google/gemini-2.0-flash-001"
     openrouter_reel_analyze_model: str = Field(

@@ -10,7 +10,7 @@ from services.client_dna_compile import _context_texts_only
 from services.openrouter import chat_json_completion
 from services.reel_metrics import enrich_engagement_metrics
 
-GENERATION_PROMPT_VERSION = "silas_gen_v2_2026_04_01"
+GENERATION_PROMPT_VERSION = "silas_gen_v3_2026_04_02"
 
 _SYSTEM_JSON = (
     "You are Silas — a senior Instagram Reels strategist. "
@@ -401,6 +401,80 @@ def angles_from_session_row(row: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not isinstance(a, list):
         return []
     return [x for x in a if isinstance(x, dict)]
+
+
+def run_adaptation_synthesis(
+    settings: Settings,
+    *,
+    client_row: Dict[str, Any],
+    packed_analysis: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build synthesized_patterns from a single source reel (url_adapt mode)."""
+    lang = _lang_instruction(str(client_row.get("language") or "de"))
+    user = (
+        f"{lang}\n\n"
+        "TASK: This reel is the TEMPLATE to adapt for the client below. Extract "
+        "repeatable structure, hooks, tension, and value delivery — then output JSON "
+        "with the same shape as pattern synthesis:\n"
+        "{\n"
+        '  "hook_patterns": [{"name": string, "description": string, "example_from_data": string}],\n'
+        '  "tension_mechanisms": [{"name": string, "description": string}],\n'
+        '  "value_delivery_formats": [{"name": string, "description": string}],\n'
+        '  "patterns_to_avoid": [string],\n'
+        '  "format_insights": {"dominant_type": string, "optimal_duration": string, '
+        '"engagement_drivers": string},\n'
+        '  "performance_summary": string,\n'
+        '  "one_paragraph_synthesis": string\n'
+        "}\n\n"
+        "Use the PERFORMANCE block when present to note what worked in context.\n\n"
+        f"CLIENT_CONTEXT:\n{_pack_client_row_for_llm(client_row)[:100_000]}\n\n"
+        f"SOURCE_REEL_ANALYSIS_JSON:\n{json.dumps(packed_analysis, ensure_ascii=False)[:120_000]}\n"
+    )
+    return chat_json_completion(
+        settings.openrouter_api_key,
+        settings.openrouter_model,
+        system=_SYSTEM_JSON,
+        user=user,
+        max_tokens=8192,
+        temperature=0.25,
+    )
+
+
+def run_format_recommendation(
+    settings: Settings,
+    *,
+    client_row: Dict[str, Any],
+    idea: str,
+    format_summaries: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return top format recommendations for a free-text idea (JSON array)."""
+    lang = _lang_instruction(str(client_row.get("language") or "de"))
+    user = (
+        f"{lang}\n\n"
+        "TASK: Given the user's video idea and the available FORMAT options with metrics, "
+        "pick the 1–3 formats most likely to perform well for this idea. "
+        "Output JSON: {\"recommendations\": [ {\"format_key\": string, "
+        "\"score\": number 0-100, \"reasoning\": string, \"suggested_angle_hint\": string } ]}\n\n"
+        f"USER_IDEA:\n{idea.strip()[:4000]}\n\n"
+        f"FORMAT_OPTIONS_JSON:\n{json.dumps(format_summaries, ensure_ascii=False)[:80_000]}\n\n"
+        f"CLIENT_CONTEXT:\n{_pack_client_row_for_llm(client_row)[:80_000]}\n"
+    )
+    data = chat_json_completion(
+        settings.openrouter_api_key,
+        settings.openrouter_model,
+        system=_SYSTEM_JSON,
+        user=user,
+        max_tokens=4096,
+        temperature=0.35,
+    )
+    rec = data.get("recommendations")
+    if not isinstance(rec, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for x in rec[:5]:
+        if isinstance(x, dict):
+            out.append(x)
+    return out
 
 
 def get_chosen_angle(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:

@@ -3,8 +3,25 @@
 from __future__ import annotations
 
 import time
+from typing import Any, List
 
 import httpx
+
+
+def instagram_reel_scraper_input(
+    usernames: List[str],
+    results_limit: int,
+    *,
+    include_shares_count: bool = True,
+) -> dict[str, Any]:
+    """Input for ``apify~instagram-reel-scraper``. Shares need ``includeSharesCount`` (paid Apify tiers)."""
+    body: dict[str, Any] = {
+        "username": usernames,
+        "resultsLimit": results_limit,
+    }
+    if include_shares_count:
+        body["includeSharesCount"] = True
+    return body
 
 
 def _poll_run(token: str, actor_id: str, run_id: str, max_attempts: int = 120) -> None:
@@ -36,7 +53,12 @@ def run_actor(token: str, actor_id: str, body: dict) -> list:
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json=body,
         )
-        r.raise_for_status()
+        if r.status_code >= 400:
+            err_body = (r.text or "")[:800]
+            raise RuntimeError(
+                f"Apify HTTP {r.status_code} for acts/{actor_id}/runs. "
+                f"{err_body or 'No response body.'}"
+            )
         data = r.json()["data"]
         run_id = data["id"]
         dataset_id = data["defaultDatasetId"]
@@ -54,7 +76,9 @@ def run_actor(token: str, actor_id: str, body: dict) -> list:
 
 # Actor IDs (same as Node scripts)
 SEARCH_ACTOR = "DrF9mzPPEuVizVF4l"
-REEL_ACTOR = "xMc5Ga1oCONPmWJIa"
+# Official Store actor (username~name). Legacy ID xMc5Ga1oCONPmWJIa can 403 for some tokens.
+# Override with env APIFY_REEL_ACTOR if needed (see Settings).
+REEL_ACTOR = "apify~instagram-reel-scraper"
 # Sasky — topic/hashtag-style reel search → usernames (docs/VIRAL-DISCOVERY-SPEC.md)
 KEYWORD_REEL_ACTOR = "4QFjEpnGE1PNEnQF2"
 
