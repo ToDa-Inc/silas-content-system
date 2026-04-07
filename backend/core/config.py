@@ -58,6 +58,17 @@ class Settings(BaseSettings):
             return s if s else "apify~instagram-reel-scraper"
         return v
     openrouter_api_key: str = ""
+    openai_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPENAI_API_KEY"),
+    )
+
+    @field_validator("openai_api_key", mode="before")
+    @classmethod
+    def strip_openai_key(cls, v: object) -> object:
+        if isinstance(v, str):
+            return v.strip()
+        return v
     openrouter_model: str = "google/gemini-2.0-flash-001"
     openrouter_reel_analyze_model: str = Field(
         default="google/gemini-3-flash-preview",

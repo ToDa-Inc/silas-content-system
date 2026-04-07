@@ -40,6 +40,7 @@ from services.content_generation import (
     run_pattern_synthesis,
     run_regenerate,
 )
+from services.format_classifier import canonicalize_stored_format_key
 from services.format_digest import (
     compute_format_digests,
     ensure_format_digests_fresh,
@@ -66,6 +67,11 @@ def _row_to_out(row: Dict[str, Any]) -> Dict[str, Any]:
             continue
         if isinstance(v, list):
             out[key] = [str(x) for x in v]
+    fk = out.get("source_format_key")
+    if fk is not None and str(fk).strip():
+        ck = canonicalize_stored_format_key(str(fk))
+        if ck:
+            out["source_format_key"] = ck
     return out
 
 
@@ -106,7 +112,7 @@ def _row_has_regenerated_content(row: Dict[str, Any]) -> bool:
 _ANALYSIS_SEL = (
     "id, reel_id, post_url, owner_username, total_score, replicability_rating, hook_type, "
     "emotional_trigger, content_angle, caption_structure, why_it_worked, replicable_elements, "
-    "suggested_adaptations, full_analysis_json"
+    "suggested_adaptations, full_analysis_json, normalized_format"
 )
 
 
@@ -337,6 +343,15 @@ def generation_start(
                 analysis_ids.append(str(one["id"]))
             if one.get("reel_id"):
                 reel_ids.append(str(one["reel_id"]))
+            # Create / Remotion need a visual format key; url_adapt historically left this NULL.
+            nf = str(one.get("normalized_format") or "").strip()
+            ck = canonicalize_stored_format_key(nf) or nf
+            if ck in ("text_overlay", "b_roll_reel", "carousel"):
+                source_format_key = ck
+            elif ck == "talking_head":
+                source_format_key = "text_overlay"
+            else:
+                source_format_key = "text_overlay"
 
         else:
             if st == "outlier":
@@ -413,7 +428,8 @@ def generation_start(
         "updated_at": now,
     }
     if source_format_key:
-        insert_row["source_format_key"] = source_format_key
+        ck = canonicalize_stored_format_key(source_format_key)
+        insert_row["source_format_key"] = ck or source_format_key.strip()
     if source_url:
         insert_row["source_url"] = source_url
     if source_idea:
@@ -458,12 +474,15 @@ def generation_choose_angle(
     patterns = row.get("synthesized_patterns") if isinstance(row.get("synthesized_patterns"), dict) else {}
     chosen = angles[body.angle_index]
 
+    raw_fk = str(row.get("source_format_key") or "").strip()
+    fk = canonicalize_stored_format_key(raw_fk) or raw_fk or None
     try:
         package = run_content_package(
             settings,
             client_row=client_row,
             synthesized_patterns=patterns,
             chosen_angle=chosen,
+            source_format_key=fk,
         )
     except Exception as e:
         logger.exception("generation choose-angle failed")
@@ -477,6 +496,7 @@ def generation_choose_angle(
         "caption_body": package["caption_body"],
         "hashtags": package["hashtags"],
         "story_variants": package["story_variants"],
+        "text_blocks": package.get("text_blocks"),
         "status": "content_ready",
         "updated_at": now,
     }
@@ -522,7 +542,13 @@ def generation_regenerate(
     tags = [str(t) for t in tags]
     stories = row.get("story_variants") if isinstance(row.get("story_variants"), list) else []
     stories = [str(s) for s in stories]
+    raw_tb = row.get("text_blocks")
+    cur_tb: Optional[List[Dict[str, Any]]] = None
+    if isinstance(raw_tb, list):
+        cur_tb = [x for x in raw_tb if isinstance(x, dict)]
 
+    raw_fk = str(row.get("source_format_key") or "").strip()
+    fk = canonicalize_stored_format_key(raw_fk) or raw_fk or None
     try:
         package = run_regenerate(
             settings,
@@ -536,6 +562,8 @@ def generation_regenerate(
             current_caption=cap,
             current_hashtags=tags,
             current_stories=stories,
+            source_format_key=fk,
+            current_text_blocks=cur_tb,
         )
     except Exception as e:
         logger.exception("generation regenerate failed")
@@ -548,6 +576,7 @@ def generation_regenerate(
         "caption_body": package["caption_body"],
         "hashtags": package["hashtags"],
         "story_variants": package["story_variants"],
+        "text_blocks": package.get("text_blocks"),
         "status": "content_ready",
         "updated_at": now,
     }

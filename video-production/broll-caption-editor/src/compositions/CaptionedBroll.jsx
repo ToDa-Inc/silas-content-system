@@ -1,11 +1,10 @@
 import React from 'react';
-import { Video, useVideoConfig } from 'remotion';
+import { Video } from 'remotion';
 import TextOverlay from '../components/TextOverlay';
 import HookText from '../components/HookText';
 
-const CaptionedBroll = ({ videoPath, hook, textBlocks }) => {
-  const { fps, durationInFrames } = useVideoConfig();
-
+/** B-roll under text. `backgroundUrl` must be an http(s) URL reachable from the render machine. */
+const CaptionedBroll = ({ backgroundUrl, hook, textBlocks }) => {
   return (
     <div
       style={{
@@ -20,9 +19,10 @@ const CaptionedBroll = ({ videoPath, hook, textBlocks }) => {
         alignItems: 'center'
       }}
     >
-      {/* Video Background */}
       <Video
-        src={videoPath}
+        src={backgroundUrl}
+        loop
+        muted
         style={{
           width: '100%',
           height: '100%',
@@ -60,7 +60,7 @@ const CaptionedBroll = ({ videoPath, hook, textBlocks }) => {
         <HookText text={hook} />
 
         {/* Dynamic Text Blocks - Stacked Vertically Below Hook */}
-        {textBlocks.map((block, index) => (
+        {(textBlocks || []).map((block, index) => (
           <TextOverlay
             key={index}
             text={block.text}

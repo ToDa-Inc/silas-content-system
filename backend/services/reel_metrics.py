@@ -24,7 +24,7 @@ def normalize_scraped_reel_row_for_api(reel: dict) -> dict:
 
 
 def enrich_engagement_metrics(reel: dict) -> dict:
-    """Mutates and returns ``reel`` with engagement_rate, save_rate, share_rate (0–1 floats)."""
+    """Mutates and returns ``reel`` with engagement_rate, comment_view_ratio, save_rate, share_rate (0–1 floats)."""
     v = _int_metric_val(reel.get("views"))
     l = _int_metric_val(reel.get("likes"))
     c = _int_metric_val(reel.get("comments"))
@@ -32,6 +32,7 @@ def enrich_engagement_metrics(reel: dict) -> dict:
     sh = _int_metric_val(reel.get("shares"))
     total_eng = l + c + s + sh
     reel["engagement_rate"] = round(total_eng / v, 4) if v > 0 else None
+    reel["comment_view_ratio"] = round(c / v, 4) if v > 0 else None
     reel["save_rate"] = round(s / v, 4) if v > 0 else None
     reel["share_rate"] = round(sh / v, 4) if v > 0 else None
     return reel
@@ -53,6 +54,7 @@ def compute_niche_benchmarks(supabase: Client, client_id: str) -> Dict[str, Any]
             "niche_avg_views": None,
             "niche_avg_likes": None,
             "niche_avg_engagement_rate": None,
+            "niche_avg_comment_view_ratio": None,
             "niche_avg_duration_seconds": None,
         }
 
@@ -64,18 +66,23 @@ def compute_niche_benchmarks(supabase: Client, client_id: str) -> Dict[str, Any]
             "niche_avg_views": None,
             "niche_avg_likes": None,
             "niche_avg_engagement_rate": None,
+            "niche_avg_comment_view_ratio": None,
             "niche_avg_duration_seconds": None,
         }
 
     sum_v = sum(_int_metric_val(r.get("views")) for r in rows)
     sum_l = sum(_int_metric_val(r.get("likes")) for r in rows)
     ers: List[float] = []
+    cvrs: List[float] = []
     durs: List[int] = []
     for r in rows:
         rr = enrich_engagement_metrics(dict(r))
         er = rr.get("engagement_rate")
         if er is not None:
             ers.append(float(er))
+        cvr = rr.get("comment_view_ratio")
+        if cvr is not None:
+            cvrs.append(float(cvr))
         vd = r.get("video_duration")
         if vd is not None:
             try:
@@ -90,5 +97,6 @@ def compute_niche_benchmarks(supabase: Client, client_id: str) -> Dict[str, Any]
         "niche_avg_views": round(sum_v / n),
         "niche_avg_likes": round(sum_l / n),
         "niche_avg_engagement_rate": round(sum(ers) / len(ers), 4) if ers else None,
+        "niche_avg_comment_view_ratio": round(sum(cvrs) / len(cvrs), 4) if cvrs else None,
         "niche_avg_duration_seconds": round(sum(durs) / len(durs)) if durs else None,
     }

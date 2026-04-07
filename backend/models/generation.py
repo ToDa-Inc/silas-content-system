@@ -77,6 +77,13 @@ class GenerationSessionOut(BaseModel):
     caption_body: Optional[str] = None
     hashtags: Optional[List[str]] = None
     story_variants: Optional[List[str]] = None
+    text_blocks: Optional[List[Dict[str, Any]]] = None
+    background_type: Optional[str] = None
+    broll_clip_id: Optional[str] = None
+    background_url: Optional[str] = None
+    rendered_video_url: Optional[str] = None
+    render_status: Optional[str] = None
+    render_error: Optional[str] = None
     status: str
     feedback: Optional[str] = None
     prompt_version: Optional[str] = None

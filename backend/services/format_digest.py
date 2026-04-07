@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from supabase import Client
 
 from core.config import Settings
-from services.format_classifier import normalize_format_from_analysis
+from services.format_classifier import canonicalize_stored_format_key, normalize_format_from_analysis
 from services.content_generation import _pack_client_row_for_llm, compact_analysis_for_prompt
 from services.openrouter import chat_json_completion
 from services.reel_metrics import compute_niche_benchmarks, enrich_engagement_metrics
@@ -49,12 +49,15 @@ def _is_mature(posted_at: Any, now: datetime) -> bool:
 def _nf_for_row(row: Dict[str, Any]) -> str:
     raw = row.get("normalized_format")
     if isinstance(raw, str) and raw.strip():
-        return str(raw).strip()
-    fa = row.get("full_analysis_json") if isinstance(row.get("full_analysis_json"), dict) else {}
-    return normalize_format_from_analysis(
-        content_angle=row.get("content_angle"),
-        full_analysis_json=fa,
-    )
+        out = str(raw).strip()
+    else:
+        fa = row.get("full_analysis_json") if isinstance(row.get("full_analysis_json"), dict) else {}
+        out = normalize_format_from_analysis(
+            content_angle=row.get("content_angle"),
+            full_analysis_json=fa,
+        )
+    ck = canonicalize_stored_format_key(out)
+    return ck or out
 
 
 def is_digest_stale(supabase: Client, client_id: str) -> bool:
@@ -79,45 +82,75 @@ def is_digest_stale(supabase: Client, client_id: str) -> bool:
     return ct < now - timedelta(hours=STALE_HOURS)
 
 
+def _digest_summary_sort_key(row: Dict[str, Any]) -> tuple:
+    """Prefer avg_comment_view_ratio for ordering; fall back to legacy avg_engagement."""
+    cvr = row.get("avg_comment_view_ratio")
+    if cvr is not None:
+        try:
+            return (0, -float(cvr))
+        except (TypeError, ValueError):
+            pass
+    ae = row.get("avg_engagement")
+    if ae is not None:
+        try:
+            return (1, -float(ae))
+        except (TypeError, ValueError):
+            pass
+    return (2, 0.0)
+
+
 def list_format_digest_summaries(supabase: Client, client_id: str) -> List[Dict[str, Any]]:
-    """Rows for GET /format-digests (picker UI)."""
+    """Rows for GET /format-digests (picker UI).
+
+    Uses select('*') so the query works before and after optional migrations (e.g.
+    avg_comment_view_ratio). A fixed column list that includes a missing column makes
+    PostgREST return an error and this endpoint would silently return [].
+    """
     try:
         res = (
             supabase.table("format_digests")
-            .select(
-                "format_key, reel_count, mature_count, avg_engagement, avg_save_rate, "
-                "avg_share_rate, avg_duration_s, computed_at"
-            )
+            .select("*")
             .eq("client_id", client_id)
-            .order("avg_engagement", desc=True)
             .execute()
         )
     except Exception as e:
         logger.warning("list_format_digest_summaries: %s", e)
         return []
-    out: List[Dict[str, Any]] = []
-    for r in res.data or []:
-        out.append(dict(r))
+    out: List[Dict[str, Any]] = [dict(r) for r in (res.data or [])]
+    out.sort(key=_digest_summary_sort_key)
     return out
 
 
 def get_digest_for_format(
     supabase: Client, client_id: str, format_key: str
 ) -> Optional[Dict[str, Any]]:
-    try:
-        res = (
-            supabase.table("format_digests")
-            .select("*")
-            .eq("client_id", client_id)
-            .eq("format_key", format_key)
-            .limit(1)
-            .execute()
-        )
-    except Exception:
+    fk = (format_key or "").strip()
+    if not fk:
         return None
-    if not res.data:
-        return None
-    return dict(res.data[0])
+    keys: list[str] = []
+    for k in (fk, canonicalize_stored_format_key(fk)):
+        if k and k not in keys:
+            keys.append(k)
+    _broll = frozenset({"b_roll", "b_roll_reel"})
+    if any(x in keys for x in _broll):
+        for x in _broll:
+            if x not in keys:
+                keys.append(x)
+    for k in keys:
+        try:
+            res = (
+                supabase.table("format_digests")
+                .select("*")
+                .eq("client_id", client_id)
+                .eq("format_key", k)
+                .limit(1)
+                .execute()
+            )
+        except Exception:
+            continue
+        if res.data:
+            return dict(res.data[0])
+    return None
 
 
 def _llm_synthesize_format_digest(
@@ -247,6 +280,12 @@ def compute_format_digests(
 
         def sort_key(x: Dict[str, Any]) -> float:
             m = x.get("_reel_meta") or {}
+            cvr = m.get("comment_view_ratio")
+            if cvr is not None:
+                try:
+                    return float(cvr)
+                except (TypeError, ValueError):
+                    pass
             er = m.get("engagement_rate")
             if er is None:
                 return -1.0
@@ -262,6 +301,7 @@ def compute_format_digests(
         losers = rows_sorted[-bot_n:] if n >= 2 else []
 
         ers: List[float] = []
+        cvrs: List[float] = []
         srs: List[float] = []
         shrs: List[float] = []
         durs: List[int] = []
@@ -270,6 +310,11 @@ def compute_format_digests(
             if m.get("engagement_rate") is not None:
                 try:
                     ers.append(float(m["engagement_rate"]))
+                except (TypeError, ValueError):
+                    pass
+            if m.get("comment_view_ratio") is not None:
+                try:
+                    cvrs.append(float(m["comment_view_ratio"]))
                 except (TypeError, ValueError):
                     pass
             if m.get("save_rate") is not None:
@@ -363,6 +408,7 @@ def compute_format_digests(
                     "reel_id": r.get("reel_id"),
                     "analysis_id": r.get("id"),
                     "engagement_rate": m.get("engagement_rate"),
+                    "comment_view_ratio": m.get("comment_view_ratio"),
                     "total_score": r.get("total_score"),
                 }
             )
@@ -373,6 +419,7 @@ def compute_format_digests(
             "reel_count": len([x for x in enriched if x.get("_format_key") == fmt]),
             "mature_count": n,
             "avg_engagement": round(sum(ers) / len(ers), 4) if ers else None,
+            "avg_comment_view_ratio": round(sum(cvrs) / len(cvrs), 4) if cvrs else None,
             "avg_save_rate": round(sum(srs) / len(srs), 4) if srs else None,
             "avg_share_rate": round(sum(shrs) / len(shrs), 4) if shrs else None,
             "avg_duration_s": round(sum(durs) / len(durs)) if durs else None,

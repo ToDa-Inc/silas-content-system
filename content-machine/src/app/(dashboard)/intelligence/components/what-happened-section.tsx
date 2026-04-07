@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { clientApiHeaders, contentApiFetch, getContentApiBase } from "@/lib/api-client";
 import type { ScrapedReelRow, WeekBreakoutsPayload } from "@/lib/api";
+import { commentViewRatio, formatCommentViewPct } from "@/lib/reel-comment-view";
 import { ReelThumbnail } from "@/components/reel-thumbnail";
 import { ReelCardWithAnalysis } from "./reel-card-with-analysis";
 import { StoredBreakoutsRecomputeButton } from "./stored-breakouts-recompute-button";
@@ -190,9 +191,9 @@ function CompactBreakoutRow({
             ) : null}
           </span>
         </div>
-        {reel.engagement_rate != null ? (
-          <p className="mt-1 text-[9px] tabular-nums text-app-fg-subtle" title="(likes+comments+saves+shares)/views">
-            Eng. {(reel.engagement_rate * 100).toFixed(2)}%
+        {commentViewRatio(reel) != null ? (
+          <p className="mt-1 text-[9px] tabular-nums text-app-fg-subtle" title="Comments ÷ views">
+            C/V {formatCommentViewPct(reel)}
           </p>
         ) : null}
       </div>

@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
@@ -12,9 +14,13 @@ import {
   ThumbsUp,
   Trash2,
 } from "lucide-react";
+import { ReelThumbnail } from "@/components/reel-thumbnail";
 import { useToast } from "@/components/ui/toast-provider";
+import type { ScrapedReelRow } from "@/lib/api";
+import { formatCommentViewPct } from "@/lib/reel-comment-view";
 import {
   clientApiContext,
+  fetchAdaptPreviewReels,
   fetchFormatDigests,
   generationChooseAngle,
   generationDeleteSession,
@@ -102,6 +108,24 @@ function formatKeyLabel(key: string): string {
   return key.replace(/_/g, " ");
 }
 
+const VISUAL_FOR_CREATE = new Set(["text_overlay", "b_roll_reel", "carousel"]);
+
+/** Match backend canonicalize_stored_format_key (legacy b_roll → b_roll_reel). */
+function canonicalFormatKey(key: string | null | undefined): string {
+  const k = (key || "").trim();
+  if (k === "b_roll") return "b_roll_reel";
+  return k;
+}
+
+function sessionEligibleForCreate(s: GenerationSession): boolean {
+  if (s.status !== "content_ready" && s.status !== "approved") return false;
+  const fk = canonicalFormatKey(s.source_format_key);
+  if (VISUAL_FOR_CREATE.has(fk)) return true;
+  // Matches backend: approved URL-adapt rows may omit source_format_key but use text-overlay Create pipeline
+  if (s.source_type === "url_adapt" && !fk) return true;
+  return false;
+}
+
 function statusBadgeClass(status: string): string {
   switch (status) {
     case "approved":
@@ -140,9 +164,63 @@ function SynthesizedPatternsView({ patterns }: { patterns: Record<string, unknow
   const valueFormats = patterns.value_delivery_formats;
   const avoid = patterns.patterns_to_avoid;
   const summary = patterns.one_paragraph_synthesis;
+  const perfSummary = patterns.performance_summary;
+  const fiRaw = patterns.format_insights;
+  const formatInsights =
+    fiRaw && typeof fiRaw === "object" && !Array.isArray(fiRaw) ? (fiRaw as Record<string, unknown>) : null;
 
   return (
     <div className="max-h-[28rem] space-y-4 overflow-y-auto pr-1">
+      <p className="text-[11px] leading-relaxed text-app-fg-muted">
+        Snapshot from when this run started: your team&apos;s{" "}
+        <span className="text-app-fg-secondary">format digest</span> (competitor reels → stats + one AI pass).
+        If the AI step failed (network, quota), sections below may be empty even though the digest row still
+        exists — use <strong className="font-semibold text-app-fg-muted">Refresh format digests</strong> on
+        Source to retry.
+      </p>
+
+      {formatInsights &&
+      [
+        formatInsights.dominant_type,
+        formatInsights.optimal_duration,
+        formatInsights.engagement_drivers,
+      ].some((x) => typeof x === "string" && x.trim()) ? (
+        <div className="rounded-xl border border-app-divider bg-app-chip-bg/40 p-4">
+          <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-app-fg-subtle">
+            Format snapshot
+          </h3>
+          <dl className="space-y-2 text-xs text-app-fg-muted">
+            {typeof formatInsights.dominant_type === "string" && formatInsights.dominant_type.trim() ? (
+              <div>
+                <dt className="font-semibold text-app-fg-subtle">What this format looks like</dt>
+                <dd className="mt-0.5 leading-relaxed">{formatInsights.dominant_type}</dd>
+              </div>
+            ) : null}
+            {typeof formatInsights.optimal_duration === "string" && formatInsights.optimal_duration.trim() ? (
+              <div>
+                <dt className="font-semibold text-app-fg-subtle">Typical length (from data)</dt>
+                <dd className="mt-0.5 leading-relaxed">{formatInsights.optimal_duration}</dd>
+              </div>
+            ) : null}
+            {typeof formatInsights.engagement_drivers === "string" &&
+            formatInsights.engagement_drivers.trim() ? (
+              <div>
+                <dt className="font-semibold text-app-fg-subtle">What tends to drive discussion</dt>
+                <dd className="mt-0.5 leading-relaxed">{formatInsights.engagement_drivers}</dd>
+              </div>
+            ) : null}
+          </dl>
+        </div>
+      ) : null}
+
+      {perfSummary != null && String(perfSummary).trim() ? (
+        <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-4">
+          <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-app-fg-subtle">
+            Performance summary
+          </h3>
+          <p className="text-sm leading-relaxed text-app-fg">{str(perfSummary)}</p>
+        </div>
+      ) : null}
       {Array.isArray(hookPatterns) && hookPatterns.length > 0 ? (
         <div className="rounded-xl border border-app-divider bg-app-chip-bg/40 p-4">
           <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-app-fg-subtle">
@@ -256,6 +334,63 @@ function SynthesizedPatternsView({ patterns }: { patterns: Record<string, unknow
   );
 }
 
+/** Compact context for url_adapt sessions — source link + why-it-worked + format line from synthesized_patterns. */
+function UrlAdaptReferenceCard({
+  sourceUrl,
+  patterns,
+}: {
+  sourceUrl: string | null | undefined;
+  patterns: Record<string, unknown> | null | undefined;
+}) {
+  const u = (sourceUrl ?? "").trim();
+  const summaryRaw = patterns?.performance_summary;
+  const summary =
+    summaryRaw != null && String(summaryRaw).trim() ? String(summaryRaw).trim() : "";
+  const fi = patterns?.format_insights;
+  const fiObj =
+    fi && typeof fi === "object" && !Array.isArray(fi) ? (fi as Record<string, unknown>) : null;
+  const bits: string[] = [];
+  const dt = fiObj?.dominant_type;
+  const od = fiObj?.optimal_duration;
+  if (typeof dt === "string" && dt.trim()) bits.push(dt.trim());
+  if (typeof od === "string" && od.trim()) bits.push(od.trim());
+  const formatLine = bits.join(" · ");
+
+  if (!u && !summary && !formatLine) return null;
+
+  return (
+    <div className="rounded-xl border border-amber-500/25 bg-amber-500/[0.07] p-4">
+      <p className="text-[10px] font-bold uppercase tracking-wider text-app-fg-subtle">
+        Reference reel (URL adapt)
+      </p>
+      {u ? (
+        <p className="mt-2 text-xs">
+          <a
+            href={u}
+            target="_blank"
+            rel="noreferrer"
+            className="font-semibold text-amber-600 underline-offset-2 hover:underline dark:text-amber-400"
+          >
+            Open original on Instagram ↗
+          </a>
+        </p>
+      ) : null}
+      {summary ? (
+        <p className="mt-2 text-xs leading-relaxed text-app-fg-secondary">
+          <span className="font-semibold text-app-fg-muted">Why it worked: </span>
+          {summary}
+        </p>
+      ) : null}
+      {formatLine ? (
+        <p className="mt-2 text-[11px] text-app-fg-muted">
+          <span className="font-semibold text-app-fg-subtle">Format: </span>
+          {formatLine}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 const TIER_GROUPS: { tier: 1 | 2 | 3; title: string; subtitle: string }[] = [
   { tier: 1, title: "Tier 1 — Direct relatable question", subtitle: "Opens with a question the viewer feels." },
   { tier: 2, title: "Tier 2 — Tension / insight", subtitle: "Contrast, stakes, or a sharp insight." },
@@ -264,6 +399,9 @@ const TIER_GROUPS: { tier: 1 | 2 | 3; title: string; subtitle: string }[] = [
 
 export default function GeneratePage() {
   const { show } = useToast();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const sessionIdFromUrl = searchParams.get("session");
   const [step, setStep] = useState<Step>("source");
   const [sourceMode, setSourceMode] = useState<SourceMode>("format_pick");
   const [extraInstruction, setExtraInstruction] = useState("");
@@ -272,9 +410,14 @@ export default function GeneratePage() {
   const [ideaText, setIdeaText] = useState("");
   const [formatRecommendations, setFormatRecommendations] = useState<FormatRecommendation[]>([]);
   const [adaptUrl, setAdaptUrl] = useState("");
+  const [adaptPreviewRows, setAdaptPreviewRows] = useState<ScrapedReelRow[]>([]);
+  const [adaptPreviewLoading, setAdaptPreviewLoading] = useState(false);
+  const [adaptPreviewError, setAdaptPreviewError] = useState<string | null>(null);
   const [session, setSession] = useState<GenerationSession | null>(null);
   const [sessions, setSessions] = useState<GenerationSession[]>([]);
   const [loading, setLoading] = useState(false);
+  /** Index of angle being submitted (content generation); other angle cards stay visible but dimmed. */
+  const [choosingAngleIndex, setChoosingAngleIndex] = useState<number | null>(null);
   const [loadingList, setLoadingList] = useState(false);
   const [patternsOpen, setPatternsOpen] = useState(false);
   const [clientSlug, setClientSlug] = useState("");
@@ -303,9 +446,10 @@ export default function GeneratePage() {
         const res = await fetchFormatDigests(clientSlug, orgSlug, refresh);
         if (res.ok) {
           setFormatDigests(res.data);
-          if (refresh) show("Format digests refreshed.", "success");
-        } else if (!refresh) {
-          setFormatDigests([]);
+          if (refresh) show("Styles list updated.", "success");
+        } else {
+          show(res.error, "error");
+          if (!refresh) setFormatDigests([]);
         }
       } finally {
         setLoadingList(false);
@@ -325,12 +469,60 @@ export default function GeneratePage() {
           fetchFormatDigests(ctx.clientSlug, ctx.orgSlug, false),
         ]);
         if (listRes.ok) setSessions(listRes.data);
-        if (digRes.ok) setFormatDigests(digRes.data);
+        if (digRes.ok) {
+          setFormatDigests(digRes.data);
+        } else {
+          show(digRes.error, "error");
+        }
       } finally {
         setLoadingList(false);
       }
     })();
   }, [refreshContext]);
+
+  /** Top competitor reels by comments÷views — URL adapt quick picks. */
+  useEffect(() => {
+    if (!clientSlug || !orgSlug || sourceMode !== "url_adapt") return;
+    let cancelled = false;
+    setAdaptPreviewLoading(true);
+    setAdaptPreviewError(null);
+    void fetchAdaptPreviewReels(clientSlug, orgSlug).then((res) => {
+      if (cancelled) return;
+      setAdaptPreviewLoading(false);
+      if (res.ok) setAdaptPreviewRows(res.data);
+      else {
+        setAdaptPreviewRows([]);
+        setAdaptPreviewError(res.error);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [clientSlug, orgSlug, sourceMode]);
+
+  /** Open session from Intelligence “Recreate” flow (`/generate?session=…`). */
+  useEffect(() => {
+    const raw = sessionIdFromUrl?.trim();
+    if (!raw || !clientSlug.trim() || !orgSlug.trim()) return;
+    let cancelled = false;
+    void (async () => {
+      const res = await generationGetSession(clientSlug, orgSlug, raw);
+      if (cancelled) return;
+      router.replace("/generate", { scroll: false });
+      if (!res.ok) {
+        show(res.error, "error");
+        return;
+      }
+      setSession(res.data);
+      const st = res.data.status;
+      setStep(st === "content_ready" || st === "approved" ? "content" : "angles");
+      await refreshSessions();
+      show("Session loaded — pick an angle or continue to script.", "success");
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [clientSlug, orgSlug, sessionIdFromUrl, router, show, refreshSessions]);
 
   const onDeleteSession = useCallback(
     async (id: string) => {
@@ -460,7 +652,7 @@ export default function GeneratePage() {
   const onChooseAngle = useCallback(
     async (index: number) => {
       if (!session || !clientSlug || !orgSlug) return;
-      setLoading(true);
+      setChoosingAngleIndex(index);
       try {
         const res = await generationChooseAngle(clientSlug, orgSlug, session.id, index);
         if (!res.ok) {
@@ -471,7 +663,7 @@ export default function GeneratePage() {
         setStep("content");
         show("Script and captions generated.", "success");
       } finally {
-        setLoading(false);
+        setChoosingAngleIndex(null);
       }
     },
     [clientSlug, orgSlug, session, show],
@@ -509,8 +701,19 @@ export default function GeneratePage() {
         show(res.error, "error");
         return;
       }
-      setSession(res.data);
-      show("Marked approved.", "success");
+      const next = res.data;
+      setSession(next);
+      if (sessionEligibleForCreate(next)) {
+        show(
+          "Approved. Open Create — this session appears in the left list for backgrounds and video render.",
+          "success",
+        );
+      } else {
+        show(
+          "Approved. Create only lists text overlay, B-roll reel, and carousel — keep copying hooks and script on this page.",
+          "success",
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -618,219 +821,296 @@ export default function GeneratePage() {
       {step === "source" && (
         <div className="flex flex-col gap-8 lg:gap-10">
           <section className="glass w-full rounded-2xl border border-app-divider/80 p-6 shadow-sm md:p-8 lg:p-10">
-            <div className="mx-auto max-w-5xl">
-              <h2 className="mb-1 text-sm font-semibold uppercase tracking-wider text-app-fg-subtle">
-                Source
-              </h2>
-              <p className="mb-6 max-w-2xl text-sm text-app-fg-muted">
-                Pick how we use your niche&apos;s format intelligence, then generate angles. Optional focus note
-                applies to format modes.
-              </p>
+            <div className="mx-auto max-w-5xl space-y-8">
 
-              <div className="mb-4 flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  disabled={loadingList || !clientSlug}
-                  onClick={() => void loadFormatDigests(true)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-app-divider px-3 py-1.5 text-xs font-semibold text-app-fg hover:bg-white/5 disabled:opacity-50"
-                >
-                  <RefreshCw className={`size-3.5 ${loadingList ? "animate-spin" : ""}`} />
-                  Refresh format digests
-                </button>
-                <span className="text-[11px] text-app-fg-muted">
-                  Sync scrapes in Intelligence, then refresh (first run may take 1–3 minutes).
-                </span>
+              {/* ── Mode tabs ── */}
+              <div>
+                <h2 className="mb-1 text-sm font-semibold uppercase tracking-wider text-app-fg-subtle">
+                  How do you want to start?
+                </h2>
+                <p className="mb-4 max-w-2xl text-sm text-app-fg-muted">
+                  Choose one of the three starting points below. All three end up generating five angles in your
+                  client&apos;s voice.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {(
+                    [
+                      {
+                        mode: "format_pick" as SourceMode,
+                        label: "Pick a content style",
+                        sub: "Choose a style we've already seen work in your niche",
+                      },
+                      {
+                        mode: "idea_match" as SourceMode,
+                        label: "Start from an idea",
+                        sub: "Describe what you want to say; we find the best style for it",
+                      },
+                      {
+                        mode: "url_adapt" as SourceMode,
+                        label: "Adapt a competitor reel",
+                        sub: "Paste an Instagram URL; we reverse-engineer it for your client",
+                      },
+                    ] as { mode: SourceMode; label: string; sub: string }[]
+                  ).map(({ mode, label, sub }) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setSourceMode(mode)}
+                      className={`flex-1 min-w-[200px] rounded-xl border p-3 text-left transition-colors ${
+                        sourceMode === mode
+                          ? "border-amber-500/50 bg-amber-500/10"
+                          : "border-app-divider bg-app-chip-bg/40 hover:bg-app-chip-bg/70"
+                      }`}
+                    >
+                      <span className="block text-sm font-semibold text-app-fg">{label}</span>
+                      <span className="mt-0.5 block text-xs leading-relaxed text-app-fg-muted">{sub}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              <div className="flex flex-col gap-2">
-                <label
-                  className={`flex cursor-pointer flex-col rounded-xl border p-3 transition-colors ${
-                    sourceMode === "format_pick"
-                      ? "border-amber-500/40 bg-amber-500/10"
-                      : "border-app-divider bg-app-chip-bg/40 hover:bg-app-chip-bg/70"
-                  }`}
-                >
-                  <span className="flex items-start gap-2.5">
-                    <input
-                      type="radio"
-                      name="src"
-                      checked={sourceMode === "format_pick"}
-                      onChange={() => setSourceMode("format_pick")}
-                      className="mt-0.5 size-3.5 shrink-0 accent-amber-500"
-                    />
-                    <span className="min-w-0">
-                      <span className="block text-sm font-semibold text-app-fg">Choose a format</span>
-                      <span className="mt-0.5 block text-xs leading-relaxed text-app-fg-muted">
-                        Use pre-aggregated patterns for one format (weighted by mature performance).
-                      </span>
-                    </span>
-                  </span>
-                </label>
-
-                {sourceMode === "format_pick" ? (
-                  <div className="rounded-xl border border-app-divider bg-app-chip-bg/25 p-3 md:p-4">
-                    {loadingList ? (
-                      <div className="flex justify-center py-8">
-                        <Loader2 className="size-6 animate-spin text-app-fg-subtle" />
-                      </div>
-                    ) : formatDigests.length === 0 ? (
-                      <p className="text-sm text-app-fg-muted">
-                        No format digests yet — scrape competitors in Intelligence, wait for analyses, then
-                        refresh digests above.
+              {/* ── Content styles (format_pick) ── */}
+              {sourceMode === "format_pick" ? (
+                <div>
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-semibold text-app-fg">
+                        Content styles from your niche
+                      </h3>
+                      <p className="mt-0.5 text-xs text-app-fg-muted">
+                        These are the video styles we found in your competitors&apos; analyzed reels. Pick one to
+                        generate angles in that style.{" "}
+                        <span className="text-app-fg-subtle">
+                          Numbers = how many reels we analyzed · avg comments/views · typical length.
+                        </span>
                       </p>
-                    ) : (
-                      <ul className="max-h-[22rem] space-y-2 overflow-y-auto pr-1">
-                        {formatDigests.map((d) => (
-                          <li key={d.format_key}>
-                            <button
-                              type="button"
-                              onClick={() => setSelectedFormatKey(d.format_key)}
-                              className={`w-full rounded-xl border px-3 py-2.5 text-left text-sm transition-colors ${
-                                selectedFormatKey === d.format_key
-                                  ? "border-amber-500/50 bg-amber-500/10"
-                                  : "border-app-divider hover:bg-white/[0.04]"
-                              }`}
-                            >
-                              <span className="font-semibold capitalize text-app-fg">
-                                {formatKeyLabel(d.format_key)}
-                              </span>
-                              <span className="mt-0.5 block tabular-nums text-[11px] text-app-fg-muted">
-                                mature {d.mature_count ?? "—"} · avg Eng%{" "}
-                                {d.avg_engagement != null ? (d.avg_engagement * 100).toFixed(2) : "—"} · ~
-                                {d.avg_duration_s ?? "—"}s
-                              </span>
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                ) : null}
-
-                <label
-                  className={`flex cursor-pointer flex-col rounded-xl border p-3 transition-colors ${
-                    sourceMode === "idea_match"
-                      ? "border-amber-500/40 bg-amber-500/10"
-                      : "border-app-divider bg-app-chip-bg/40 hover:bg-app-chip-bg/70"
-                  }`}
-                >
-                  <span className="flex items-start gap-2.5">
-                    <input
-                      type="radio"
-                      name="src"
-                      checked={sourceMode === "idea_match"}
-                      onChange={() => setSourceMode("idea_match")}
-                      className="mt-0.5 size-3.5 shrink-0 accent-amber-500"
-                    />
-                    <span className="min-w-0">
-                      <span className="block text-sm font-semibold text-app-fg">Idea → best format</span>
-                      <span className="mt-0.5 block text-xs leading-relaxed text-app-fg-muted">
-                        Describe what you want to say; we suggest formats from your metrics, then you confirm.
-                      </span>
-                    </span>
-                  </span>
-                </label>
-
-                {sourceMode === "idea_match" ? (
-                  <div className="space-y-3 rounded-xl border border-app-divider bg-app-chip-bg/25 p-3 md:p-4">
-                    <label htmlFor="gen-idea" className="text-sm font-semibold text-app-fg">
-                      Your idea
-                    </label>
-                    <textarea
-                      id="gen-idea"
-                      rows={4}
-                      value={ideaText}
-                      onChange={(e) => setIdeaText(e.target.value)}
-                      placeholder="What message or situation should this reel cover?"
-                      className="glass-inset min-h-[5rem] w-full resize-y rounded-xl p-3 text-sm text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
-                    />
+                    </div>
                     <button
                       type="button"
                       disabled={loadingList || !clientSlug}
-                      onClick={() => void onSuggestFormats()}
-                      className="rounded-lg border border-app-divider px-3 py-2 text-xs font-bold text-app-fg hover:bg-white/5 disabled:opacity-50"
+                      onClick={() => void loadFormatDigests(true)}
+                      title="Recompute style summaries from your latest scraped reels. Run this after syncing new competitors in Intelligence."
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-app-divider px-3 py-1.5 text-xs font-semibold text-app-fg hover:bg-white/5 disabled:opacity-50"
                     >
-                      {loadingList ? "Thinking…" : "Suggest formats"}
+                      <RefreshCw className={`size-3.5 ${loadingList ? "animate-spin" : ""}`} />
+                      Refresh styles
                     </button>
-                    {formatRecommendations.length > 0 ? (
-                      <ul className="space-y-2">
-                        {formatRecommendations.map((r, i) => (
-                          <li key={`${r.format_key ?? i}-${i}`}>
-                            <button
-                              type="button"
-                              onClick={() => r.format_key && setSelectedFormatKey(r.format_key)}
-                              className={`w-full rounded-lg border px-3 py-2 text-left text-xs ${
-                                r.format_key && selectedFormatKey === r.format_key
-                                  ? "border-amber-500/40 bg-amber-500/10"
-                                  : "border-app-divider hover:bg-white/[0.04]"
-                              }`}
-                            >
-                              <span className="font-semibold capitalize">
-                                {r.format_key ? formatKeyLabel(r.format_key) : "—"}
-                              </span>
-                              {r.score != null ? (
-                                <span className="ml-2 tabular-nums text-app-fg-muted">{r.score}/100</span>
-                              ) : null}
-                              <p className="mt-1 text-app-fg-muted">{str(r.reasoning)}</p>
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : null}
-                    {formatDigests.length > 0 ? (
-                      <div>
-                        <p className="mb-2 text-[10px] font-semibold uppercase text-app-fg-subtle">
-                          Or pick manually
-                        </p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {formatDigests.map((d) => (
-                            <button
-                              key={d.format_key}
-                              type="button"
-                              onClick={() => setSelectedFormatKey(d.format_key)}
-                              className={`rounded-full px-2.5 py-1 text-xs font-medium ${
-                                selectedFormatKey === d.format_key
-                                  ? "bg-amber-500/25 text-app-fg ring-1 ring-amber-500/40"
-                                  : "bg-app-chip-bg text-app-fg-muted hover:bg-white/5"
-                              }`}
-                            >
-                              {formatKeyLabel(d.format_key)}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
                   </div>
-                ) : null}
 
-                <label
-                  className={`flex cursor-pointer flex-col rounded-xl border p-3 transition-colors ${
-                    sourceMode === "url_adapt"
-                      ? "border-amber-500/40 bg-amber-500/10"
-                      : "border-app-divider bg-app-chip-bg/40 hover:bg-app-chip-bg/70"
-                  }`}
-                >
-                  <span className="flex items-start gap-2.5">
-                    <input
-                      type="radio"
-                      name="src"
-                      checked={sourceMode === "url_adapt"}
-                      onChange={() => setSourceMode("url_adapt")}
-                      className="mt-0.5 size-3.5 shrink-0 accent-amber-500"
-                    />
-                    <span className="min-w-0">
-                      <span className="block text-sm font-semibold text-app-fg">Adapt a reel</span>
-                      <span className="mt-0.5 block text-xs leading-relaxed text-app-fg-muted">
-                        Paste an Instagram reel URL; we analyze structure and adapt to your client&apos;s voice.
-                      </span>
-                    </span>
-                  </span>
-                </label>
+                  {loadingList ? (
+                    <div className="flex justify-center py-10">
+                      <Loader2 className="size-6 animate-spin text-app-fg-subtle" />
+                    </div>
+                  ) : formatDigests.length === 0 ? (
+                    <div className="rounded-xl border border-app-divider bg-app-chip-bg/25 px-5 py-8 text-center">
+                      <p className="text-sm font-semibold text-app-fg">No styles yet</p>
+                      <p className="mt-1 max-w-sm mx-auto text-xs leading-relaxed text-app-fg-muted">
+                        Go to <strong className="text-app-fg-secondary">Intelligence → Reels</strong>, sync
+                        competitors, run Silas analysis on a few reels, then come back and hit{" "}
+                        <strong className="text-app-fg-secondary">Refresh styles</strong> above. First run takes
+                        1–3 minutes.
+                      </p>
+                    </div>
+                  ) : (
+                    <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                      {formatDigests.map((d) => (
+                        <li key={d.format_key}>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedFormatKey(d.format_key)}
+                            className={`w-full rounded-xl border px-4 py-3 text-left transition-colors ${
+                              selectedFormatKey === d.format_key
+                                ? "border-amber-500/50 bg-amber-500/10"
+                                : "border-app-divider hover:bg-white/[0.04]"
+                            }`}
+                          >
+                            <span className="block font-semibold capitalize text-app-fg">
+                              {formatKeyLabel(d.format_key)}
+                            </span>
+                            <span className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 tabular-nums text-[11px] text-app-fg-muted">
+                              <span title="Analyzed reels in this style (all ages)">{d.reel_count ?? "—"} reels</span>
+                              {d.avg_comment_view_ratio != null ? (
+                                <span title="Avg comments ÷ views — how much conversation each view tends to generate">
+                                  {(d.avg_comment_view_ratio * 100).toFixed(2)}% C/V
+                                </span>
+                              ) : d.avg_engagement != null ? (
+                                <span title="Avg (likes+comments+saves+shares) ÷ views">
+                                  {(d.avg_engagement * 100).toFixed(2)}% eng
+                                </span>
+                              ) : null}
+                              {d.avg_duration_s != null ? (
+                                <span title="Mean video length when available">~{d.avg_duration_s}s</span>
+                              ) : null}
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ) : null}
 
-                {sourceMode === "url_adapt" ? (
+              {/* ── Idea match ── */}
+              {sourceMode === "idea_match" ? (
+                <div className="space-y-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-app-fg">What do you want to say?</h3>
+                    <p className="mt-0.5 text-xs text-app-fg-muted">
+                      Describe the message or situation. We&apos;ll suggest which content style fits it best based
+                      on your niche data.
+                    </p>
+                  </div>
+                  <textarea
+                    id="gen-idea"
+                    rows={4}
+                    value={ideaText}
+                    onChange={(e) => setIdeaText(e.target.value)}
+                    placeholder={'e.g. "Your manager says \'I need this by end of day\' at 4pm — what do you do?"'}
+                    className="glass-inset min-h-[5rem] w-full resize-y rounded-xl p-3 text-sm text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+                  />
+                  <button
+                    type="button"
+                    disabled={loadingList || !clientSlug}
+                    onClick={() => void onSuggestFormats()}
+                    className="rounded-lg border border-app-divider px-3 py-2 text-xs font-bold text-app-fg hover:bg-white/5 disabled:opacity-50"
+                  >
+                    {loadingList ? "Thinking…" : "Find best style →"}
+                  </button>
+                  {formatRecommendations.length > 0 ? (
+                    <ul className="space-y-2">
+                      {formatRecommendations.map((r, i) => (
+                        <li key={`${r.format_key ?? i}-${i}`}>
+                          <button
+                            type="button"
+                            onClick={() => r.format_key && setSelectedFormatKey(r.format_key)}
+                            className={`w-full rounded-lg border px-3 py-2 text-left text-xs ${
+                              r.format_key && selectedFormatKey === r.format_key
+                                ? "border-amber-500/40 bg-amber-500/10"
+                                : "border-app-divider hover:bg-white/[0.04]"
+                            }`}
+                          >
+                            <span className="font-semibold capitalize">
+                              {r.format_key ? formatKeyLabel(r.format_key) : "—"}
+                            </span>
+                            {r.score != null ? (
+                              <span className="ml-2 tabular-nums text-app-fg-muted">{r.score}/100</span>
+                            ) : null}
+                            <p className="mt-1 text-app-fg-muted">{str(r.reasoning)}</p>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  {formatDigests.length > 0 ? (
+                    <div>
+                      <p className="mb-2 text-[10px] font-semibold uppercase text-app-fg-subtle">
+                        Or pick a style manually
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {formatDigests.map((d) => (
+                          <button
+                            key={d.format_key}
+                            type="button"
+                            onClick={() => setSelectedFormatKey(d.format_key)}
+                            className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+                              selectedFormatKey === d.format_key
+                                ? "bg-amber-500/25 text-app-fg ring-1 ring-amber-500/40"
+                                : "bg-app-chip-bg text-app-fg-muted hover:bg-white/5"
+                            }`}
+                          >
+                            {formatKeyLabel(d.format_key)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {/* ── URL adapt ── */}
+              {sourceMode === "url_adapt" ? (
+                <div className="space-y-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-app-fg">Competitor reel URL</h3>
+                    <p className="mt-0.5 text-xs text-app-fg-muted">
+                      We&apos;ll fetch the reel, analyse its structure, and rewrite it in your client&apos;s voice
+                      and niche. Takes a bit longer than the other modes.
+                    </p>
+                  </div>
+
                   <div className="rounded-xl border border-app-divider bg-app-chip-bg/25 p-3 md:p-4">
-                    <label htmlFor="gen-url" className="text-sm font-semibold text-app-fg">
-                      Reel URL
+                    <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-semibold text-app-fg">Suggested competitor reels</p>
+                        <p className="mt-0.5 text-[11px] leading-relaxed text-app-fg-muted">
+                          Top five by <span className="text-app-fg-secondary">comments ÷ views</span> among
+                          synced competitor reels (not your creator&apos;s own). Tap a card to paste its URL
+                          below.
+                        </p>
+                      </div>
+                      <Link
+                        href="/intelligence/reels"
+                        className="shrink-0 text-xs font-semibold text-amber-600 hover:underline dark:text-amber-400"
+                      >
+                        View all reels →
+                      </Link>
+                    </div>
+                    {adaptPreviewLoading ? (
+                      <div className="flex justify-center py-6">
+                        <Loader2 className="size-5 animate-spin text-app-fg-subtle" />
+                      </div>
+                    ) : adaptPreviewError ? (
+                      <p className="text-xs text-red-400/90">{adaptPreviewError}</p>
+                    ) : adaptPreviewRows.length === 0 ? (
+                      <p className="text-xs text-app-fg-muted">
+                        No competitor reels with enough views yet. Sync accounts in{" "}
+                        <Link href="/intelligence/reels" className="font-semibold text-amber-600 hover:underline dark:text-amber-400">
+                          Intelligence → Reels
+                        </Link>
+                        .
+                      </p>
+                    ) : (
+                      <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-5">
+                        {adaptPreviewRows.map((row) => {
+                          const url = (row.post_url ?? "").trim();
+                          const selected = url && adaptUrl.trim() === url;
+                          return (
+                            <li key={row.id}>
+                              <button
+                                type="button"
+                                disabled={!url}
+                                onClick={() => {
+                                  if (url) setAdaptUrl(url);
+                                }}
+                                className={`flex w-full flex-col gap-1.5 rounded-xl border p-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                                  selected
+                                    ? "border-amber-500/55 bg-amber-500/10"
+                                    : "border-app-divider hover:bg-white/[0.04]"
+                                }`}
+                              >
+                                <ReelThumbnail
+                                  src={row.thumbnail_url}
+                                  alt={`@${row.account_username} reel`}
+                                  size="md"
+                                  className="mx-auto"
+                                />
+                                <span className="truncate text-center text-[10px] font-semibold text-app-fg">
+                                  @{row.account_username}
+                                </span>
+                                <span className="text-center text-[10px] tabular-nums text-app-fg-muted">
+                                  {formatCommentViewPct(row)} C/V
+                                </span>
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+
+                  <div>
+                    <label htmlFor="gen-url" className="text-xs font-semibold text-app-fg-muted">
+                      Paste URL (or pick above)
                     </label>
                     <input
                       id="gen-url"
@@ -838,50 +1118,35 @@ export default function GeneratePage() {
                       value={adaptUrl}
                       onChange={(e) => setAdaptUrl(e.target.value)}
                       placeholder="https://www.instagram.com/reel/…"
-                      className="glass-inset mt-2 w-full rounded-xl px-3 py-2.5 font-mono text-sm text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+                      className="glass-inset mt-1.5 w-full rounded-xl px-3 py-2.5 font-mono text-sm text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
                     />
                   </div>
-                ) : null}
-              </div>
-
-              {(sourceMode === "format_pick" || sourceMode === "idea_match") && (
-                <div className="mt-6 space-y-3">
-                  <label htmlFor="gen-extra" className="text-sm font-semibold text-app-fg">
-                    Extra focus <span className="font-normal text-app-fg-muted">(optional)</span>
-                  </label>
-                  <textarea
-                    id="gen-extra"
-                    rows={3}
-                    value={extraInstruction}
-                    onChange={(e) => setExtraInstruction(e.target.value)}
-                    placeholder="Optional nuance for angles…"
-                    className="glass-inset min-h-[4.5rem] w-full resize-y rounded-xl p-3 text-sm leading-relaxed text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
-                  />
-                </div>
-              )}
-
-              {sourceMode === "url_adapt" ? (
-                <div className="mt-6 space-y-3">
-                  <label htmlFor="gen-extra-url" className="text-sm font-semibold text-app-fg">
-                    Extra focus <span className="font-normal text-app-fg-muted">(optional)</span>
-                  </label>
-                  <textarea
-                    id="gen-extra-url"
-                    rows={3}
-                    value={extraInstruction}
-                    onChange={(e) => setExtraInstruction(e.target.value)}
-                    placeholder="Optional direction for adaptation…"
-                    className="glass-inset min-h-[4.5rem] w-full resize-y rounded-xl p-3 text-sm leading-relaxed text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
-                  />
                 </div>
               ) : null}
 
-              <div className="mt-6 flex flex-col items-end gap-2">
+              {/* ── Optional focus note (all modes) ── */}
+              <div className="space-y-2">
+                <label htmlFor="gen-extra" className="text-sm font-semibold text-app-fg">
+                  Anything specific to focus on?{" "}
+                  <span className="font-normal text-app-fg-muted">(optional)</span>
+                </label>
+                <textarea
+                  id="gen-extra"
+                  rows={3}
+                  value={extraInstruction}
+                  onChange={(e) => setExtraInstruction(e.target.value)}
+                  placeholder={'e.g. "Focus on the emotional side, not the tactical" or "Avoid mentioning money directly"'}
+                  className="glass-inset min-h-[4.5rem] w-full resize-y rounded-xl p-3 text-sm leading-relaxed text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+                />
+              </div>
+
+              {/* ── Generate button ── */}
+              <div className="flex flex-col items-end gap-2">
                 <button
                   type="button"
                   disabled={loading || !clientSlug}
                   onClick={() => void onStart()}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-amber-500 px-4 py-2.5 text-sm font-bold text-zinc-950 shadow-md shadow-amber-900/20 transition-opacity hover:opacity-95 disabled:opacity-50"
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-amber-500 px-5 py-2.5 text-sm font-bold text-zinc-950 shadow-md shadow-amber-900/20 transition-opacity hover:opacity-95 disabled:opacity-50"
                 >
                   {loading ? (
                     <Loader2 className="size-4 animate-spin" />
@@ -890,61 +1155,97 @@ export default function GeneratePage() {
                   )}
                   {loading ? "Running models…" : "Generate angles"}
                 </button>
-                <p className="max-w-md text-right text-xs leading-relaxed text-app-fg-muted">
-                  URL adapt may analyze the reel first (longer wait). Format modes use cached digests when fresh.
-                </p>
+                {sourceMode === "url_adapt" ? (
+                  <p className="text-right text-xs text-app-fg-muted">
+                    URL mode fetches and analyses the reel first — expect 30–60s.
+                  </p>
+                ) : null}
               </div>
             </div>
           </section>
 
-          {sessions.length > 0 ? (
-            <section className="rounded-2xl border border-app-divider bg-app-chip-bg/30 p-5 md:p-6">
-              <h2 className="mb-4 text-sm font-semibold uppercase tracking-wider text-app-fg-subtle">
-                Recent sessions
-              </h2>
-              <ul className="flex max-h-[min(50vh,28rem)] flex-col gap-2 overflow-y-auto pr-1 md:max-h-[min(45vh,26rem)]">
+          <section className="rounded-2xl border border-app-divider bg-app-chip-bg/30 p-5 md:p-6">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-app-fg-subtle">
+              Recent sessions
+            </h2>
+            <p className="mt-2 text-xs leading-relaxed text-app-fg-muted">
+              This list is the record for this client: source, angles, full package, and status (approve or
+              reject here).{" "}
+              <Link href="/create" className="font-medium text-sky-400 hover:underline">
+                Create
+              </Link>{" "}
+              only shows sessions that are content-ready or approved{" "}
+              <span className="font-medium text-app-fg-secondary">and</span> use a video layout format (text
+              overlay, B-roll reel, carousel).
+            </p>
+            {sessions.length > 0 ? (
+              <ul className="mt-4 flex max-h-[min(50vh,28rem)] flex-col gap-2 overflow-y-auto pr-1 md:max-h-[min(45vh,26rem)]">
                 {sessions.map((s) => (
-                  <li key={s.id} className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => void loadSessionById(s.id)}
-                      className="glass min-w-0 flex-1 rounded-xl border border-app-divider px-4 py-3 text-left transition-colors hover:bg-white/5 md:px-4 md:py-3.5"
-                    >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-xs tabular-nums text-app-fg-muted">
-                          {formatSessionDate(s.created_at)}
-                        </span>
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${statusBadgeClass(s.status)}`}
-                        >
-                          {s.status.replace("_", " ")}
-                        </span>
-                        <span className="rounded-full bg-app-chip-bg px-2 py-0.5 text-[10px] font-semibold uppercase text-app-fg-subtle">
-                          {sourceTypeLabel(s.source_type)}
-                        </span>
-                      </div>
-                      <p className="mt-1.5 truncate text-sm font-medium text-app-fg md:text-base">
-                        {sessionAngleSummary(s)}
-                      </p>
-                      <p className="mt-0.5 font-mono text-[11px] text-app-fg-subtle">{s.id.slice(0, 14)}…</p>
-                    </button>
-                    <button
-                      type="button"
-                      title="Delete session"
-                      disabled={loading}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void onDeleteSession(s.id);
-                      }}
-                      className="shrink-0 self-stretch rounded-xl border border-red-500/30 px-3.5 text-red-400 transition-colors hover:bg-red-500/10 disabled:opacity-40"
-                    >
-                      <Trash2 className="mx-auto h-4 w-4 md:h-5 md:w-5" />
-                    </button>
+                  <li key={s.id} className="flex flex-col gap-1">
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void loadSessionById(s.id)}
+                        className="glass min-w-0 flex-1 rounded-xl border border-app-divider px-4 py-3 text-left transition-colors hover:bg-white/5 md:px-4 md:py-3.5"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-xs tabular-nums text-app-fg-muted">
+                            {formatSessionDate(s.created_at)}
+                          </span>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${statusBadgeClass(s.status)}`}
+                          >
+                            {s.status.replace("_", " ")}
+                          </span>
+                          <span className="rounded-full bg-app-chip-bg px-2 py-0.5 text-[10px] font-semibold uppercase text-app-fg-subtle">
+                            {sourceTypeLabel(s.source_type)}
+                          </span>
+                          {canonicalFormatKey(s.source_format_key) ? (
+                            <span className="rounded-full bg-violet-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase text-violet-300">
+                              {formatKeyLabel(canonicalFormatKey(s.source_format_key))}
+                            </span>
+                          ) : (
+                            <span className="rounded-full bg-zinc-500/15 px-2 py-0.5 text-[10px] text-app-fg-subtle">
+                              Format — (patterns / adapt)
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-1.5 truncate text-sm font-medium text-app-fg md:text-base">
+                          {sessionAngleSummary(s)}
+                        </p>
+                        <p className="mt-0.5 font-mono text-[11px] text-app-fg-subtle">{s.id.slice(0, 14)}…</p>
+                      </button>
+                      <button
+                        type="button"
+                        title="Delete session"
+                        disabled={loading}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void onDeleteSession(s.id);
+                        }}
+                        className="shrink-0 self-stretch rounded-xl border border-red-500/30 px-3.5 text-red-400 transition-colors hover:bg-red-500/10 disabled:opacity-40"
+                      >
+                        <Trash2 className="mx-auto h-4 w-4 md:h-5 md:w-5" />
+                      </button>
+                    </div>
+                    {sessionEligibleForCreate(s) ? (
+                      <Link
+                        href="/create"
+                        className="self-end pr-12 text-[11px] font-semibold text-sky-400 hover:underline md:pr-14"
+                      >
+                        Video pipeline (Create) →
+                      </Link>
+                    ) : null}
                   </li>
                 ))}
               </ul>
-            </section>
-          ) : null}
+            ) : (
+              <p className="mt-4 text-sm text-app-fg-muted">
+                No sessions yet — generate angles above to start. Past runs will appear here with status and
+                format.
+              </p>
+            )}
+          </section>
         </div>
       )}
 
@@ -964,6 +1265,7 @@ export default function GeneratePage() {
             {session.synthesized_patterns && (
               <button
                 type="button"
+                title="Digest JSON copied onto this session when you started Generate (format pick, idea match, or URL adapt). Includes AI-written hooks and summaries; may show an error string if the digest AI failed."
                 onClick={() => setPatternsOpen((o) => !o)}
                 className="flex items-center gap-1 text-xs font-semibold text-app-fg-muted hover:text-app-fg"
               >
@@ -975,32 +1277,56 @@ export default function GeneratePage() {
           {patternsOpen && synthesizedPatterns ? (
             <SynthesizedPatternsView patterns={synthesizedPatterns} />
           ) : null}
+          {session.source_type === "url_adapt" ? (
+            <UrlAdaptReferenceCard
+              sourceUrl={session.source_url}
+              patterns={synthesizedPatterns ?? undefined}
+            />
+          ) : null}
           <h2 className="text-sm font-semibold text-app-fg">Pick an angle</h2>
           <div className="grid gap-3 md:grid-cols-2">
-            {angles.map((raw, i) => (
-              <div key={i} className="glass flex flex-col gap-2 rounded-2xl p-5">
-                <p className="text-sm font-semibold text-app-fg">{str(raw.title)}</p>
-                <p className="text-xs text-app-fg-muted">{str(raw.situation)}</p>
-                <p className="text-[11px] text-app-fg-subtle">
-                  <span className="font-medium text-app-fg-muted">Hook: </span>
-                  {str(raw.draft_hook)}
-                </p>
-                <button
-                  type="button"
-                  disabled={loading}
-                  onClick={() => void onChooseAngle(i)}
-                  className="mt-2 rounded-lg bg-amber-500/15 py-2 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-50"
+            {angles.map((raw, i) => {
+              const choosing = choosingAngleIndex !== null;
+              const isPicked = choosingAngleIndex === i;
+              const dimSibling = choosing && !isPicked;
+              return (
+                <div
+                  key={i}
+                  className={`glass flex flex-col gap-2 rounded-2xl p-5 transition-opacity ${
+                    dimSibling ? "pointer-events-none opacity-40" : ""
+                  } ${isPicked && choosing ? "ring-2 ring-amber-500/45" : ""}`}
                 >
-                  Use this angle
-                </button>
-              </div>
-            ))}
+                  <p className="text-sm font-semibold text-app-fg">{str(raw.title)}</p>
+                  <p className="text-xs text-app-fg-muted">{str(raw.situation)}</p>
+                  <p className="text-[11px] text-app-fg-subtle">
+                    <span className="font-medium text-app-fg-muted">Hook: </span>
+                    {str(raw.draft_hook)}
+                  </p>
+                  <button
+                    type="button"
+                    disabled={choosing}
+                    onClick={() => void onChooseAngle(i)}
+                    className="mt-2 inline-flex items-center justify-center gap-2 rounded-lg bg-amber-500/15 py-2 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-70"
+                  >
+                    {isPicked && choosing ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden />
+                        Generating…
+                      </>
+                    ) : (
+                      "Use this angle"
+                    )}
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </section>
       )}
 
       {step === "content" && session && (
-        <section className="space-y-8">
+        <section className="space-y-8 pb-28">
+          {/* ── Header row ── */}
           <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
@@ -1025,6 +1351,13 @@ export default function GeneratePage() {
             </button>
           </div>
 
+          {session.source_type === "url_adapt" ? (
+            <UrlAdaptReferenceCard
+              sourceUrl={session.source_url}
+              patterns={synthesizedPatterns ?? undefined}
+            />
+          ) : null}
+
           {chosenAngle ? (
             <div className="glass rounded-2xl border border-amber-500/25 bg-amber-500/[0.06] p-4">
               <p className="text-[10px] font-bold uppercase tracking-wider text-app-fg-subtle">
@@ -1035,9 +1368,53 @@ export default function GeneratePage() {
             </div>
           ) : null}
 
+          {session.status === "approved" ? (
+            <div className="rounded-xl border border-emerald-500/35 bg-emerald-500/[0.08] p-4">
+              <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">
+                {sessionEligibleForCreate(session)
+                  ? "Next step: Create (video pipeline)"
+                  : "Approved — copy lives here"}
+              </p>
+              <p className="mt-2 text-xs leading-relaxed text-app-fg-muted">
+                {sessionEligibleForCreate(session) ? (
+                  <>
+                    Go to{" "}
+                    <Link
+                      href="/create"
+                      className="font-semibold text-emerald-700 underline-offset-2 hover:underline dark:text-emerald-400"
+                    >
+                      Create
+                    </Link>
+                    . This session shows in the left-hand list — pick it, then generate backgrounds and render.
+                  </>
+                ) : (
+                  <>
+                    <Link
+                      href="/create"
+                      className="font-semibold text-app-fg-secondary underline-offset-2 hover:underline"
+                    >
+                      Create
+                    </Link>{" "}
+                    only includes packages whose format is{" "}
+                    <span className="font-medium text-app-fg-secondary">text overlay</span>,{" "}
+                    <span className="font-medium text-app-fg-secondary">B-roll reel</span>, or{" "}
+                    <span className="font-medium text-app-fg-secondary">carousel</span>. This run is{" "}
+                    <span className="font-medium text-app-fg-secondary">
+                      {formatKeyLabel(canonicalFormatKey(session.source_format_key) || session.source_format_key || "—")}
+                    </span>
+                    — export hooks, script, and caption from this page.
+                  </>
+                )}
+              </p>
+            </div>
+          ) : null}
+
+          {/* ── Refine ── */}
           <div className="glass rounded-2xl p-4">
-            <p className="mb-2 text-xs font-semibold uppercase text-app-fg-subtle">Regenerate</p>
-            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+            <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-app-fg-subtle">
+              Refine
+            </p>
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
               <select
                 value={regenScope}
                 onChange={(e) => setRegenScope(e.target.value as typeof regenScope)}
@@ -1053,40 +1430,22 @@ export default function GeneratePage() {
                 type="text"
                 value={regenFeedback}
                 onChange={(e) => setRegenFeedback(e.target.value)}
-                placeholder="Feedback e.g. shorter hook, more direct…"
+                placeholder="Direction e.g. shorter hook, more direct…"
                 className="glass-inset min-w-[200px] flex-1 rounded-xl px-3 py-2 text-sm text-app-fg"
               />
               <button
                 type="button"
                 disabled={loading}
                 onClick={() => void onRegenerate()}
-                className="flex items-center justify-center gap-2 rounded-xl border border-app-divider px-4 py-2 text-xs font-bold text-app-fg hover:bg-white/5 disabled:opacity-50"
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-app-divider px-4 py-2 text-xs font-bold text-app-fg hover:bg-white/5 disabled:opacity-50"
               >
-                <RefreshCw className="h-3.5 w-3.5" />
+                {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
                 Regenerate
               </button>
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              disabled={loading || session.status === "approved"}
-              onClick={() => void onApprove()}
-              className="flex items-center gap-2 rounded-xl bg-emerald-500/15 px-4 py-2 text-xs font-bold text-emerald-400 hover:bg-emerald-500/25 disabled:opacity-40"
-            >
-              <ThumbsUp className="h-4 w-4" /> Approve
-            </button>
-            <button
-              type="button"
-              disabled={loading}
-              onClick={() => void onReject()}
-              className="flex items-center gap-2 rounded-xl bg-red-500/10 px-4 py-2 text-xs font-bold text-red-400 hover:bg-red-500/20"
-            >
-              <ThumbsDown className="h-4 w-4" /> Reject
-            </button>
-          </div>
-
+          {/* ── Content blocks ── */}
           <div>
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-sm font-semibold text-app-fg">Hooks ({session.hooks?.length ?? 0})</h2>
@@ -1189,6 +1548,19 @@ export default function GeneratePage() {
             </div>
           </div>
 
+          {Array.isArray(session.text_blocks) && session.text_blocks.length > 0 ? (
+            <div>
+              <h2 className="mb-2 text-sm font-semibold text-app-fg">On-screen text (Create)</h2>
+              <ul className="glass space-y-2 rounded-2xl p-5">
+                {session.text_blocks.map((b, i) => (
+                  <li key={i} className="text-sm text-app-fg">
+                    {typeof b === "object" && b && "text" in b ? String((b as { text?: string }).text) : "—"}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
           <div>
             <h2 className="mb-2 text-sm font-semibold text-app-fg">Story variants</h2>
             <ul className="space-y-2">
@@ -1205,6 +1577,48 @@ export default function GeneratePage() {
                 </li>
               ))}
             </ul>
+          </div>
+
+          {/* ── Sticky approve / reject bar ── */}
+          <div className="fixed bottom-0 left-0 right-0 z-40 flex items-center justify-between gap-3 px-4 py-3 md:px-8 lg:px-12"
+            style={{ background: "transparent" }}
+          >
+            {/* glass backdrop */}
+            <div className="pointer-events-none absolute inset-0 border-t border-white/[0.08] bg-zinc-950/75 backdrop-blur-2xl backdrop-saturate-[1.3]" />
+            <div className="relative flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              <span className="text-xs text-app-fg-muted">
+                {session.status === "approved"
+                  ? sessionEligibleForCreate(session)
+                    ? "Approved — open Create to build video"
+                    : "Approved — use this page to copy (not in Create for this format)"
+                  : session.status === "rejected"
+                    ? "Marked as rejected"
+                    : "Review this package and approve or reject it"}
+              </span>
+              <span
+                className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${statusBadgeClass(session.status)}`}
+              >
+                {session.status.replace("_", " ")}
+              </span>
+            </div>
+            <div className="relative flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => void onReject()}
+                className="inline-flex items-center gap-2 rounded-xl border border-red-500/40 px-4 py-2 text-sm font-semibold text-red-400 transition-colors hover:bg-red-500/10 disabled:opacity-40"
+              >
+                <ThumbsDown className="h-4 w-4" /> Reject
+              </button>
+              <button
+                type="button"
+                disabled={loading || session.status === "approved"}
+                onClick={() => void onApprove()}
+                className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-5 py-2 text-sm font-bold text-zinc-950 shadow-md shadow-emerald-900/30 transition-opacity hover:opacity-90 disabled:opacity-40"
+              >
+                <ThumbsUp className="h-4 w-4" /> Approve
+              </button>
+            </div>
           </div>
         </section>
       )}

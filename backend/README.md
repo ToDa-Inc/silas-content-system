@@ -13,6 +13,7 @@ FastAPI service + background worker for clients, competitors, baselines, and job
   - **Reel metric history (growth / snapshots):** run **[sql/phase3_reel_snapshots.sql](sql/phase3_reel_snapshots.sql)** once. Creates `reel_snapshots` (append-only views/likes/comments per sync). Required for `GET …/activity` own-reel growth and historical deltas.
   - **Client brain (Context page, PDF/DOCX uploads):** run **[sql/phase4_client_context.sql](sql/phase4_client_context.sql)** once. Adds `clients.client_context` and the private **`client-context`** storage bucket.
   - **Client DNA (compressed briefs for reel analysis / generation):** run **[sql/phase5_client_dna.sql](sql/phase5_client_dna.sql)** once. Adds `clients.client_dna`. See **`docs/client_dna.md`**.
+  - **Phase 4 video (generation_sessions + B-roll library):** run **[sql/phase9_video_creation.sql](sql/phase9_video_creation.sql)** once. Adds `text_blocks`, render columns, and **`broll_clips`**. In Supabase Storage, create public buckets **`renders`** and **`broll`** (or match your RLS policy) so `rendered_video_url` / clip URLs resolve in the dashboard.
 
 **Signup without email confirmation (local dev):** Authentication → Email → disable **Confirm email**. **Site URL** `http://localhost:3000`.
 
@@ -60,11 +61,13 @@ Optional: `backend/.env` or `config/.env` for overrides (see load order in root 
 
 7. **`OPENROUTER_MODEL`** — optional; default is fine unless you want another model.
 
-8. **`CORS_ORIGINS`** — include `http://localhost:3000` and `http://127.0.0.1:3000` for local Next.js; add production origins as needed.
+8. **`OPENAI_API_KEY`** — required for **Create → Generate image** (gpt-image-1.5). Set in repo root `.env`.
 
-9. **`CRON_SECRET`** — set a long random string to enable cron routes (`POST /api/v1/cron/scrape-cycle`, `POST /api/v1/cron/sync-all`, `POST /api/v1/cron/recompute-breakouts`) with header `X-Cron-Secret`. If unset, those routes return 503 (safe default). Use the **same** value in Vercel as `CRON_SECRET` for `/api/cron/daily-sync`.
+9. **`CORS_ORIGINS`** — include `http://localhost:3000` and `http://127.0.0.1:3000` for local Next.js; add production origins as needed.
 
-10. **Save** the file. Load order is **repo `.env` → `backend/.env` → `config/.env`** (each overrides the previous). Put shared keys in repo `.env`; keep `config/.env` only if Node scripts still read it.
+10. **`CRON_SECRET`** — set a long random string to enable cron routes (`POST /api/v1/cron/scrape-cycle`, `POST /api/v1/cron/sync-all`, `POST /api/v1/cron/recompute-breakouts`, `POST /api/v1/cron/cleanup-renders`) with header `X-Cron-Secret`. If unset, those routes return 503 (safe default). Use the **same** value in Vercel as `CRON_SECRET` for `/api/cron/daily-sync`.
+
+11. **Save** the file. Load order is **repo `.env` → `backend/.env` → `config/.env`** (each overrides the previous). Put shared keys in repo `.env`; keep `config/.env` only if Node scripts still read it.
 
 ## One-time data migration
 

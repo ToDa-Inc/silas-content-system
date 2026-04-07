@@ -90,17 +90,21 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             key={t.id}
             role="status"
             className={cn(
-              "glass-strong pointer-events-auto flex items-start gap-3 rounded-xl px-4 py-3 text-sm text-zinc-800 shadow-lg dark:text-zinc-200",
-              t.variant === "success" && "border-l-2 border-emerald-500",
-              t.variant === "error" && "border-l-2 border-rose-500",
-              t.variant === "default" && "border-l-2 border-amber-500/80",
+              "pointer-events-auto flex items-start gap-3 rounded-xl px-4 py-3 text-sm",
+              /* Glassmorphism: semi-transparent dark surface + hard blur + subtle edge border */
+              "border border-white/[0.13] bg-zinc-900/65 text-zinc-100",
+              "shadow-[0_8px_32px_rgba(0,0,0,0.5)] backdrop-blur-2xl backdrop-saturate-[1.35]",
+              /* Coloured left accent per variant */
+              t.variant === "success" && "border-l-[3px] border-l-emerald-400",
+              t.variant === "error" && "border-l-[3px] border-l-rose-400",
+              t.variant === "default" && "border-l-[3px] border-l-amber-400",
             )}
           >
             <p className="min-w-0 flex-1 leading-snug">{t.message}</p>
             <button
               type="button"
               onClick={() => dismiss(t.id)}
-              className="shrink-0 rounded-md p-1 text-zinc-500 transition-colors hover:bg-white/10 hover:text-zinc-300"
+              className="shrink-0 rounded-md p-1 text-zinc-400 transition-colors hover:bg-white/10 hover:text-zinc-100"
               aria-label="Dismiss"
             >
               <X className="h-4 w-4" aria-hidden />

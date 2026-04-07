@@ -10,11 +10,22 @@ CANONICAL_FORMATS = (
     "text_overlay",
     "skit",
     "voiceover",
-    "b_roll",
+    "b_roll_reel",
     "screen_recording",
     "montage",
     "other",
 )
+
+
+def canonicalize_stored_format_key(raw: Optional[str]) -> str:
+    """Unify legacy DB/API values with keys used by Create / Remotion (e.g. b_roll → b_roll_reel)."""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    if s == "b_roll":
+        return "b_roll_reel"
+    return s
+
 
 # phrase -> canonical (first match wins)
 _ALIASES: list[tuple[re.Pattern[str], str]] = [
@@ -22,7 +33,7 @@ _ALIASES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"text\s*overlay|text\s*on\s*screen|caption\s*style|subtitle", re.I), "text_overlay"),
     (re.compile(r"\bskit\b|sketch|role\s*play|acting|scene", re.I), "skit"),
     (re.compile(r"voice\s*over|voiceover|vo\b|narrat", re.I), "voiceover"),
-    (re.compile(r"b[\s-]*roll|broll|stock\s*footage|footage\s*montage", re.I), "b_roll"),
+    (re.compile(r"b[\s-]*roll|broll|stock\s*footage|footage\s*montage", re.I), "b_roll_reel"),
     (re.compile(r"screen\s*record|screen\s*share|loom|desktop", re.I), "screen_recording"),
     (re.compile(r"montage|compilation|quick\s*cuts|edit\s*style", re.I), "montage"),
 ]

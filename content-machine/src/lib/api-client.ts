@@ -4,6 +4,7 @@ import type {
   OwnReelsMetricsResponse,
   ReelAnalysisDetail,
 } from "@/lib/reel-types";
+import type { ScrapedReelRow } from "@/lib/api";
 import { getContentApiBase } from "@/lib/env";
 
 /** FastAPI `detail` is a string (400) or validation array (422). */
@@ -98,6 +99,34 @@ export async function fetchReelAnalysisDetail(
     }
     const data = (await res.json()) as ReelAnalysisDetail;
     return { ok: true, data };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+/** Competitor reels with highest comments÷views (for Generate → adapt URL quick picks). */
+export async function fetchAdaptPreviewReels(
+  clientSlug: string,
+  orgSlug: string,
+): Promise<{ ok: true; data: ScrapedReelRow[] } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/reels/adapt-preview?limit=5`,
+      { headers },
+    );
+    const json = (await res.json().catch(() => [])) as unknown;
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(
+          json as Record<string, unknown>,
+          `Request failed (${res.status})`,
+        ),
+      };
+    }
+    return { ok: true, data: Array.isArray(json) ? (json as ScrapedReelRow[]) : [] };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
   }
@@ -212,6 +241,8 @@ export async function enqueueReelAnalyzeBulk(
   }
 }
 
+export type TextBlock = { text: string; isCTA?: boolean };
+
 export type GenerationSession = {
   id: string;
   client_id: string;
@@ -229,6 +260,13 @@ export type GenerationSession = {
   caption_body?: string | null;
   hashtags?: string[] | null;
   story_variants?: string[] | null;
+  text_blocks?: TextBlock[] | null;
+  background_type?: string | null;
+  broll_clip_id?: string | null;
+  background_url?: string | null;
+  rendered_video_url?: string | null;
+  render_status?: string | null;
+  render_error?: string | null;
   status: string;
   feedback?: string | null;
   prompt_version?: string | null;
@@ -236,11 +274,21 @@ export type GenerationSession = {
   updated_at?: string | null;
 };
 
+export type BackgroundJobRow = {
+  id: string;
+  job_type?: string | null;
+  status: string;
+  result?: Record<string, unknown> | null;
+  error_message?: string | null;
+};
+
 export type FormatDigestSummary = {
   format_key: string;
   reel_count?: number | null;
   mature_count?: number | null;
   avg_engagement?: number | null;
+  /** Mean comments/views over mature reels in this format (0–1). */
+  avg_comment_view_ratio?: number | null;
   avg_save_rate?: number | null;
   avg_share_rate?: number | null;
   avg_duration_s?: number | null;
@@ -520,6 +568,180 @@ export async function generationDeleteSession(
       ok: false,
       error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`),
     };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function creationListSessions(
+  clientSlug: string,
+  orgSlug: string,
+  limit = 50,
+): Promise<{ ok: true; data: GenerationSession[] } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/create/sessions?limit=${limit}`,
+      { headers },
+    );
+    const json = (await res.json().catch(() => [])) as unknown;
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`),
+      };
+    }
+    return { ok: true, data: Array.isArray(json) ? (json as GenerationSession[]) : [] };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function patchCreateSession(
+  clientSlug: string,
+  orgSlug: string,
+  sessionId: string,
+  body: { text_blocks: TextBlock[] },
+): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/create/sessions/${encodeURIComponent(sessionId)}`,
+      {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    const json = (await res.json().catch(() => ({}))) as GenerationSession & { detail?: unknown };
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
+    }
+    return { ok: true, data: json as GenerationSession };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function creationGenerateBackground(
+  clientSlug: string,
+  orgSlug: string,
+  sessionId: string,
+): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/create/sessions/${encodeURIComponent(sessionId)}/generate-background`,
+      { method: "POST", headers },
+    );
+    const json = (await res.json().catch(() => ({}))) as GenerationSession & { detail?: unknown };
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
+    }
+    return { ok: true, data: json as GenerationSession };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function creationSetBroll(
+  clientSlug: string,
+  orgSlug: string,
+  sessionId: string,
+  brollClipId: string,
+): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/create/sessions/${encodeURIComponent(sessionId)}/set-broll`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ broll_clip_id: brollClipId }),
+      },
+    );
+    const json = (await res.json().catch(() => ({}))) as GenerationSession & { detail?: unknown };
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
+    }
+    return { ok: true, data: json as GenerationSession };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function creationRenderVideo(
+  clientSlug: string,
+  orgSlug: string,
+  sessionId: string,
+): Promise<{ ok: true; job_id: string } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/create/sessions/${encodeURIComponent(sessionId)}/render`,
+      { method: "POST", headers },
+    );
+    const json = (await res.json().catch(() => ({}))) as { job_id?: string; detail?: unknown };
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
+    }
+    const jobId = json.job_id;
+    if (!jobId) return { ok: false, error: "No job_id returned" };
+    return { ok: true, job_id: jobId };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export type BrollClipRow = {
+  id: string;
+  file_url: string;
+  label?: string | null;
+  created_at?: string | null;
+};
+
+export async function brollList(
+  clientSlug: string,
+  orgSlug: string,
+): Promise<{ ok: true; data: BrollClipRow[] } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/broll`,
+      { headers },
+    );
+    const json = (await res.json().catch(() => [])) as unknown;
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`),
+      };
+    }
+    return { ok: true, data: Array.isArray(json) ? (json as BrollClipRow[]) : [] };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function fetchBackgroundJob(
+  orgSlug: string,
+  jobId: string,
+): Promise<{ ok: true; data: BackgroundJobRow } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(`${base}/api/v1/jobs/${encodeURIComponent(jobId)}`, { headers });
+    const json = (await res.json().catch(() => ({}))) as BackgroundJobRow & { detail?: unknown };
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
+    }
+    return { ok: true, data: json as BackgroundJobRow };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
   }

@@ -174,6 +174,7 @@ class ScrapedReelOut(BaseModel):
     created_at: Optional[str] = None
     video_duration: Optional[int] = None
     engagement_rate: Optional[float] = None
+    comment_view_ratio: Optional[float] = None
     save_rate: Optional[float] = None
     share_rate: Optional[float] = None
     analysis: Optional[ReelAnalysisSummary] = None

@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from core.config import Settings
 from services.client_dna_compile import _context_texts_only
+from services.format_classifier import canonicalize_stored_format_key
 from services.openrouter import chat_json_completion
 from services.reel_metrics import enrich_engagement_metrics
 
@@ -268,6 +269,29 @@ def _normalize_stories(raw: Any) -> List[str]:
     return [str(s).strip() for s in raw if str(s).strip()][:5]
 
 
+_VISUAL_FORMAT_KEYS = frozenset({"text_overlay", "b_roll_reel", "carousel"})
+
+
+def _wants_text_blocks(source_format_key: Optional[str]) -> bool:
+    raw = (source_format_key or "").strip()
+    key = canonicalize_stored_format_key(raw) or raw
+    return key in _VISUAL_FORMAT_KEYS
+
+
+def _normalize_text_blocks(raw: Any) -> Optional[List[Dict[str, Any]]]:
+    if not isinstance(raw, list):
+        return None
+    out: List[Dict[str, Any]] = []
+    for item in raw[:8]:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        out.append({"text": text, "isCTA": bool(item.get("isCTA"))})
+    return out if out else None
+
+
 def run_content_package(
     settings: Settings,
     *,
@@ -276,6 +300,7 @@ def run_content_package(
     chosen_angle: Dict[str, Any],
     feedback: Optional[str] = None,
     previous: Optional[Dict[str, Any]] = None,
+    source_format_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     lang = _lang_instruction(str(client_row.get("language") or "de"))
     prev_note = ""
@@ -285,18 +310,33 @@ def run_content_package(
             + json.dumps(previous, ensure_ascii=False)[:40_000]
         )
     fb = f"\n\nFEEDBACK_FROM_HUMAN:\n{feedback.strip()[:4000]}\n" if feedback and feedback.strip() else ""
-    user = (
-        f"{lang}\n\n"
-        "TASK: Write a full Instagram Reels copy package for ONE chosen angle.\n\n"
-        "Output JSON with this exact shape:\n"
+    json_shape = (
         "{\n"
         '  "hooks": [{"tier": 1|2|3, "text": string}],\n'
         '  "script": string,\n'
         '  "caption_body": string,\n'
         '  "hashtags": [string],\n'
-        '  "story_variants": [string, string, string]\n'
-        "}\n\n"
+        '  "story_variants": [string, string, string]'
+    )
+    if _wants_text_blocks(source_format_key):
+        json_shape += ',\n  "text_blocks": [{"text": string, "isCTA": boolean}]'
+    json_shape += "\n}\n"
+    tb_rules = ""
+    if _wants_text_blocks(source_format_key):
+        tb_rules = (
+            "\ntext_blocks (on-screen overlays, not the talking-head script):\n"
+            "- Exactly 4 items: 3 content + 1 CTA (last isCTA=true).\n"
+            "- Max 7 words per line; emojis (❌ ✅ 🔥 👇) where fitting.\n"
+            "- CTA: \"👇 Schreib 'KEYWORD' für …\" matching the offer.\n"
+            "- Derive from CHOSEN_ANGLE_JSON — not a script summary.\n"
+        )
+    user = (
+        f"{lang}\n\n"
+        "TASK: Write a full Instagram Reels copy package for ONE chosen angle.\n\n"
+        "Output JSON with this exact shape:\n"
+        f"{json_shape}\n"
         "Rules:\n"
+        f"{tb_rules}"
         "- hooks: 10–18 items. Tier 1 = direct relatable question; 2 = insight/tension; 3 = concrete script/list hook.\n"
         "- script: Use the optimal format and duration implied by PATTERNS_JSON.format_insights "
         "(and NICHE_BENCHMARKS if present). If format_insights suggests talking-head ~30s, write ~30s; "
@@ -339,13 +379,18 @@ def run_content_package(
     )
     script = str(data.get("script") or "").strip()
     cap = str(data.get("caption_body") or "").strip()
-    return {
+    out: Dict[str, Any] = {
         "hooks": _normalize_hooks(data.get("hooks")),
         "script": script,
         "caption_body": cap,
         "hashtags": _normalize_hashtags(data.get("hashtags")),
         "story_variants": _normalize_stories(data.get("story_variants"))[:3],
     }
+    if _wants_text_blocks(source_format_key):
+        out["text_blocks"] = _normalize_text_blocks(data.get("text_blocks"))
+    else:
+        out["text_blocks"] = None
+    return out
 
 
 def run_regenerate(
@@ -361,6 +406,8 @@ def run_regenerate(
     current_caption: str,
     current_hashtags: List[str],
     current_stories: List[str],
+    source_format_key: Optional[str] = None,
+    current_text_blocks: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Regenerate all or one facet; one LLM call, then merge by scope."""
     previous = {
@@ -369,6 +416,7 @@ def run_regenerate(
         "caption_body": current_caption,
         "hashtags": current_hashtags,
         "story_variants": current_stories,
+        "text_blocks": current_text_blocks,
     }
     full = run_content_package(
         settings,
@@ -377,6 +425,7 @@ def run_regenerate(
         chosen_angle=chosen_angle,
         feedback=feedback,
         previous=previous,
+        source_format_key=source_format_key,
     )
     if scope == "all":
         return full

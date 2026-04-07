@@ -2,10 +2,11 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronDown, ChevronUp, Sparkles } from "lucide-react";
+import { ChevronDown, ChevronUp, Clapperboard, Sparkles } from "lucide-react";
 import { ReelThumbnail } from "@/components/reel-thumbnail";
 import { AppSelect } from "@/components/ui/app-select";
 import type { ScrapedReelRow } from "@/lib/api";
+import { commentViewRatio, formatCommentViewPct } from "@/lib/reel-comment-view";
 import {
   clientApiHeaders,
   contentApiFetch,
@@ -16,6 +17,7 @@ import {
 } from "@/lib/api-client";
 import { analysisSortScore, formatSilasScoreSummary } from "@/lib/silas-score-display";
 import { AnalyzeReelModal } from "../components/analyze-reel-modal";
+import { RecreateReelModal } from "../components/recreate-reel-modal";
 import { IntelligenceProgressBar } from "../components/intelligence-progress-bar";
 import { ReelAnalysisDetailModal } from "../components/reel-analysis-detail-modal";
 
@@ -28,18 +30,13 @@ function formatPosted(d: string | null | undefined): string {
   }
 }
 
-function formatEngPct(rate: number | null | undefined): string {
-  if (rate == null || Number.isNaN(rate)) return "—";
-  return `${(rate * 100).toFixed(2)}%`;
-}
-
 type SortKey =
   | "views"
   | "likes"
   | "comments"
   | "saves"
   | "shares"
-  | "engagement_rate"
+  | "comment_view_ratio"
   | "video_duration"
   | "outlier_ratio"
   | "posted_at"
@@ -99,9 +96,9 @@ function compareForSort(a: ScrapedReelRow, b: ScrapedReelRow, key: SortKey): num
       if (vb == null) return -1;
       return va - vb;
     }
-    case "engagement_rate": {
-      const va = a.engagement_rate;
-      const vb = b.engagement_rate;
+    case "comment_view_ratio": {
+      const va = commentViewRatio(a);
+      const vb = commentViewRatio(b);
       if (va == null && vb == null) return 0;
       if (va == null) return 1;
       if (vb == null) return -1;
@@ -229,6 +226,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
   const [analyzeOpen, setAnalyzeOpen] = useState(false);
   const [analyzeInitialUrl, setAnalyzeInitialUrl] = useState<string | null>(null);
   const [analyzeSkipApify, setAnalyzeSkipApify] = useState(false);
+  const [recreateRow, setRecreateRow] = useState<ScrapedReelRow | null>(null);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [bulkMsg, setBulkMsg] = useState<string | null>(null);
   const [trackedJobId, setTrackedJobId] = useState<string | null>(null);
@@ -705,10 +703,11 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                 onClick={() => handleSort("shares")}
               />
               <SortHeader
-                label="Eng%"
-                active={sortKey === "engagement_rate"}
+                label="C/V%"
+                title="Comments ÷ views (conversation rate)."
+                active={sortKey === "comment_view_ratio"}
                 dir={sortDir}
-                onClick={() => handleSort("engagement_rate")}
+                onClick={() => handleSort("comment_view_ratio")}
               />
               <SortHeader
                 label="Dur."
@@ -723,7 +722,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                 dir={sortDir}
                 onClick={() => handleSort("posted_at")}
               />
-              <th className="py-3 pr-2 font-medium">Link</th>
+              <th className="py-3 pr-2 font-medium">Open / recreate</th>
             </tr>
           </thead>
           <tbody className="text-xs text-zinc-800 dark:text-app-fg-secondary">
@@ -845,7 +844,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                     {row.shares != null ? row.shares.toLocaleString() : "—"}
                   </td>
                   <td className="py-2.5 pr-2 align-middle tabular-nums">
-                    {formatEngPct(row.engagement_rate)}
+                    {formatCommentViewPct(row)}
                   </td>
                   <td className="py-2.5 pr-2 align-middle tabular-nums">
                     {row.video_duration != null ? `${row.video_duration}s` : "—"}
@@ -855,14 +854,26 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                   </td>
                   <td className="py-2.5 align-middle">
                     {row.post_url ? (
-                      <a
-                        href={row.post_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="font-semibold text-amber-600 hover:underline dark:text-amber-400"
-                      >
-                        ↗
-                      </a>
+                      <div className="flex flex-col items-start gap-1">
+                        <a
+                          href={row.post_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-semibold text-amber-600 hover:underline dark:text-amber-400"
+                        >
+                          ↗
+                        </a>
+                        <button
+                          type="button"
+                          disabled={disableReelAnalysis}
+                          onClick={() => setRecreateRow(row)}
+                          className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 hover:underline disabled:cursor-not-allowed disabled:opacity-40 dark:text-emerald-300/90"
+                          title="Adapt this reel for your client (Generate)"
+                        >
+                          <Clapperboard className="h-3 w-3 shrink-0" aria-hidden />
+                          Recreate
+                        </button>
+                      </div>
                     ) : (
                       "—"
                     )}
@@ -955,6 +966,15 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
           setTrackedJobId(jobId);
           setBulkExpectedTotal(null);
         }}
+      />
+      <RecreateReelModal
+        open={recreateRow != null}
+        onClose={() => setRecreateRow(null)}
+        reel={recreateRow}
+        clientSlug={clientSlug}
+        orgSlug={orgSlug}
+        disabled={Boolean(disableReelAnalysis)}
+        disabledHint="An analysis job is running. Wait for it to finish or dismiss the stalled bar."
       />
     </>
   );

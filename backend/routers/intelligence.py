@@ -1675,6 +1675,64 @@ def list_reels(
     return data
 
 
+@router.get("/clients/{slug}/reels/adapt-preview", response_model=list[ScrapedReelOut])
+def adapt_preview_reels(
+    slug: str,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    limit: int = Query(5, ge=1, le=20, description="How many reels to return after ranking."),
+    pool: int = Query(
+        250,
+        ge=50,
+        le=500,
+        description="Max competitor reels to load from DB before sorting (by views desc).",
+    ),
+    min_views: int = Query(
+        100,
+        ge=0,
+        le=10_000_000,
+        description="Only rank reels with at least this many views (stabilizes comments/views).",
+    ),
+) -> list[dict]:
+    """
+    Top competitor reels by comment/view ratio for Generate → URL adapt.
+
+    Excludes the client's own profile reels (competitor_id must be set). Does not attach
+    full Silas analysis — thumbnails + metrics only for quick picks.
+    """
+    _ = slug
+    try:
+        q = (
+            supabase.table("scraped_reels")
+            .select("*")
+            .eq("client_id", client_id)
+            .not_.is_("competitor_id", "null")
+        )
+        if min_views > 0:
+            q = q.gte("views", min_views)
+        res = q.order("views", desc=True).limit(pool).execute()
+    except Exception as e:
+        logger.warning("adapt_preview_reels: fetch failed: %s", e)
+        return []
+
+    rows: List[dict] = [dict(x) for x in (res.data or [])]
+    for row in rows:
+        enrich_engagement_metrics(row)
+        normalize_scraped_reel_row_for_api(row)
+
+    def _cvr_sort_key(r: dict) -> float:
+        v = r.get("comment_view_ratio")
+        if v is None:
+            return -1.0
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return -1.0
+
+    rows.sort(key=_cvr_sort_key, reverse=True)
+    return rows[:limit]
+
+
 _METRICS_MAX_REEL_IDS = 10
 _METRICS_DEFAULT_OWN_LIMIT = 30
 _ANALYSIS_IN_CHUNK = 80

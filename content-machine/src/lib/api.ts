@@ -173,6 +173,8 @@ export type ScrapedReelRow = {
   video_duration?: number | null;
   /** API-computed: (likes+comments+saves+shares)/views when views > 0. */
   engagement_rate?: number | null;
+  /** API-computed: comments/views when views > 0. */
+  comment_view_ratio?: number | null;
   save_rate?: number | null;
   share_rate?: number | null;
 };
@@ -414,6 +416,8 @@ export type NicheBenchmarksPayload = {
   niche_avg_views: number | null;
   niche_avg_likes: number | null;
   niche_avg_engagement_rate: number | null;
+  /** Mean comments/views over competitor reels (when API sends niche benchmarks). */
+  niche_avg_comment_view_ratio?: number | null;
   niche_avg_duration_seconds: number | null;
 };
 
