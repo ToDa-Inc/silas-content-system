@@ -98,7 +98,7 @@ export type BaselineRow = {
 /** One block of the client brain (Context page). */
 export type ClientContextSection = {
   text: string;
-  source: "manual" | "upload" | "generated";
+  source: "manual" | "upload" | "generated" | "chat";
   file: {
     name: string;
     storage_path: string;
@@ -135,6 +135,13 @@ export type ClientRow = {
   client_dna?: Record<string, unknown> | null;
   is_active: boolean;
   outlier_ratio_threshold?: number | null;
+};
+
+/** POST /clients/{slug}/dna/chat-update */
+export type DnaChatUpdateResponse = {
+  summary: string;
+  updated_sections: string[];
+  client: ClientRow;
 };
 
 export type ScrapedReelRow = {
@@ -177,6 +184,10 @@ export type ScrapedReelRow = {
   comment_view_ratio?: number | null;
   save_rate?: number | null;
   share_rate?: number | null;
+  /** GET /activity trending_now — views ÷ account_avg_views from last sync. */
+  trending_ratio?: number | null;
+  /** GET /activity proven_performers — how growth_views was derived. */
+  proven_growth_source?: "snapshots" | "raw_views" | null;
 };
 
 export type ScrapeQueueStats = {
@@ -421,10 +432,19 @@ export type NicheBenchmarksPayload = {
   niche_avg_duration_seconds: number | null;
 };
 
+export type ActivityLanePayload = {
+  meta: Record<string, unknown>;
+  reels: ScrapedReelRow[];
+};
+
 export type IntelligenceActivityRow = {
   since: string;
   new_breakout_reels: ScrapedReelRow[];
   niche_benchmarks?: NicheBenchmarksPayload;
+  /** Competitor reels posted in ~48h with views ≥ 0.3× account average. */
+  trending_now?: ActivityLanePayload;
+  /** Competitor reels 14d+ old: growth vs snapshot anchor, else top by views. */
+  proven_performers?: ActivityLanePayload;
   week_breakouts?: WeekBreakoutsPayload;
   own_reel_growth: OwnReelGrowthItem[];
   is_quiet: boolean;

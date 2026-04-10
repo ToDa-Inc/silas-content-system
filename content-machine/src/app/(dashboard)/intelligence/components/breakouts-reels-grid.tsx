@@ -80,7 +80,7 @@ export function BreakoutsReelsGrid({ reels, clientSlug, orgSlug }: Props) {
             <p className="mt-1 line-clamp-2 text-xs text-zinc-600 dark:text-app-fg-muted">
               {row.hook_text || row.caption || "—"}
             </p>
-            <ReelEngagementInline className="mt-2" views={row.views} likes={row.likes} comments={row.comments} />
+            <ReelEngagementInline className="mt-2" views={row.views} comments={row.comments} comment_view_ratio={row.comment_view_ratio} />
             <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px]">
               {row.competitor_id ? (
                 <Link

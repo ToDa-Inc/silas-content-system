@@ -37,7 +37,7 @@ import {
 
 type Step = "source" | "angles" | "content";
 
-type SourceMode = "format_pick" | "idea_match" | "url_adapt";
+type SourceMode = "format_pick" | "idea_match" | "url_adapt" | "script_adapt";
 
 function str(v: unknown): string {
   return typeof v === "string" ? v : v != null ? String(v) : "";
@@ -97,6 +97,7 @@ function sourceTypeLabel(t: string): string {
   if (t === "format_pick") return "Format";
   if (t === "idea_match") return "Idea";
   if (t === "url_adapt") return "Adapt URL";
+  if (t === "script_adapt") return "Adapt script";
   if (t === "patterns") return "Patterns";
   if (t === "outlier") return "Selected";
   if (t === "manual") return "Manual";
@@ -391,6 +392,49 @@ function UrlAdaptReferenceCard({
   );
 }
 
+/** Source English script for script_adapt — excerpt + synthesis summary from patterns. */
+function ScriptAdaptReferenceCard({
+  sourceScript,
+  patterns,
+}: {
+  sourceScript: string | null | undefined;
+  patterns: Record<string, unknown> | null | undefined;
+}) {
+  const raw = (sourceScript ?? "").trim();
+  const summaryRaw = patterns?.performance_summary;
+  const summary =
+    summaryRaw != null && String(summaryRaw).trim() ? String(summaryRaw).trim() : "";
+  const syn = patterns?.one_paragraph_synthesis;
+  const synStr = syn != null && String(syn).trim() ? String(syn).trim() : "";
+
+  if (!raw && !summary && !synStr) return null;
+
+  return (
+    <div className="rounded-xl border border-sky-500/25 bg-sky-500/[0.07] p-4">
+      <p className="text-[10px] font-bold uppercase tracking-wider text-app-fg-subtle">
+        Source script (English)
+      </p>
+      {raw ? (
+        <pre className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-app-divider bg-app-chip-bg/40 p-3 font-mono text-[11px] leading-relaxed text-app-fg-muted">
+          {raw}
+        </pre>
+      ) : null}
+      {synStr ? (
+        <p className="mt-2 text-xs leading-relaxed text-app-fg-secondary">
+          <span className="font-semibold text-app-fg-muted">Structure note: </span>
+          {synStr}
+        </p>
+      ) : null}
+      {summary ? (
+        <p className="mt-2 text-xs leading-relaxed text-app-fg-secondary">
+          <span className="font-semibold text-app-fg-muted">Performance read: </span>
+          {summary}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 const TIER_GROUPS: { tier: 1 | 2 | 3; title: string; subtitle: string }[] = [
   { tier: 1, title: "Tier 1 — Direct relatable question", subtitle: "Opens with a question the viewer feels." },
   { tier: 2, title: "Tier 2 — Tension / insight", subtitle: "Contrast, stakes, or a sharp insight." },
@@ -410,6 +454,7 @@ export default function GeneratePage() {
   const [ideaText, setIdeaText] = useState("");
   const [formatRecommendations, setFormatRecommendations] = useState<FormatRecommendation[]>([]);
   const [adaptUrl, setAdaptUrl] = useState("");
+  const [scriptAdaptText, setScriptAdaptText] = useState("");
   const [adaptPreviewRows, setAdaptPreviewRows] = useState<ScrapedReelRow[]>([]);
   const [adaptPreviewLoading, setAdaptPreviewLoading] = useState(false);
   const [adaptPreviewError, setAdaptPreviewError] = useState<string | null>(null);
@@ -603,6 +648,12 @@ export default function GeneratePage() {
         return;
       }
     }
+    if (sourceMode === "script_adapt") {
+      if (scriptAdaptText.trim().length < 40) {
+        show("Paste the English script — at least a few sentences (40+ characters).", "error");
+        return;
+      }
+    }
     setLoading(true);
     try {
       let body: Parameters<typeof generationStart>[2];
@@ -617,6 +668,12 @@ export default function GeneratePage() {
           source_type: "idea_match",
           format_key: selectedFormatKey!,
           idea_text: ideaText.trim(),
+          extra_instruction: extraInstruction.trim() || undefined,
+        };
+      } else if (sourceMode === "script_adapt") {
+        body = {
+          source_type: "script_adapt",
+          source_script: scriptAdaptText.trim(),
           extra_instruction: extraInstruction.trim() || undefined,
         };
       } else {
@@ -641,6 +698,7 @@ export default function GeneratePage() {
     }
   }, [
     adaptUrl,
+    scriptAdaptText,
     extraInstruction,
     ideaText,
     refreshContext,
@@ -829,8 +887,7 @@ export default function GeneratePage() {
                   How do you want to start?
                 </h2>
                 <p className="mb-4 max-w-2xl text-sm text-app-fg-muted">
-                  Choose one of the three starting points below. All three end up generating five angles in your
-                  client&apos;s voice.
+                  Choose one starting point below. Each path produces five angles in your client&apos;s voice.
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {(
@@ -849,6 +906,11 @@ export default function GeneratePage() {
                         mode: "url_adapt" as SourceMode,
                         label: "Adapt a competitor reel",
                         sub: "Paste an Instagram URL; we reverse-engineer it for your client",
+                      },
+                      {
+                        mode: "script_adapt" as SourceMode,
+                        label: "Adapt an English script",
+                        sub: "Paste a talking-head script; we extract structure and write in your client language",
                       },
                     ] as { mode: SourceMode; label: string; sub: string }[]
                   ).map(({ mode, label, sub }) => (
@@ -1124,6 +1186,27 @@ export default function GeneratePage() {
                 </div>
               ) : null}
 
+              {/* ── Script adapt (English → client language) ── */}
+              {sourceMode === "script_adapt" ? (
+                <div className="space-y-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-app-fg">English talking-head script</h3>
+                    <p className="mt-0.5 text-xs text-app-fg-muted">
+                      Paste the full script (hook through CTA). We extract winning structure, then generate five
+                      fresh angles for your client — not a word-for-word translation.
+                    </p>
+                  </div>
+                  <textarea
+                    id="gen-script-adapt"
+                    rows={12}
+                    value={scriptAdaptText}
+                    onChange={(e) => setScriptAdaptText(e.target.value)}
+                    placeholder="Paste English script here…"
+                    className="glass-inset min-h-[12rem] w-full resize-y rounded-xl p-3 font-mono text-sm leading-relaxed text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+                  />
+                </div>
+              ) : null}
+
               {/* ── Optional focus note (all modes) ── */}
               <div className="space-y-2">
                 <label htmlFor="gen-extra" className="text-sm font-semibold text-app-fg">
@@ -1158,6 +1241,11 @@ export default function GeneratePage() {
                 {sourceMode === "url_adapt" ? (
                   <p className="text-right text-xs text-app-fg-muted">
                     URL mode fetches and analyses the reel first — expect 30–60s.
+                  </p>
+                ) : null}
+                {sourceMode === "script_adapt" ? (
+                  <p className="text-right text-xs text-app-fg-muted">
+                    Script mode runs two model steps (structure → angles) — usually under a minute.
                   </p>
                 ) : null}
               </div>
@@ -1283,6 +1371,12 @@ export default function GeneratePage() {
               patterns={synthesizedPatterns ?? undefined}
             />
           ) : null}
+          {session.source_type === "script_adapt" ? (
+            <ScriptAdaptReferenceCard
+              sourceScript={session.source_script}
+              patterns={synthesizedPatterns ?? undefined}
+            />
+          ) : null}
           <h2 className="text-sm font-semibold text-app-fg">Pick an angle</h2>
           <div className="grid gap-3 md:grid-cols-2">
             {angles.map((raw, i) => {
@@ -1354,6 +1448,12 @@ export default function GeneratePage() {
           {session.source_type === "url_adapt" ? (
             <UrlAdaptReferenceCard
               sourceUrl={session.source_url}
+              patterns={synthesizedPatterns ?? undefined}
+            />
+          ) : null}
+          {session.source_type === "script_adapt" ? (
+            <ScriptAdaptReferenceCard
+              sourceScript={session.source_script}
               patterns={synthesizedPatterns ?? undefined}
             />
           ) : null}

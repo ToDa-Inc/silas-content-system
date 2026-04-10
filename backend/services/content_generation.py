@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional, Sequence
+import logging
+from typing import Any, Dict, List, Literal, Optional, Sequence
 
 from core.config import Settings
 from services.client_dna_compile import _context_texts_only
 from services.format_classifier import canonicalize_stored_format_key
-from services.openrouter import chat_json_completion
+from services.openrouter import chat_json_completion, chat_text_completion
 from services.reel_metrics import enrich_engagement_metrics
 
-GENERATION_PROMPT_VERSION = "silas_gen_v3_2026_04_02"
+logger = logging.getLogger(__name__)
+
+GENERATION_PROMPT_VERSION = "silas_gen_v4_2026_04_09"
+
+GermanPolishMode = Literal["none", "full", "script", "caption", "stories"]
 
 _SYSTEM_JSON = (
     "You are Silas — a senior Instagram Reels strategist. "
@@ -27,6 +32,176 @@ def _lang_instruction(language: str) -> str:
             "for the creator's audience (DE/AT/CH professional tone)."
         )
     return "OUTPUT LANGUAGE: English unless the client briefs explicitly require another language."
+
+
+def _is_german_client(client_row: Dict[str, Any]) -> bool:
+    low = str(client_row.get("language") or "").strip().lower()
+    return low in ("de", "german", "deutsch")
+
+
+_GERMANIZER_SCRIPT_SYSTEM = (
+    "You are a native German editor for social Reel scripts. Output only the rewritten text — "
+    "no preamble, no markdown fences, no explanations."
+)
+
+_GERMANIZER_CAPTION_TEXT_SYSTEM = (
+    "You are a native German editor for Instagram caption copy. Output only the rewritten caption — "
+    "no preamble, no markdown fences, no explanations."
+)
+
+_GERMANIZER_JSON_SYSTEM = (
+    "You are a native German editor for Instagram captions and short story teaser lines. "
+    "Reply with a single valid JSON object only (no markdown fences, no commentary)."
+)
+
+
+def _apply_german_natural_polish(
+    settings: Settings,
+    client_row: Dict[str, Any],
+    package: Dict[str, Any],
+    *,
+    mode: GermanPolishMode = "full",
+) -> Dict[str, Any]:
+    """Second pass for DE clients. `mode` limits which fields get an extra LLM pass (saves cost on scoped regen)."""
+    if not _is_german_client(client_row) or mode == "none":
+        return package
+    out = dict(package)
+
+    if mode in ("full", "script"):
+        script = str(out.get("script") or "").strip()
+        if script:
+            try:
+                user = (
+                    "Rewrite this German text so it sounds completely natural when spoken aloud — "
+                    "fluent, human, not translated or AI-like.\n\n"
+                    "Rules:\n"
+                    "- Keep every ## markdown heading line exactly as-is; only rewrite the body under each section.\n"
+                    "- No hyphen crutches or colon suspense openers; avoid stiff list structures.\n"
+                    "- Use natural connectors (und, aber, doch, also, eben); keep punchy rhythm where the original had it.\n"
+                    "- Preserve meaning, structure, and teaching content.\n\n"
+                    "<german_text>\n"
+                    + script[:95_000]
+                    + "\n</german_text>"
+                )
+                polished = chat_text_completion(
+                    settings.openrouter_api_key,
+                    settings.openrouter_model,
+                    system=_GERMANIZER_SCRIPT_SYSTEM,
+                    user=user,
+                    max_tokens=12_288,
+                    temperature=0.35,
+                )
+                if polished.strip():
+                    out["script"] = polished.strip()
+            except Exception:
+                logger.warning("German script polish failed; keeping original", exc_info=True)
+
+    if mode == "caption":
+        cap = str(out.get("caption_body") or "").strip()
+        if cap:
+            try:
+                user = (
+                    "Rewrite this German Instagram caption so it sounds natural and native — not AI or translated.\n\n"
+                    "Rules:\n"
+                    "- Preserve line breaks where they help readability.\n"
+                    "- No hyphen crutches or colon suspense openers.\n\n"
+                    "<caption>\n"
+                    + cap[:20_000]
+                    + "\n</caption>"
+                )
+                polished = chat_text_completion(
+                    settings.openrouter_api_key,
+                    settings.openrouter_model,
+                    system=_GERMANIZER_CAPTION_TEXT_SYSTEM,
+                    user=user,
+                    max_tokens=4096,
+                    temperature=0.35,
+                )
+                if polished.strip():
+                    out["caption_body"] = polished.strip()
+            except Exception:
+                logger.warning("German caption polish failed; keeping original", exc_info=True)
+        return out
+
+    if mode == "stories":
+        raw_stories = out.get("story_variants")
+        stories: List[str] = []
+        if isinstance(raw_stories, list):
+            stories = [str(s).strip() for s in raw_stories if str(s).strip()][:5]
+        if not stories:
+            return out
+        try:
+            user = (
+                "Polish these German IG Story teaser lines (short on-screen text).\n"
+                'Output JSON only: {"story_variants": [string, ...]}.\n'
+                "Keep the same count as input when possible.\n\n"
+                "Rules:\n"
+                "- Natural spoken German; no textbook tone.\n"
+                "- No hyphen crutches or colon suspense openers.\n\n"
+                "INPUT_JSON:\n"
+                + json.dumps({"story_variants": stories[:3]}, ensure_ascii=False)[:8000]
+            )
+            data = chat_json_completion(
+                settings.openrouter_api_key,
+                settings.openrouter_model,
+                system=_GERMANIZER_JSON_SYSTEM,
+                user=user,
+                max_tokens=2048,
+                temperature=0.35,
+            )
+            sv = data.get("story_variants")
+            if isinstance(sv, list) and sv:
+                norm = _normalize_stories(sv)[:3]
+                if norm:
+                    out["story_variants"] = norm
+        except Exception:
+            logger.warning("German story polish failed; keeping original", exc_info=True)
+        return out
+
+    if mode == "full":
+        cap = str(out.get("caption_body") or "").strip()
+        raw_stories = out.get("story_variants")
+        stories = []
+        if isinstance(raw_stories, list):
+            stories = [str(s).strip() for s in raw_stories if str(s).strip()][:5]
+        if not cap and not stories:
+            return out
+        try:
+            bundle = {
+                "caption_body": cap,
+                "story_variants": stories[:3] if stories else [],
+            }
+            user = (
+                "You rewrite AI-generated German for Instagram: caption + short story teaser lines.\n"
+                "Output JSON only: {\"caption_body\": string, \"story_variants\": [string, ...]}.\n"
+                "Use 0–3 story lines; keep the same count as input when possible.\n\n"
+                "Rules:\n"
+                "- Natural native German; relatable, smooth; no textbook or translation tone.\n"
+                "- No hyphen crutches or colon suspense openers.\n"
+                "- Caption: preserve line breaks where they help readability.\n\n"
+                "INPUT_JSON:\n"
+                + json.dumps(bundle, ensure_ascii=False)[:40_000]
+            )
+            data = chat_json_completion(
+                settings.openrouter_api_key,
+                settings.openrouter_model,
+                system=_GERMANIZER_JSON_SYSTEM,
+                user=user,
+                max_tokens=4096,
+                temperature=0.35,
+            )
+            new_cap = str(data.get("caption_body") or "").strip()
+            if new_cap:
+                out["caption_body"] = new_cap
+            sv = data.get("story_variants")
+            if isinstance(sv, list) and sv:
+                norm = _normalize_stories(sv)[:3]
+                if norm:
+                    out["story_variants"] = norm
+        except Exception:
+            logger.warning("German caption/story polish failed; keeping original", exc_info=True)
+
+    return out
 
 
 def _pack_client_row_for_llm(client_row: Dict[str, Any]) -> str:
@@ -301,6 +476,7 @@ def run_content_package(
     feedback: Optional[str] = None,
     previous: Optional[Dict[str, Any]] = None,
     source_format_key: Optional[str] = None,
+    german_polish: GermanPolishMode = "full",
 ) -> Dict[str, Any]:
     lang = _lang_instruction(str(client_row.get("language") or "de"))
     prev_note = ""
@@ -343,7 +519,18 @@ def run_content_package(
         "if text-overlay, write overlay copy. Default to ~45 second talking head only if format_insights is empty. "
         "Use markdown with headings: "
         "## Hook, ## Situation, ## Insight 1, ## Insight 2, ## Insight 3, ## Conclusion, ## CTA.\n"
-        "- caption_body: mini-story + value; match client's caption style from generation_brief.\n"
+        "- caption_body: High-converting IG caption in the output language. Do NOT repeat or summarize "
+        "the Reel script — deepen the message with new psychological insight and perspective. "
+        "Write for one specific reader (ICP): every sentence should feel personally relevant; "
+        "avoid generic coaching filler. Structure (use line breaks between beats): "
+        "(1) Hook — pattern-interrupt, relatable situation; "
+        "(2) Escalation — tension, reader feels seen; "
+        "(3) Reframe / insight — the aha; "
+        "(4) Consequence — why it matters if ignored; "
+        "(5) Authority transition — solution direction without over-explaining; "
+        "(6) CTA — clear action (e.g. comment keyword for webinar/training) aligned with OFFER_DOCUMENTATION. "
+        "Tone: direct, emotionally precise, psychologically sharp; slight provocation where it fits; "
+        "1–3 emojis max if natural. Final check: would this stop a scroll and make the ICP feel understood?\n"
         "- hashtags: at most 5 entries, niche-relevant; align with NICHE_BENCHMARKS and PATTERNS_JSON when available.\n"
         "- story_variants: 3 short on-screen text lines for IG Story teasers.\n\n"
         "HARD RULES FOR SCRIPT INSIGHTS (non-negotiable):\n"
@@ -390,7 +577,7 @@ def run_content_package(
         out["text_blocks"] = _normalize_text_blocks(data.get("text_blocks"))
     else:
         out["text_blocks"] = None
-    return out
+    return _apply_german_natural_polish(settings, client_row, out, mode=german_polish)
 
 
 def run_regenerate(
@@ -410,6 +597,14 @@ def run_regenerate(
     current_text_blocks: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Regenerate all or one facet; one LLM call, then merge by scope."""
+    polish_for_scope: Dict[str, GermanPolishMode] = {
+        "all": "full",
+        "hooks": "none",
+        "script": "script",
+        "caption": "caption",
+        "story": "stories",
+    }
+    german_polish = polish_for_scope.get(scope, "full")
     previous = {
         "hooks": current_hooks,
         "script": current_script,
@@ -426,6 +621,7 @@ def run_regenerate(
         feedback=feedback,
         previous=previous,
         source_format_key=source_format_key,
+        german_polish=german_polish,
     )
     if scope == "all":
         return full
@@ -478,6 +674,46 @@ def run_adaptation_synthesis(
         "Use the PERFORMANCE block when present to note what worked in context.\n\n"
         f"CLIENT_CONTEXT:\n{_pack_client_row_for_llm(client_row)[:100_000]}\n\n"
         f"SOURCE_REEL_ANALYSIS_JSON:\n{json.dumps(packed_analysis, ensure_ascii=False)[:120_000]}\n"
+    )
+    return chat_json_completion(
+        settings.openrouter_api_key,
+        settings.openrouter_model,
+        system=_SYSTEM_JSON,
+        user=user,
+        max_tokens=8192,
+        temperature=0.25,
+    )
+
+
+def run_script_adaptation_synthesis(
+    settings: Settings,
+    *,
+    client_row: Dict[str, Any],
+    english_script: str,
+) -> Dict[str, Any]:
+    """Build synthesized_patterns from a pasted English talking-head script (script_adapt)."""
+    lang = _lang_instruction(str(client_row.get("language") or "de"))
+    user = (
+        f"{lang}\n\n"
+        "TASK: The English text in <english_script> is a talking-head Reel script. "
+        "Your job is NOT to translate it yet — extract repeatable structure, hook strength, tension, "
+        "reframe, and value delivery so we can generate NEW angles for the client in the OUTPUT LANGUAGE.\n\n"
+        "Adapt mentally to the client's voice and ICP (from CLIENT_CONTEXT): preserve Hook → Build → "
+        "Reframe → Clarity → CTA rhythm; note cultural swaps if the script assumes English-only context.\n\n"
+        "Output JSON with the same shape as pattern synthesis:\n"
+        "{\n"
+        '  "hook_patterns": [{"name": string, "description": string, "example_from_data": string}],\n'
+        '  "tension_mechanisms": [{"name": string, "description": string}],\n'
+        '  "value_delivery_formats": [{"name": string, "description": string}],\n'
+        '  "patterns_to_avoid": [string],\n'
+        '  "format_insights": {"dominant_type": string, "optimal_duration": string, '
+        '"engagement_drivers": string},\n'
+        '  "performance_summary": string,\n'
+        '  "one_paragraph_synthesis": string\n'
+        "}\n\n"
+        "example_from_data should quote or paraphrase short lines from the script where useful.\n\n"
+        f"CLIENT_CONTEXT:\n{_pack_client_row_for_llm(client_row)[:100_000]}\n\n"
+        f"<english_script>\n{english_script[:120_000]}\n</english_script>\n"
     )
     return chat_json_completion(
         settings.openrouter_api_key,

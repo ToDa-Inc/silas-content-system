@@ -39,6 +39,7 @@ function createSessionFormatLabel(s: GenerationSession): string {
   const fk = canonicalFormatKey(s.source_format_key) ?? s.source_format_key;
   if (fk) return formatKeyLabel(fk);
   if (s.source_type === "url_adapt") return "URL adapt · text overlay";
+  if (s.source_type === "script_adapt") return "Script adapt";
   return "—";
 }
 

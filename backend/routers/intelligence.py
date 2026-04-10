@@ -545,6 +545,166 @@ def _top_reels_by_growth(
     return tv, tl, tc, cutoff
 
 
+def _trending_now_reels(
+    supabase: Client,
+    client_id: str,
+    *,
+    posted_within_hours: int = 48,
+    min_views_ratio: float = 0.3,
+    top_n: int = 8,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Competitor reels posted recently where views / account_avg_views clears a floor (from last sync)."""
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(hours=posted_within_hours)
+    since_iso = since.isoformat()
+    rows: List[dict] = []
+    try:
+        res = (
+            supabase.table("scraped_reels")
+            .select("*")
+            .eq("client_id", client_id)
+            .not_.is_("competitor_id", "null")
+            .gte("posted_at", since_iso)
+            .execute()
+        )
+        rows = [dict(x) for x in (res.data or [])]
+    except Exception:
+        rows = []
+
+    enriched: List[dict] = []
+    for r in rows:
+        posted = _dt_from_row(r.get("posted_at"))
+        if posted is None or posted < since:
+            continue
+        av = _int_metric_val(r.get("account_avg_views"))
+        v = _int_metric_val(r.get("views"))
+        if av <= 0:
+            continue
+        ratio = v / float(av)
+        if ratio < min_views_ratio:
+            continue
+        rr = dict(r)
+        rr["trending_ratio"] = round(ratio, 4)
+        enriched.append(rr)
+
+    enriched.sort(key=lambda x: float(x.get("trending_ratio") or 0), reverse=True)
+    top = enriched[:top_n]
+    for r in top:
+        enrich_engagement_metrics(r)
+        normalize_scraped_reel_row_for_api(r)
+    if top:
+        try:
+            _attach_reel_analyses(supabase, client_id, top)
+        except Exception:
+            pass
+
+    meta: Dict[str, Any] = {
+        "scope": "trending_now",
+        "posted_within_hours": posted_within_hours,
+        "min_views_vs_account_avg": min_views_ratio,
+        "window_start": since_iso,
+        "window_end": now.isoformat(),
+    }
+    return top, meta
+
+
+def _proven_performer_reels(
+    supabase: Client,
+    client_id: str,
+    *,
+    min_post_age_days: int = 14,
+    top_n: int = 5,
+    candidate_limit: int = 200,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Older competitor reels: rank by view growth vs snapshot anchored ~min_post_age_days after post, else by views."""
+    now = datetime.now(timezone.utc)
+    max_posted_at = now - timedelta(days=min_post_age_days)
+    max_posted_iso = max_posted_at.isoformat()
+    rows: List[dict] = []
+    try:
+        res = (
+            supabase.table("scraped_reels")
+            .select("*")
+            .eq("client_id", client_id)
+            .not_.is_("competitor_id", "null")
+            .lte("posted_at", max_posted_iso)
+            .order("views", desc=True)
+            .limit(candidate_limit)
+            .execute()
+        )
+        rows = [dict(x) for x in (res.data or [])]
+    except Exception:
+        rows = []
+
+    ids = [str(r.get("id") or "") for r in rows if r.get("id")]
+    ids = [i for i in ids if i]
+    snapshots_by_reel: Dict[str, List[dict]] = {}
+    if ids:
+        try:
+            snapshots_by_reel = _snapshots_grouped_by_reel(supabase, ids)
+        except Exception:
+            snapshots_by_reel = {}
+
+    settle_td = timedelta(days=min_post_age_days)
+    with_snap: List[dict] = []
+    fallback: List[dict] = []
+
+    for r in rows:
+        rid = str(r.get("id") or "")
+        posted = _dt_from_row(r.get("posted_at"))
+        if posted is None:
+            continue
+        settle_cutoff = posted + settle_td
+        snaps = snapshots_by_reel.get(rid, []) if rid else []
+        baseline = _pick_baseline_snapshot(snaps, settle_cutoff) if snaps else None
+        current_v = _int_metric_val(r.get("views"))
+        rr = dict(r)
+        if baseline is not None:
+            base_v = _int_metric_val(baseline.get("views"))
+            rr["growth_views"] = current_v - base_v
+            rr["proven_growth_source"] = "snapshots"
+            with_snap.append(rr)
+        else:
+            rr["growth_views"] = None
+            rr["proven_growth_source"] = "raw_views"
+            fallback.append(rr)
+
+    with_snap.sort(key=lambda x: _int_metric_val(x.get("growth_views")), reverse=True)
+    fallback.sort(key=lambda x: _int_metric_val(x.get("views")), reverse=True)
+
+    out: List[dict] = []
+    seen: set[str] = set()
+    for pool in (with_snap, fallback):
+        for r in pool:
+            rid = str(r.get("id") or "")
+            if not rid or rid in seen:
+                continue
+            seen.add(rid)
+            out.append(r)
+            if len(out) >= top_n:
+                break
+        if len(out) >= top_n:
+            break
+
+    for r in out:
+        enrich_engagement_metrics(r)
+        normalize_scraped_reel_row_for_api(r)
+    if out:
+        try:
+            _attach_reel_analyses(supabase, client_id, out)
+        except Exception:
+            pass
+
+    meta: Dict[str, Any] = {
+        "scope": "proven_performers",
+        "min_post_age_days": min_post_age_days,
+        "candidate_limit": candidate_limit,
+        "baseline_anchor": f"snapshot at or before ~{min_post_age_days}d after post (falls back to sync-pair if newer)",
+        "as_of": now.isoformat(),
+    }
+    return out, meta
+
+
 def _compute_client_stats(supabase: Client, client_id: str) -> Dict[str, Any]:
     handle = _client_instagram_handle(supabase, client_id)
     fetch_cap = 120 if handle else 30
@@ -1414,10 +1574,28 @@ def get_intelligence_activity(
     except Exception:
         niche_benchmarks = {}
 
+    trend_reels: List[Dict[str, Any]] = []
+    trend_meta: Dict[str, Any] = {}
+    proven_reels: List[Dict[str, Any]] = []
+    proven_meta: Dict[str, Any] = {}
+    try:
+        trend_reels, trend_meta = _trending_now_reels(supabase, client_id)
+    except Exception:
+        trend_reels, trend_meta = [], {"scope": "trending_now", "error": "compute_failed"}
+    try:
+        proven_reels, proven_meta = _proven_performer_reels(supabase, client_id)
+    except Exception:
+        proven_reels, proven_meta = [], {"scope": "proven_performers", "error": "compute_failed"}
+
+    has_lanes = bool(trend_reels or proven_reels)
+    is_quiet = not has_weekly and len(growth) == 0 and not has_lanes
+
     return {
         "since": since_dt.isoformat(),
         "new_breakout_reels": [],
         "niche_benchmarks": niche_benchmarks,
+        "trending_now": {"meta": trend_meta, "reels": trend_reels},
+        "proven_performers": {"meta": proven_meta, "reels": proven_reels},
         "week_breakouts": {
             "scope": "growth_7d",
             "window_start": growth_cutoff.isoformat(),
@@ -1429,7 +1607,7 @@ def get_intelligence_activity(
             "top_by_comments": tc,
         },
         "own_reel_growth": growth,
-        "is_quiet": not has_weekly and len(growth) == 0,
+        "is_quiet": is_quiet,
     }
 
 

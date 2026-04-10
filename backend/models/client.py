@@ -26,6 +26,12 @@ class ClientUpdate(BaseModel):
     outlier_ratio_threshold: Optional[float] = None
 
 
+class DnaChatUpdateBody(BaseModel):
+    """Natural-language instruction to surgically update client_context strategy sections."""
+
+    message: str = Field(..., min_length=10, max_length=2000)
+
+
 class ClientOut(BaseModel):
     model_config = ConfigDict(extra="ignore")
 

@@ -17,7 +17,11 @@ import {
   formatFastApiError,
   getContentApiBase,
 } from "@/lib/api-client";
-import type { ClientContextData, ClientContextSection } from "@/lib/api";
+import type {
+  ClientContextData,
+  ClientContextSection,
+  DnaChatUpdateResponse,
+} from "@/lib/api";
 import {
   formatProfileCompiledRel,
   parseAnalysisBriefForDisplay,
@@ -81,7 +85,10 @@ function normalizeSection(raw: unknown): ClientContextSection {
     const o = raw as Record<string, unknown>;
     const text = typeof o.text === "string" ? o.text : "";
     const source =
-      o.source === "upload" || o.source === "generated" || o.source === "manual"
+      o.source === "upload" ||
+      o.source === "generated" ||
+      o.source === "manual" ||
+      o.source === "chat"
         ? o.source
         : "manual";
     let file: ClientContextSection["file"] = null;
@@ -237,6 +244,9 @@ export function ContextEditor({
     initialClientDna && typeof initialClientDna === "object" ? { ...initialClientDna } : null,
   );
   const [dnaBusy, setDnaBusy] = useState(false);
+  const [dnaChatInput, setDnaChatInput] = useState("");
+  const [dnaChatBusy, setDnaChatBusy] = useState(false);
+  const [dnaChatUpdatedKeys, setDnaChatUpdatedKeys] = useState<string[]>([]);
 
   useEffect(() => {
     setClientDna(
@@ -296,6 +306,57 @@ export function ContextEditor({
 
   function toggleStrategy(key: ContextSectionKey) {
     setOpenStrategy((prev) => (prev === key ? null : key));
+  }
+
+  const canDnaChat =
+    dnaChatInput.trim().length >= 10 && !disabled && !dnaChatBusy && !saveBusy;
+
+  async function handleDnaChatUpdate() {
+    if (!canDnaChat || !clientSlug.trim() || !orgSlug.trim()) return;
+    setDnaChatBusy(true);
+    setStatus(null);
+    setDnaChatUpdatedKeys([]);
+    const apiBase = getContentApiBase();
+    const headersBase = await clientApiHeaders({ orgSlug });
+    try {
+      const r = await contentApiFetch(
+        `${apiBase}/api/v1/clients/${encodeURIComponent(clientSlug)}/dna/chat-update`,
+        {
+          method: "POST",
+          headers: { ...headersBase, "Content-Type": "application/json" },
+          body: JSON.stringify({ message: dnaChatInput.trim() }),
+        },
+      );
+      const text = await r.text();
+      const json = parseJsonObject(text) as DnaChatUpdateResponse | Record<string, unknown> | null;
+      if (!r.ok) {
+        setStatus(formatFastApiError(json as Record<string, unknown>, text));
+        return;
+      }
+      if (!json || typeof json !== "object" || !("summary" in json)) {
+        setStatus("Unexpected response.");
+        return;
+      }
+      const u = json as DnaChatUpdateResponse;
+      setStatus(u.summary);
+      setDnaChatUpdatedKeys(Array.isArray(u.updated_sections) ? u.updated_sections : []);
+      setDnaChatInput("");
+      if (u.client?.client_dna && typeof u.client.client_dna === "object") {
+        setClientDna({ ...(u.client.client_dna as Record<string, unknown>) });
+      }
+      if (u.client?.client_context && typeof u.client.client_context === "object") {
+        const normalized = normalizeFullContext(
+          u.client.client_context as ClientContextData,
+        );
+        setState(normalized);
+        setBaselineSig(serializeContext(normalized));
+      }
+      router.refresh();
+    } catch {
+      setStatus("Network error.");
+    } finally {
+      setDnaChatBusy(false);
+    }
   }
 
   async function handleRegenerateDna() {
@@ -600,6 +661,53 @@ export function ContextEditor({
           Voice and hook-generation profiles are prepared in the background and will connect when
           those tools ship.
         </p>
+      </section>
+
+      <section className="mb-8 rounded-2xl border border-violet-500/25 bg-gradient-to-b from-violet-500/[0.08] to-transparent p-5 shadow-sm dark:from-violet-500/[0.05]">
+        <h2 className="text-base font-semibold text-on-surface">Update from a message</h2>
+        <p className="mt-1 text-xs leading-relaxed text-zinc-600 dark:text-zinc-400">
+          Describe what changed for this creator (pivot, new offer, tone shift). An AI updates only
+          the strategy sections that need it, then refreshes the profile above in the background.
+        </p>
+        <textarea
+          value={dnaChatInput}
+          onChange={(e) => setDnaChatInput(e.target.value)}
+          disabled={disabled || dnaChatBusy}
+          rows={3}
+          className="mt-3 w-full resize-y rounded-xl border border-outline-variant/15 bg-surface-container-low/90 px-3 py-2.5 text-sm text-on-surface placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500/40 disabled:opacity-50"
+          placeholder="e.g. She is moving away from toxic-boss angles and focusing on assertive leadership for women in tech."
+        />
+        <div className="mt-2 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            disabled={!canDnaChat}
+            onClick={() => void handleDnaChatUpdate()}
+            className="inline-flex items-center gap-2 rounded-lg border border-violet-500/50 bg-violet-500/15 px-4 py-2 text-sm font-semibold text-violet-950 disabled:opacity-50 dark:text-violet-100"
+          >
+            {dnaChatBusy ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+            ) : null}
+            {dnaChatBusy ? "Applying…" : "Apply update"}
+          </button>
+          {dnaChatInput.trim().length > 0 && dnaChatInput.trim().length < 10 ? (
+            <span className="text-[11px] text-zinc-500">At least 10 characters.</span>
+          ) : null}
+        </div>
+        {dnaChatUpdatedKeys.length > 0 ? (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {dnaChatUpdatedKeys.map((key) => {
+              const meta = SECTION_META[key as ContextSectionKey];
+              return (
+                <span
+                  key={key}
+                  className="rounded-full bg-violet-500/20 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-900 dark:text-violet-200/95"
+                >
+                  {meta?.title ?? key}
+                </span>
+              );
+            })}
+          </div>
+        ) : null}
       </section>
 
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">

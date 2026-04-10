@@ -1,9 +1,10 @@
-import { Eye, Heart, MessageCircle } from "lucide-react";
+import { Eye, MessageCircle } from "lucide-react";
+import { formatCommentViewPct } from "@/lib/reel-comment-view";
 
 type Props = {
   views: number | null | undefined;
-  likes: number | null | undefined;
   comments: number | null | undefined;
+  comment_view_ratio?: number | null;
   className?: string;
 };
 
@@ -12,8 +13,9 @@ function fmt(n: number | null | undefined): string {
   return n.toLocaleString();
 }
 
-/** Compact views / likes / comments for reel cards (icons only, no labels). */
-export function ReelEngagementInline({ views, likes, comments, className }: Props) {
+/** Compact views / comments / C/V% for reel cards. C/V% replaces likes — it's the primary signal. */
+export function ReelEngagementInline({ views, comments, comment_view_ratio, className }: Props) {
+  const cvRow = { views, comments, comment_view_ratio };
   return (
     <div
       className={`flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] tabular-nums text-zinc-600 dark:text-app-fg-muted ${className ?? ""}`}
@@ -22,13 +24,15 @@ export function ReelEngagementInline({ views, likes, comments, className }: Prop
         <Eye className="h-3 w-3 shrink-0 opacity-70" aria-hidden />
         {fmt(views)}
       </span>
-      <span className="inline-flex items-center gap-0.5" title="Likes">
-        <Heart className="h-3 w-3 shrink-0 opacity-70" aria-hidden />
-        {fmt(likes)}
-      </span>
       <span className="inline-flex items-center gap-0.5" title="Comments">
         <MessageCircle className="h-3 w-3 shrink-0 opacity-70" aria-hidden />
         {fmt(comments)}
+      </span>
+      <span
+        className="font-medium text-zinc-800 dark:text-app-fg-secondary"
+        title="Comments ÷ views (conversation rate)"
+      >
+        {formatCommentViewPct(cvRow)}
       </span>
     </div>
   );

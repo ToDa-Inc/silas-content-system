@@ -677,16 +677,17 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                 onClick={() => handleSort("outlier_ratio")}
               />
               <SortHeader
-                label="Likes"
-                active={sortKey === "likes"}
-                dir={sortDir}
-                onClick={() => handleSort("likes")}
-              />
-              <SortHeader
                 label="Comments"
                 active={sortKey === "comments"}
                 dir={sortDir}
                 onClick={() => handleSort("comments")}
+              />
+              <SortHeader
+                label="C/V%"
+                title="Comments ÷ views — primary engagement signal."
+                active={sortKey === "comment_view_ratio"}
+                dir={sortDir}
+                onClick={() => handleSort("comment_view_ratio")}
               />
               <SortHeader
                 label="Saves"
@@ -703,11 +704,10 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                 onClick={() => handleSort("shares")}
               />
               <SortHeader
-                label="C/V%"
-                title="Comments ÷ views (conversation rate)."
-                active={sortKey === "comment_view_ratio"}
+                label="Likes"
+                active={sortKey === "likes"}
                 dir={sortDir}
-                onClick={() => handleSort("comment_view_ratio")}
+                onClick={() => handleSort("likes")}
               />
               <SortHeader
                 label="Dur."
@@ -832,10 +832,10 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                     {row.outlier_ratio != null ? `${Number(row.outlier_ratio).toFixed(1)}×` : "—"}
                   </td>
                   <td className="py-2.5 pr-2 align-middle tabular-nums">
-                    {row.likes != null ? row.likes.toLocaleString() : "—"}
-                  </td>
-                  <td className="py-2.5 pr-2 align-middle tabular-nums">
                     {row.comments != null ? row.comments.toLocaleString() : "—"}
+                  </td>
+                  <td className="py-2.5 pr-2 align-middle tabular-nums font-medium text-zinc-900 dark:text-app-fg">
+                    {formatCommentViewPct(row)}
                   </td>
                   <td className="py-2.5 pr-2 align-middle tabular-nums">
                     {row.saves != null ? row.saves.toLocaleString() : "—"}
@@ -843,8 +843,8 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                   <td className="py-2.5 pr-2 align-middle tabular-nums">
                     {row.shares != null ? row.shares.toLocaleString() : "—"}
                   </td>
-                  <td className="py-2.5 pr-2 align-middle tabular-nums">
-                    {formatCommentViewPct(row)}
+                  <td className="py-2.5 pr-2 align-middle tabular-nums text-zinc-400 dark:text-app-fg-faint">
+                    {row.likes != null ? row.likes.toLocaleString() : "—"}
                   </td>
                   <td className="py-2.5 pr-2 align-middle tabular-nums">
                     {row.video_duration != null ? `${row.video_duration}s` : "—"}

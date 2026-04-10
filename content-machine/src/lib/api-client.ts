@@ -252,6 +252,7 @@ export type GenerationSession = {
   source_format_key?: string | null;
   source_url?: string | null;
   source_idea?: string | null;
+  source_script?: string | null;
   synthesized_patterns?: Record<string, unknown> | null;
   angles?: Array<Record<string, unknown>> | null;
   chosen_angle_index?: number | null;
@@ -407,13 +408,15 @@ export async function generationStart(
       | "manual"
       | "format_pick"
       | "idea_match"
-      | "url_adapt";
+      | "url_adapt"
+      | "script_adapt";
     source_analysis_ids?: string[];
     max_analyses?: number;
     extra_instruction?: string;
     format_key?: string;
     idea_text?: string;
     url?: string;
+    source_script?: string;
   },
 ): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
   const base = getContentApiBase();

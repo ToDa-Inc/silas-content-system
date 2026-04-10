@@ -3,7 +3,11 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { clientApiHeaders, contentApiFetch, getContentApiBase } from "@/lib/api-client";
-import type { ScrapedReelRow, WeekBreakoutsPayload } from "@/lib/api";
+import type {
+  ActivityLanePayload,
+  ScrapedReelRow,
+  WeekBreakoutsPayload,
+} from "@/lib/api";
 import { commentViewRatio, formatCommentViewPct } from "@/lib/reel-comment-view";
 import { ReelThumbnail } from "@/components/reel-thumbnail";
 import { ReelCardWithAnalysis } from "./reel-card-with-analysis";
@@ -12,6 +16,8 @@ import { StoredBreakoutsRecomputeButton } from "./stored-breakouts-recompute-but
 type ActivityPayload = {
   since: string;
   new_breakout_reels: ScrapedReelRow[];
+  trending_now?: ActivityLanePayload;
+  proven_performers?: ActivityLanePayload;
   week_breakouts?: WeekBreakoutsPayload;
   is_quiet: boolean;
 };
@@ -92,11 +98,13 @@ function CompactBreakoutRow({
   clientSlug,
   orgSlug,
   highlight,
+  lane = "weekly",
 }: {
   reel: ScrapedReelRow;
   clientSlug: string;
   orgSlug: string;
   highlight: "views" | "likes" | "comments";
+  lane?: "weekly" | "trending" | "proven";
 }) {
   const hv = highlight === "views";
   const hl = highlight === "likes";
@@ -111,6 +119,50 @@ function CompactBreakoutRow({
       ? `${formatCompactDeltaSigned(growth)} ${metricWord} vs prior snapshot (≈7d window or last sync)`
       : undefined;
 
+  const trendingRatio =
+    reel.trending_ratio != null && Number.isFinite(Number(reel.trending_ratio))
+      ? Number(reel.trending_ratio)
+      : null;
+  const provenGrowth = reel.growth_views != null ? Number(reel.growth_views) : null;
+
+  const thumbOverlay =
+    lane === "trending" && trendingRatio != null ? (
+      <span
+        className="pointer-events-none absolute left-0 right-0 bottom-0 z-10 rounded-b-[inherit] bg-gradient-to-t from-zinc-950/95 via-zinc-950/75 to-transparent px-1 pb-0.5 pt-3 text-center text-[7px] font-semibold leading-tight text-sky-300/95 opacity-0 shadow-sm transition-opacity duration-200 group-hover/thumb:opacity-100 group-focus-within/thumb:opacity-100"
+        title="Views ÷ this account average (from last competitor sync)"
+      >
+        {trendingRatio.toFixed(2)}× avg
+      </span>
+    ) : lane === "proven" && provenGrowth != null ? (
+      <span
+        className={`pointer-events-none absolute left-0 right-0 bottom-0 z-10 rounded-b-[inherit] bg-gradient-to-t from-zinc-950/95 via-zinc-950/75 to-transparent px-1 pb-0.5 pt-3 text-center text-[7px] font-semibold leading-tight opacity-0 shadow-sm transition-opacity duration-200 group-hover/thumb:opacity-100 group-focus-within/thumb:opacity-100 ${
+          provenGrowth > 0
+            ? "text-emerald-300/95"
+            : provenGrowth < 0
+              ? "text-zinc-300/90"
+              : "text-amber-200/95"
+        }`}
+        title="View change vs baseline snapshot (~14d after post, or nearest sync history)"
+      >
+        {formatCompactDeltaSigned(provenGrowth)} views
+      </span>
+    ) : lane === "weekly" && growth != null ? (
+      <span
+        className={`pointer-events-none absolute left-0 right-0 bottom-0 z-10 rounded-b-[inherit] bg-gradient-to-t from-zinc-950/95 via-zinc-950/75 to-transparent px-1 pb-0.5 pt-3 text-center text-[7px] font-semibold leading-tight opacity-0 shadow-sm transition-opacity duration-200 group-hover/thumb:opacity-100 group-focus-within/thumb:opacity-100 ${
+          growth > 0
+            ? "text-emerald-300/95"
+            : growth < 0
+              ? "text-zinc-300/90"
+              : "text-amber-200/95"
+        }`}
+        title={growthTitle}
+      >
+        {formatCompactDeltaSigned(growth)} · 7d
+      </span>
+    ) : null;
+
+  const showWeeklyDeltas = lane === "weekly";
+
   return (
     <ReelCardWithAnalysis row={reel} clientSlug={clientSlug} orgSlug={orgSlug} compact>
       <div className="group/thumb relative shrink-0 overflow-hidden rounded">
@@ -120,20 +172,7 @@ function CompactBreakoutRow({
           href={reel.post_url}
           size="sm"
         />
-        {growth != null ? (
-          <span
-            className={`pointer-events-none absolute left-0 right-0 bottom-0 z-10 rounded-b-[inherit] bg-gradient-to-t from-zinc-950/95 via-zinc-950/75 to-transparent px-1 pb-0.5 pt-3 text-center text-[7px] font-semibold leading-tight opacity-0 shadow-sm transition-opacity duration-200 group-hover/thumb:opacity-100 group-focus-within/thumb:opacity-100 ${
-              growth > 0
-                ? "text-emerald-300/95"
-                : growth < 0
-                  ? "text-zinc-300/90"
-                  : "text-amber-200/95"
-            }`}
-            title={growthTitle}
-          >
-            {formatCompactDeltaSigned(growth)} · 7d
-          </span>
-        ) : null}
+        {thumbOverlay}
       </div>
       <div className="min-w-0 flex-1">
         <p className="text-[11px] font-semibold leading-tight text-app-fg">@{reel.account_username}</p>
@@ -141,7 +180,7 @@ function CompactBreakoutRow({
         <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[9px] tabular-nums text-app-fg-subtle">
           <span className={`inline-flex flex-col gap-0 ${hv ? "font-semibold text-amber-600 dark:text-amber-400" : ""}`}>
             <span>{reel.views != null ? `${Number(reel.views).toLocaleString()} views` : "—"}</span>
-            {gv != null ? (
+            {showWeeklyDeltas && gv != null ? (
               <span
                 className={`font-medium text-[8px] leading-tight ${
                   gv > 0
@@ -158,7 +197,7 @@ function CompactBreakoutRow({
           </span>
           <span className={`inline-flex flex-col gap-0 ${hl ? "font-semibold text-amber-600 dark:text-amber-400" : ""}`}>
             <span>{reel.likes != null ? `${Number(reel.likes).toLocaleString()} likes` : "—"}</span>
-            {gl != null ? (
+            {showWeeklyDeltas && gl != null ? (
               <span
                 className={`font-medium text-[8px] leading-tight ${
                   gl > 0
@@ -175,7 +214,7 @@ function CompactBreakoutRow({
           </span>
           <span className={`inline-flex flex-col gap-0 ${hc ? "font-semibold text-amber-600 dark:text-amber-400" : ""}`}>
             <span>{reel.comments != null ? `${Number(reel.comments).toLocaleString()} comments` : "—"}</span>
-            {gc != null ? (
+            {showWeeklyDeltas && gc != null ? (
               <span
                 className={`font-medium text-[8px] leading-tight ${
                   gc > 0
@@ -196,6 +235,11 @@ function CompactBreakoutRow({
             C/V {formatCommentViewPct(reel)}
           </p>
         ) : null}
+        {lane === "proven" && reel.proven_growth_source === "raw_views" ? (
+          <p className="mt-0.5 text-[8px] leading-snug text-app-fg-muted">
+            Ranked by total views — more daily syncs unlock baseline growth here.
+          </p>
+        ) : null}
       </div>
     </ReelCardWithAnalysis>
   );
@@ -205,6 +249,42 @@ function TopMetricPlaceholderRow() {
   return (
     <div className="flex min-h-[72px] items-center rounded-xl border border-dashed border-zinc-300/60 bg-zinc-50/30 px-3 py-2 dark:border-white/10 dark:bg-white/[0.02]">
       <p className="text-[10px] leading-relaxed text-app-fg-muted">—</p>
+    </div>
+  );
+}
+
+function ActivityLaneBlock({
+  title,
+  subtitle,
+  reels,
+  clientSlug,
+  orgSlug,
+  lane,
+}: {
+  title: string;
+  subtitle: string;
+  reels: ScrapedReelRow[];
+  clientSlug: string;
+  orgSlug: string;
+  lane: "trending" | "proven";
+}) {
+  if (!reels.length) return null;
+  return (
+    <div className="mb-6">
+      <h3 className="text-xs font-semibold text-app-fg">{title}</h3>
+      <p className="mb-3 text-[11px] leading-relaxed text-app-fg-muted">{subtitle}</p>
+      <div className="flex flex-col gap-2 lg:grid lg:grid-cols-2 xl:grid-cols-4">
+        {reels.map((reel) => (
+          <CompactBreakoutRow
+            key={reel.id}
+            reel={reel}
+            clientSlug={clientSlug}
+            orgSlug={orgSlug}
+            highlight="views"
+            lane={lane}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -322,6 +402,15 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
   const topLikes = topThreeSlotsOrdered(normalizeTopList(wb?.top_by_likes));
   const topComments = topThreeSlotsOrdered(normalizeTopList(wb?.top_by_comments));
 
+  const trendMeta = data?.trending_now?.meta ?? {};
+  const trendHours =
+    typeof trendMeta.posted_within_hours === "number" ? trendMeta.posted_within_hours : 48;
+  const trendFloor =
+    typeof trendMeta.min_views_vs_account_avg === "number" ? trendMeta.min_views_vs_account_avg : 0.3;
+  const provenMeta = data?.proven_performers?.meta ?? {};
+  const provenDays =
+    typeof provenMeta.min_post_age_days === "number" ? provenMeta.min_post_age_days : 14;
+
   return (
     <section className="mb-8">
       <div className="mb-2 flex flex-wrap items-start justify-between gap-3">
@@ -334,6 +423,25 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
           onAfterSuccess={() => setActivityRefreshKey((k) => k + 1)}
         />
       </div>
+
+      <ActivityLaneBlock
+        title="Trending now"
+        subtitle={`Competitor reels posted in the last ${trendHours}h with views at least ${Math.round(trendFloor * 100)}% of that account’s average (from the latest sync). Updates when your cron or manual sync refreshes metrics.`}
+        reels={data?.trending_now?.reels ?? []}
+        clientSlug={clientSlug}
+        orgSlug={orgSlug}
+        lane="trending"
+      />
+      <ActivityLaneBlock
+        title="Proven performers"
+        subtitle={`Competitor posts at least ${provenDays} days old. We rank by view growth vs a snapshot taken around ${provenDays} days after the post (daily syncs append history). Without enough snapshots, we fall back to strongest totals in your catalog.`}
+        reels={data?.proven_performers?.reels ?? []}
+        clientSlug={clientSlug}
+        orgSlug={orgSlug}
+        lane="proven"
+      />
+
+      <p className="mb-1 text-[11px] font-medium text-app-fg-secondary">Weekly momentum</p>
       <p className="mb-1 text-[11px] text-app-fg-subtle">{formatWindowHint(wb)}</p>
       <p className="mb-4 text-[11px] leading-relaxed text-app-fg-muted">
         Ranked by how much each reel grew in views, likes, or comments over the last 7 days (vs the latest stored

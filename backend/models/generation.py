@@ -13,6 +13,7 @@ class GenerationStartBody(BaseModel):
         "format_pick",
         "idea_match",
         "url_adapt",
+        "script_adapt",
     ] = "patterns"
     source_analysis_ids: Optional[List[str]] = Field(
         None,
@@ -38,6 +39,11 @@ class GenerationStartBody(BaseModel):
         None,
         max_length=2048,
         description="Instagram reel URL for url_adapt.",
+    )
+    source_script: Optional[str] = Field(
+        None,
+        max_length=16_000,
+        description="English talking-head script to adapt (script_adapt).",
     )
 
 
@@ -69,6 +75,7 @@ class GenerationSessionOut(BaseModel):
     source_format_key: Optional[str] = None
     source_url: Optional[str] = None
     source_idea: Optional[str] = None
+    source_script: Optional[str] = None
     synthesized_patterns: Optional[Dict[str, Any]] = None
     angles: Optional[List[Dict[str, Any]]] = None
     chosen_angle_index: Optional[int] = None

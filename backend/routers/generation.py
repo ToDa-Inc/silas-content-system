@@ -39,6 +39,7 @@ from services.content_generation import (
     run_format_recommendation,
     run_pattern_synthesis,
     run_regenerate,
+    run_script_adaptation_synthesis,
 )
 from services.format_classifier import canonicalize_stored_format_key
 from services.format_digest import (
@@ -353,6 +354,30 @@ def generation_start(
             else:
                 source_format_key = "text_overlay"
 
+        elif st == "script_adapt":
+            raw_script = (body.source_script or "").strip()
+            if len(raw_script) < 40:
+                raise HTTPException(
+                    status_code=400,
+                    detail="source_script required for script_adapt (at least a few sentences).",
+                )
+            patterns = run_script_adaptation_synthesis(
+                settings, client_row=client_row, english_script=raw_script
+            )
+            if not isinstance(patterns, dict):
+                patterns = {}
+            extra_script = (
+                body.extra_instruction.strip()
+                if body.extra_instruction and body.extra_instruction.strip()
+                else None
+            )
+            angles = run_angle_generation(
+                settings,
+                client_row=client_row,
+                synthesized_patterns=patterns,
+                extra_instruction=extra_script,
+            )
+
         else:
             if st == "outlier":
                 ids = body.source_analysis_ids or []
@@ -434,6 +459,8 @@ def generation_start(
         insert_row["source_url"] = source_url
     if source_idea:
         insert_row["source_idea"] = source_idea
+    if st == "script_adapt" and body.source_script and str(body.source_script).strip():
+        insert_row["source_script"] = str(body.source_script).strip()[:16_000]
     try:
         ins = supabase.table("generation_sessions").insert(insert_row).execute()
     except Exception as e:

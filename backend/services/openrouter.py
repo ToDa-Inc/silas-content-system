@@ -170,16 +170,17 @@ def analyze_reel_silas(
     return text, video_analyzed
 
 
-def chat_json_completion(
+def _chat_completion_raw_text(
     openrouter_key: str,
     model: str,
     *,
     system: str,
     user: str,
-    max_tokens: int = 12_288,
-    temperature: float = 0.35,
-) -> dict:
-    """Chat completion; response must be a single JSON object (markdown fences stripped)."""
+    max_tokens: int,
+    temperature: float,
+    timeout_s: float = 300.0,
+) -> str:
+    """POST chat/completions; return assistant message text (trimmed, before fence stripping)."""
     payload: dict[str, Any] = {
         "model": model,
         "messages": [
@@ -189,7 +190,7 @@ def chat_json_completion(
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
-    with httpx.Client(timeout=300.0) as client:
+    with httpx.Client(timeout=timeout_s) as client:
         r = client.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
@@ -223,7 +224,28 @@ def chat_json_completion(
         text = "".join(parts)
     else:
         text = ""
-    cleaned = re.sub(r"^```json\s*", "", text.strip())
+    return text.strip()
+
+
+def chat_json_completion(
+    openrouter_key: str,
+    model: str,
+    *,
+    system: str,
+    user: str,
+    max_tokens: int = 12_288,
+    temperature: float = 0.35,
+) -> dict:
+    """Chat completion; response must be a single JSON object (markdown fences stripped)."""
+    text = _chat_completion_raw_text(
+        openrouter_key,
+        model,
+        system=system,
+        user=user,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    cleaned = re.sub(r"^```json\s*", "", text)
     cleaned = re.sub(r"^```\s*", "", cleaned).strip()
     cleaned = re.sub(r"```\s*$", "", cleaned).strip()
     try:
@@ -234,3 +256,26 @@ def chat_json_completion(
     if not isinstance(parsed, dict):
         raise RuntimeError("Model JSON must be an object at the top level")
     return parsed
+
+
+def chat_text_completion(
+    openrouter_key: str,
+    model: str,
+    *,
+    system: str,
+    user: str,
+    max_tokens: int = 8192,
+    temperature: float = 0.35,
+) -> str:
+    """Chat completion; return assistant plain text (markdown fences stripped)."""
+    text = _chat_completion_raw_text(
+        openrouter_key,
+        model,
+        system=system,
+        user=user,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+    cleaned = re.sub(r"```\s*$", "", cleaned).strip()
+    return cleaned
