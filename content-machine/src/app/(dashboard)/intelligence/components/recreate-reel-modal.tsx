@@ -174,11 +174,11 @@ export function RecreateReelModal({
         <div className="mb-4 flex items-start justify-between gap-2">
           <div>
             <h2 id="recreate-reel-title" className="text-sm font-semibold text-app-fg">
-              Recreate for your client
+              Adapt this reel for your client
             </h2>
             <p className="mt-1 text-[11px] leading-relaxed text-app-fg-subtle">
-              We adapt this reel&apos;s structure and hooks to your client&apos;s voice, then you pick an angle and get
-              script + caption on Generate.
+              Same format and core video idea as the competitor reel; examples, setting, and copy rewritten for your
+              client. You pick one of five angles on Generate, then get script and caption.
             </p>
           </div>
           <button
@@ -238,7 +238,7 @@ export function RecreateReelModal({
               className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 py-2.5 text-sm font-bold text-zinc-950 disabled:opacity-50"
             >
               {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Sparkles className="h-4 w-4" aria-hidden />}
-              {busy ? "Creating session…" : "Start recreation"}
+              {busy ? "Creating session…" : "Start adaptation"}
             </button>
           </>
         ) : (

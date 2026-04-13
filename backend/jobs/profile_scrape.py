@@ -16,6 +16,7 @@ from services.instagram_post_url import canonical_instagram_post_url
 from services.reel_snapshots import insert_snapshots_for_scrape_job
 from services.apify_reel_fields import saves_and_shares_from_item, video_duration_seconds_from_item
 from services.reel_thumbnail_url import reel_thumbnail_url_from_apify_item
+from services.first_day_stats import update_milestones_for_competitor
 from services.format_digest_jobs import enqueue_auto_analyze_scraped, enqueue_format_digest_recompute
 
 # When `clients.outlier_ratio_threshold` is null, use this (also the recommended DB default).
@@ -247,6 +248,13 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
         comp_update["avg_likes"] = account_avg_likes
         comp_update["avg_comments"] = account_avg_comments
     supabase.table("competitors").update(comp_update).eq("id", competitor_id).execute()
+
+    try:
+        update_milestones_for_competitor(
+            supabase, competitor_id=competitor_id, client_id=client_id
+        )
+    except Exception:
+        pass
 
     supabase.table("background_jobs").update(
         {

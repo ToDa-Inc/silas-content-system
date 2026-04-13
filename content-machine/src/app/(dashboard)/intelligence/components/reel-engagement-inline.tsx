@@ -1,5 +1,5 @@
 import { Eye, MessageCircle } from "lucide-react";
-import { formatCommentViewPct } from "@/lib/reel-comment-view";
+import { formatViewsToComments } from "@/lib/reel-comment-view";
 
 type Props = {
   views: number | null | undefined;
@@ -13,7 +13,7 @@ function fmt(n: number | null | undefined): string {
   return n.toLocaleString();
 }
 
-/** Compact views / comments / C/V% for reel cards. C/V% replaces likes — it's the primary signal. */
+/** Compact views / comments / views÷comments (e.g. 20:1) for reel cards. */
 export function ReelEngagementInline({ views, comments, comment_view_ratio, className }: Props) {
   const cvRow = { views, comments, comment_view_ratio };
   return (
@@ -30,9 +30,9 @@ export function ReelEngagementInline({ views, comments, comment_view_ratio, clas
       </span>
       <span
         className="font-medium text-zinc-800 dark:text-app-fg-secondary"
-        title="Comments ÷ views (conversation rate)"
+        title="Views ÷ comments — vistas por cada comentario (p. ej. 20:1)"
       >
-        {formatCommentViewPct(cvRow)}
+        {formatViewsToComments(cvRow)}
       </span>
     </div>
   );

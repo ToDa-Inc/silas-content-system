@@ -25,6 +25,7 @@ from models.competitor import (
     CompetitorOut,
     CompetitorPreviewBody,
     DiscoverBody,
+    NicheReelScrapeBody,
     ScrapeCompetitorReelsBody,
 )
 from models.reel import (
@@ -56,6 +57,11 @@ from services.reel_metrics import (
 
 router = APIRouter(prefix="/api/v1", tags=["intelligence"])
 logger = logging.getLogger(__name__)
+
+# Weekly momentum: growth measured over posted_at + [maturity, maturity+measure), using snapshot timestamps
+# only to read metrics — not to define the calendar window.
+_WEEKLY_GROWTH_MATURITY_DAYS = 7
+_WEEKLY_GROWTH_MEASURE_DAYS = 7
 
 # One bulk competitor sync at a time per client (background thread in API process).
 _bulk_competitor_sync_locks: dict[str, threading.Lock] = {}
@@ -442,21 +448,105 @@ def _pick_baseline_snapshot(snaps_desc: List[dict], cutoff: datetime) -> Optiona
     return snaps_desc[0]
 
 
+def _snapshot_newest_at_or_before(snaps_desc: List[dict], deadline: datetime) -> Optional[dict]:
+    """Newest snapshot whose scraped_at is still on or before ``deadline``. ``snaps_desc``: scraped_at DESC."""
+    for s in snaps_desc:
+        t = _dt_from_row(s.get("scraped_at"))
+        if t is not None and t <= deadline:
+            return s
+    return None
+
+
+def _post_age_window_metric_deltas(
+    snaps: List[dict],
+    posted: datetime,
+    now: datetime,
+    *,
+    maturity_days: int,
+    measure_days: int,
+) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+    """
+    Delta views/likes/comments over [posted+maturity, posted+maturity+measure] (inclusive on both ends).
+
+    Calendar window is defined only from ``posted``; snapshot ``scraped_at`` is used only to choose which
+    stored readings fall inside that window (or, if none, to bracket the window — see fallbacks).
+    """
+    window_start = posted + timedelta(days=maturity_days)
+    window_end = posted + timedelta(days=maturity_days + measure_days)
+    if now < window_end:
+        return None, None, None
+
+    def delta_from_to(a: dict, b: dict) -> Tuple[int, int, int]:
+        return (
+            _int_metric_val(b.get("views")) - _int_metric_val(a.get("views")),
+            _int_metric_val(b.get("likes")) - _int_metric_val(a.get("likes")),
+            _int_metric_val(b.get("comments")) - _int_metric_val(a.get("comments")),
+        )
+
+    min_ts = datetime.min.replace(tzinfo=timezone.utc)
+
+    def snap_time(s: dict) -> datetime:
+        t = _dt_from_row(s.get("scraped_at"))
+        return t if t is not None else min_ts
+
+    snaps_desc = sorted(snaps, key=snap_time, reverse=True)
+
+    in_window: List[Tuple[datetime, dict]] = []
+    for s in snaps:
+        t = _dt_from_row(s.get("scraped_at"))
+        if t is not None and window_start <= t <= window_end:
+            in_window.append((t, s))
+    in_window.sort(key=lambda x: x[0])
+
+    if len(in_window) >= 2:
+        _, start_s = in_window[0]
+        _, end_s = in_window[-1]
+        if in_window[0][0] < in_window[-1][0]:
+            gv, gl, gc = delta_from_to(start_s, end_s)
+            return gv, gl, gc
+
+    if len(in_window) == 1:
+        _, mid_s = in_window[0]
+        tm = in_window[0][0]
+        pre = _snapshot_newest_at_or_before(snaps_desc, window_start)
+        ts_pre = _dt_from_row(pre.get("scraped_at")) if pre else None
+        if pre is not None and ts_pre is not None and ts_pre < tm:
+            return delta_from_to(pre, mid_s)
+        return None, None, None
+
+    # No snapshots inside the measurement week: bracket with last reading on/before each boundary.
+    start_snap = _snapshot_newest_at_or_before(snaps_desc, window_start)
+    end_snap = _snapshot_newest_at_or_before(snaps_desc, window_end)
+    if start_snap is None or end_snap is None:
+        return None, None, None
+    ts = _dt_from_row(start_snap.get("scraped_at"))
+    te = _dt_from_row(end_snap.get("scraped_at"))
+    if ts is None or te is None or te <= ts:
+        return None, None, None
+    return delta_from_to(start_snap, end_snap)
+
+
 def _top_reels_by_growth(
     supabase: Client,
     client_id: str,
     top_n: int = 3,
     growth_days: int = 7,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], datetime]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
     """
-    Top N reels per column by views/likes/comments **growth** vs a baseline snapshot.
+    Top N reels per column by views/likes/comments growth in the post-anchored window:
+    measure days ``_WEEKLY_GROWTH_MEASURE_DAYS`` starting after ``_WEEKLY_GROWTH_MATURITY_DAYS`` from posted_at.
 
-    Baseline: newest snapshot at or before (now - growth_days); else second-newest snapshot; else the only
-    snapshot. Reels with no snapshots fall back to absolute-metric ranking. Attaches growth_views / likes /
-    growth_comments.
+    Only reels with posted_at and age >= maturity+measure are ranked on growth; others are excluded from
+    these columns (not filled from immature reels). Reels old enough but lacking snapshot coverage fall
+    back to absolute totals among the eligible pool.
+
+    ``growth_days`` is kept for backward compatibility on the signature; the window is fixed by module constants.
     """
+    _ = growth_days
     now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=growth_days)
+    maturity = _WEEKLY_GROWTH_MATURITY_DAYS
+    measure = _WEEKLY_GROWTH_MEASURE_DAYS
+    min_age = timedelta(days=maturity + measure)
 
     rows: List[dict] = []
     try:
@@ -469,8 +559,15 @@ def _top_reels_by_growth(
         rows = [dict(x) for x in (res.data or [])]
     except Exception:
         rows = []
+    meta: Dict[str, Any] = {
+        "scope": "growth_7d_post_age",
+        "anchor": "posted_at",
+        "maturity_days": maturity,
+        "measure_days": measure,
+        "min_post_age_days": maturity + measure,
+    }
     if not rows:
-        return [], [], [], now
+        return [], [], [], meta
 
     ids = [str(r.get("id") or "") for r in rows if r.get("id")]
     ids = [i for i in ids if i]
@@ -485,39 +582,47 @@ def _top_reels_by_growth(
     enriched: List[dict] = []
     for r in rows:
         rid = str(r.get("id") or "")
+        posted = _dt_from_row(r.get("posted_at")) if rid else None
         snaps = snapshots_by_reel.get(rid, []) if rid else []
-        base = _pick_baseline_snapshot(snaps, cutoff) if rid else None
-        if base:
-            gv = _int_metric_val(r.get("views")) - _int_metric_val(base.get("views"))
-            gl = _int_metric_val(r.get("likes")) - _int_metric_val(base.get("likes"))
-            gc = _int_metric_val(r.get("comments")) - _int_metric_val(base.get("comments"))
-            r = dict(r)
-            r["growth_views"] = gv
-            r["growth_likes"] = gl
-            r["growth_comments"] = gc
-        else:
-            r = dict(r)
+        r = dict(r)
+        if posted is None or now < posted + min_age:
             r["growth_views"] = None
             r["growth_likes"] = None
             r["growth_comments"] = None
+            r["_weekly_growth_eligible"] = False
+        else:
+            r["_weekly_growth_eligible"] = True
+            gv, gl, gc = _post_age_window_metric_deltas(
+                snaps,
+                posted,
+                now,
+                maturity_days=maturity,
+                measure_days=measure,
+            )
+            r["growth_views"] = gv
+            r["growth_likes"] = gl
+            r["growth_comments"] = gc
         enriched.append(r)
 
     def pick(metric: str, gkey: str) -> List[dict]:
-        with_g = [x for x in enriched if x.get(gkey) is not None]
-        without_g = [x for x in enriched if x.get(gkey) is None]
+        eligible = [x for x in enriched if x.get("_weekly_growth_eligible")]
+        with_g = [x for x in eligible if x.get(gkey) is not None]
+        without_g = [x for x in eligible if x.get(gkey) is None]
         with_g.sort(key=lambda x: _int_metric_val(x.get(gkey)), reverse=True)
         without_g.sort(key=lambda x: _int_metric_val(x.get(metric)), reverse=True)
         out: List[dict] = []
         seen: set[str] = set()
         for pool in (with_g, without_g):
-            for r in pool:
+            for row in pool:
                 if len(out) >= top_n:
                     break
-                rid = str(r.get("id") or "")
+                rid = str(row.get("id") or "")
                 if not rid or rid in seen:
                     continue
                 seen.add(rid)
-                out.append(dict(r))
+                row = dict(row)
+                row.pop("_weekly_growth_eligible", None)
+                out.append(row)
             if len(out) >= top_n:
                 break
         return out[:top_n]
@@ -542,7 +647,7 @@ def _top_reels_by_growth(
         except Exception:
             pass
 
-    return tv, tl, tc, cutoff
+    return tv, tl, tc, meta
 
 
 def _trending_now_reels(
@@ -1132,6 +1237,54 @@ def discover_competitors(
     }
 
 
+@router.post("/clients/{slug}/niche-reels/scrape")
+def enqueue_niche_reel_scrape(
+    slug: str,
+    body: NicheReelScrapeBody,
+    org_id: Annotated[str, Depends(require_org_access)],
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Dict[str, Any]:
+    """Queue keyword-based niche reel discovery; worker writes scraped_reels (source niche_search)."""
+    if not settings.apify_api_token:
+        raise HTTPException(status_code=503, detail="APIFY_API_TOKEN not configured on API server")
+
+    fail_abandoned_queued_jobs(supabase, client_id=client_id, job_type="niche_reel_scrape")
+    fail_stale_running_jobs(
+        supabase, client_id=client_id, job_type="niche_reel_scrape", max_age_minutes=180
+    )
+    if has_active_job(supabase, client_id=client_id, job_type="niche_reel_scrape"):
+        raise HTTPException(
+            status_code=409,
+            detail="A niche reel scrape is already queued or running for this client",
+        )
+
+    payload = {
+        "keyword": body.keyword,
+        "keywords": body.keywords,
+        "keyword_mode": body.keyword_mode,
+        "max_items_per_keyword": body.max_items_per_keyword,
+        "max_total_reels": body.max_total_reels,
+        "include_hashtags": body.include_hashtags,
+        "max_hashtag_queries": body.max_hashtag_queries,
+    }
+    row = {
+        "id": generate_job_id(),
+        "org_id": org_id,
+        "client_id": client_id,
+        "job_type": "niche_reel_scrape",
+        "payload": {k: v for k, v in payload.items() if v is not None},
+        "status": "queued",
+    }
+    supabase.table("background_jobs").insert(row).execute()
+    return {
+        "job_id": row["id"],
+        "status": "queued",
+        "message": "Niche reel scrape queued — the background worker will fetch and save reels. Poll GET /api/v1/jobs/{job_id}.",
+    }
+
+
 @router.post("/clients/{slug}/auto-profile")
 def run_auto_profile(
     slug: str,
@@ -1480,12 +1633,12 @@ def get_intelligence_activity(
     supabase: Annotated[Client, Depends(get_supabase)],
     since: Optional[str] = Query(
         None,
-        description="Deprecated for breakouts; rolling 7-day window is used. Still affects response `since` echo.",
+        description="Deprecated for weekly momentum; still affects response `since` echo.",
     ),
 ) -> Dict[str, Any]:
-    """Top reels by 7-day metric growth (reel_snapshots baseline) plus optional own-reel growth highlights."""
+    """Weekly momentum: growth in days 7–14 after posted_at (snapshot-backed); plus own-reel highlights."""
     since_dt = _parse_since(since)
-    tv, tl, tc, growth_cutoff = _top_reels_by_growth(supabase, client_id, top_n=3, growth_days=7)
+    tv, tl, tc, growth_meta = _top_reels_by_growth(supabase, client_id, top_n=3, growth_days=7)
     window_end = datetime.now(timezone.utc)
 
     growth: List[Dict[str, Any]] = []
@@ -1597,10 +1750,14 @@ def get_intelligence_activity(
         "trending_now": {"meta": trend_meta, "reels": trend_reels},
         "proven_performers": {"meta": proven_meta, "reels": proven_reels},
         "week_breakouts": {
-            "scope": "growth_7d",
-            "window_start": growth_cutoff.isoformat(),
+            "scope": growth_meta.get("scope", "growth_7d_post_age"),
+            "anchor": growth_meta.get("anchor", "posted_at"),
+            "maturity_days": growth_meta.get("maturity_days", _WEEKLY_GROWTH_MATURITY_DAYS),
+            "measure_days": growth_meta.get("measure_days", _WEEKLY_GROWTH_MEASURE_DAYS),
+            "min_post_age_days": growth_meta.get("min_post_age_days"),
+            "window_start": None,
             "window_end": window_end.isoformat(),
-            "days": 7,
+            "days": growth_meta.get("measure_days", _WEEKLY_GROWTH_MEASURE_DAYS),
             "top_n_by_type": {"views": 3, "likes": 3, "comments": 3},
             "top_by_views": tv,
             "top_by_likes": tl,
@@ -1869,14 +2026,14 @@ def adapt_preview_reels(
         100,
         ge=0,
         le=10_000_000,
-        description="Only rank reels with at least this many views (stabilizes comments/views).",
+        description="Only rank reels with at least this many views (stabilizes views/comments).",
     ),
 ) -> list[dict]:
     """
-    Top competitor reels by comment/view ratio for Generate → URL adapt.
+    Top competitor reels by views ÷ comments for Generate → URL adapt.
 
-    Excludes the client's own profile reels (competitor_id must be set). Does not attach
-    full Silas analysis — thumbnails + metrics only for quick picks.
+    Lower ratio = more comments per view (stronger discussion). Excludes the client's own
+    profile reels (competitor_id must be set). Thumbnails + metrics only.
     """
     _ = slug
     try:
@@ -1901,14 +2058,137 @@ def adapt_preview_reels(
     def _cvr_sort_key(r: dict) -> float:
         v = r.get("comment_view_ratio")
         if v is None:
-            return -1.0
+            return float("inf")
         try:
             return float(v)
         except (TypeError, ValueError):
-            return -1.0
+            return float("inf")
 
-    rows.sort(key=_cvr_sort_key, reverse=True)
+    rows.sort(key=_cvr_sort_key, reverse=False)
     return rows[:limit]
+
+
+# ---------------------------------------------------------------------------
+# Replicate suggestions — outbreakers vs milestone-based account average
+# ---------------------------------------------------------------------------
+
+_MILESTONE_HOURS = (24, 48, 72)
+
+
+def _pick_milestone_avg(comp: dict, hours: int) -> Optional[float]:
+    """Select the best milestone average for a given hours param.
+
+    Tries the exact match first (e.g. hours=48 → avg_views_at_48h), then falls
+    back to smaller milestones (24h), then to None.
+    """
+    candidates = sorted(
+        (h for h in _MILESTONE_HOURS if h <= hours), reverse=True
+    ) or list(_MILESTONE_HOURS)
+    for h in candidates:
+        col = f"avg_views_at_{h}h"
+        sampled_col = f"sampled_at_{h}h"
+        val = comp.get(col)
+        sampled = int(comp.get(sampled_col) or 0)
+        if val is not None and float(val) > 0 and sampled >= 3:
+            return float(val)
+    return None
+
+
+@router.get("/clients/{slug}/reels/replicate-suggestions", response_model=list[ScrapedReelOut])
+def replicate_suggestions(
+    slug: str,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    hours: int = Query(24, ge=1, le=168, description="How far back to look for recently posted reels."),
+    limit: int = Query(8, ge=1, le=30, description="Max reels to return."),
+) -> list[dict]:
+    """
+    Competitor reels posted in the last *hours* ranked by outbreaker ratio.
+
+    Ratio = reel's current views / competitor's avg views at the matching
+    milestone (24h/48h/72h).  Falls back to account_avg_views when milestone
+    data is insufficient.
+    """
+    _ = slug
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(hours=hours)
+    since_iso = since.isoformat()
+
+    try:
+        reel_res = (
+            supabase.table("scraped_reels")
+            .select("*")
+            .eq("client_id", client_id)
+            .not_.is_("competitor_id", "null")
+            .gte("posted_at", since_iso)
+            .execute()
+        )
+    except Exception as e:
+        logger.warning("replicate_suggestions: reel fetch failed: %s", e)
+        return []
+
+    rows: List[dict] = [dict(x) for x in (reel_res.data or [])]
+    if not rows:
+        return []
+
+    comp_ids = list({str(r["competitor_id"]) for r in rows if r.get("competitor_id")})
+    comp_map: Dict[str, Dict[str, Any]] = {}
+    if comp_ids:
+        milestone_cols = ", ".join(
+            f"avg_views_at_{h}h, avg_comments_at_{h}h, sampled_at_{h}h"
+            for h in _MILESTONE_HOURS
+        )
+        try:
+            cres = (
+                supabase.table("competitors")
+                .select(f"id, avg_views, {milestone_cols}")
+                .in_("id", comp_ids)
+                .execute()
+            )
+            for c in cres.data or []:
+                comp_map[str(c["id"])] = c
+        except Exception:
+            pass
+
+    enriched: List[dict] = []
+    for r in rows:
+        posted = _dt_from_row(r.get("posted_at"))
+        if posted is None or posted < since:
+            continue
+        v = _int_metric_val(r.get("views"))
+        if v <= 0:
+            continue
+
+        cid = str(r.get("competitor_id") or "")
+        comp = comp_map.get(cid, {})
+        milestone_avg = _pick_milestone_avg(comp, hours)
+
+        if milestone_avg is not None:
+            ratio = round(v / milestone_avg, 4)
+            ratio_source = "milestone_avg"
+        else:
+            fallback = _int_metric_val(r.get("account_avg_views"))
+            if fallback <= 0:
+                continue
+            ratio = round(v / float(fallback), 4)
+            ratio_source = "account_avg_fallback"
+
+        rr = dict(r)
+        rr["outbreaker_ratio"] = ratio
+        rr["outbreaker_ratio_source"] = ratio_source
+        enriched.append(rr)
+
+    enriched.sort(key=lambda x: float(x.get("outbreaker_ratio") or 0), reverse=True)
+    top = enriched[:limit]
+    for r in top:
+        enrich_engagement_metrics(r)
+        normalize_scraped_reel_row_for_api(r)
+    if top:
+        try:
+            _attach_reel_analyses(supabase, client_id, top)
+        except Exception:
+            pass
+    return top
 
 
 _METRICS_MAX_REEL_IDS = 10

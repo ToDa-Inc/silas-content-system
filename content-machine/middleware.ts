@@ -55,15 +55,12 @@ export async function middleware(request: NextRequest) {
     return supabaseResponse;
   }
 
-  let userInOrg = false;
-  if (user) {
-    const { data: memRows } = await supabase
-      .from("organization_members")
-      .select("id")
-      .eq("user_id", user.id)
-      .limit(1);
-    userInOrg = (memRows?.length ?? 0) > 0;
-  }
+  /**
+   * Do not query `organization_members` here. Anon + RLS often hides that row in Edge
+   * middleware even for valid members, which made `userInOrg` always false → redirect
+   * loops or impossible login. Workspace membership is resolved in RSC via
+   * `getCachedServerApiContext()` (service role when configured) and `/onboarding` page.
+   */
 
   if (pathname === "/onboarding") {
     if (!user) {
@@ -71,9 +68,6 @@ export async function middleware(request: NextRequest) {
       u.pathname = "/login";
       u.searchParams.set("next", "/onboarding");
       return NextResponse.redirect(u);
-    }
-    if (userInOrg) {
-      return NextResponse.redirect(new URL("/dashboard", request.url));
     }
     return supabaseResponse;
   }
@@ -85,13 +79,8 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(redirectUrl);
   }
 
-  if (isProtectedPath(pathname) && user && !userInOrg) {
-    return NextResponse.redirect(new URL("/onboarding", request.url));
-  }
-
   if ((pathname === "/login" || pathname === "/signup") && user) {
-    const dest = userInOrg ? "/dashboard" : "/onboarding";
-    return NextResponse.redirect(new URL(dest, request.url));
+    return NextResponse.redirect(new URL("/dashboard", request.url));
   }
 
   return supabaseResponse;

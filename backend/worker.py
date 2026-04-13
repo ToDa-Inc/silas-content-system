@@ -20,6 +20,8 @@ from jobs.competitor_discovery import run_competitor_discovery
 from jobs.profile_scrape import run_profile_scrape
 from jobs.auto_analyze_scraped import run_auto_analyze_scraped
 from jobs.format_digest_recompute import run_format_digest_recompute
+from jobs.milestone_scrape import run_milestone_scrape
+from jobs.niche_reel_scrape import run_niche_reel_scrape
 from jobs.reel_analyze_url import run_reel_analyze_bulk, run_reel_analyze_url
 
 
@@ -45,6 +47,25 @@ def _claim_job(settings: Settings) -> Optional[Dict[str, Any]]:
     return data
 
 
+_CLAIM_HINT_PRINTED = False
+
+
+def _claim_job_safe(settings: Settings) -> Optional[Dict[str, Any]]:
+    """Call claim_next_job; on RPC failure print hint once and stay idle (no spam)."""
+    global _CLAIM_HINT_PRINTED
+    try:
+        return _claim_job(settings)
+    except Exception as e:
+        if not _CLAIM_HINT_PRINTED:
+            _CLAIM_HINT_PRINTED = True
+            print(
+                "claim_next_job failed — apply SQL in backend/sql/phase0_claim_next_job.sql "
+                "to your Supabase database, then restart the worker.\n"
+                f"Error: {e!s}"
+            )
+        return None
+
+
 def _process_job_sync(settings: Settings, job: Dict[str, Any]) -> None:
     jt = job.get("job_type")
     if jt == "competitor_discovery":
@@ -63,6 +84,10 @@ def _process_job_sync(settings: Settings, job: Dict[str, Any]) -> None:
         run_format_digest_recompute(settings, job)
     elif jt == "auto_analyze_scraped":
         run_auto_analyze_scraped(settings, job)
+    elif jt == "milestone_scrape":
+        run_milestone_scrape(settings, job)
+    elif jt == "niche_reel_scrape":
+        run_niche_reel_scrape(settings, job)
     else:
         _fail_job(settings, job["id"], f"Unknown job_type: {jt}")
 
@@ -73,12 +98,22 @@ async def run_loop() -> None:
         raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY required")
 
     print("Worker started — polling claim_next_job every 5s")
+    idle_polls = 0
     while True:
         try:
-            job = await asyncio.to_thread(_claim_job, settings)
+            job = await asyncio.to_thread(_claim_job_safe, settings)
             if not job:
+                idle_polls += 1
+                # ~60s: confirm we are alive when the queue is empty (normal if nothing is queued).
+                if idle_polls % 12 == 0:
+                    print(
+                        "Worker idle — no jobs with status=queued. "
+                        "Queue builds when Intelligence sync enqueues scrapes, or run phase0_claim_next_job.sql "
+                        "if RPC errors appeared above."
+                    )
                 await asyncio.sleep(5)
                 continue
+            idle_polls = 0
             jid = job.get("id")
             print(f"Picked job {jid} type={job.get('job_type')}")
             try:
@@ -94,4 +129,8 @@ async def run_loop() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(run_loop())
+    try:
+        asyncio.run(run_loop())
+    except KeyboardInterrupt:
+        print("\nWorker stopped (Ctrl+C).")
+        raise SystemExit(0) from None

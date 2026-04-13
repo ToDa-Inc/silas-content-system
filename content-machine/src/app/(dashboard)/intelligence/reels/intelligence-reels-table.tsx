@@ -6,7 +6,7 @@ import { ChevronDown, ChevronUp, Clapperboard, Sparkles } from "lucide-react";
 import { ReelThumbnail } from "@/components/reel-thumbnail";
 import { AppSelect } from "@/components/ui/app-select";
 import type { ScrapedReelRow } from "@/lib/api";
-import { commentViewRatio, formatCommentViewPct } from "@/lib/reel-comment-view";
+import { formatViewsToComments, viewsToCommentsRatio } from "@/lib/reel-comment-view";
 import {
   clientApiHeaders,
   contentApiFetch,
@@ -97,8 +97,8 @@ function compareForSort(a: ScrapedReelRow, b: ScrapedReelRow, key: SortKey): num
       return va - vb;
     }
     case "comment_view_ratio": {
-      const va = commentViewRatio(a);
-      const vb = commentViewRatio(b);
+      const va = viewsToCommentsRatio(a);
+      const vb = viewsToCommentsRatio(b);
       if (va == null && vb == null) return 0;
       if (va == null) return 1;
       if (vb == null) return -1;
@@ -238,7 +238,9 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
   const [tick, setTick] = useState(0);
   const headerSelectRef = useRef<HTMLInputElement>(null);
   const segmentDoneRef = useRef<number>(-999);
-  const segmentStartRef = useRef<number>(Date.now());
+  /** Easing clock for the fake progress bar — state (not refs) so eslint allows use in render. */
+  const [wallMs, setWallMs] = useState(0);
+  const [segmentStartMs, setSegmentStartMs] = useState(0);
   const pollTerminalHandledRef = useRef(false);
   const prevTrackedJobIdRef = useRef<string | null>(null);
   const [page, setPage] = useState(1);
@@ -328,7 +330,12 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
 
   useEffect(() => {
     if (!trackedJobId) return;
-    const iv = setInterval(() => setTick((n) => n + 1), 150);
+    const w = Date.now();
+    setWallMs(w);
+    const iv = setInterval(() => {
+      setWallMs(Date.now());
+      setTick((n) => n + 1);
+    }, 150);
     return () => clearInterval(iv);
   }, [trackedJobId]);
 
@@ -339,7 +346,9 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
       if (trackedJobId) {
         setLastJob(null);
         segmentDoneRef.current = -999;
-        segmentStartRef.current = Date.now();
+        const t = Date.now();
+        setWallMs(t);
+        setSegmentStartMs(t);
       }
     }
   }, [trackedJobId]);
@@ -348,7 +357,9 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
     const d = lastJob?.result?.progress?.done;
     if (typeof d === "number" && d !== segmentDoneRef.current) {
       segmentDoneRef.current = d;
-      segmentStartRef.current = Date.now();
+      const t = Date.now();
+      setWallMs(t);
+      setSegmentStartMs(t);
     }
   }, [lastJob?.result?.progress?.done]);
 
@@ -469,7 +480,8 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
       setSortDir((d) => (d === "desc" ? "asc" : "desc"));
     } else {
       setSortKey(key);
-      setSortDir("desc");
+      // Lower views÷comments = more discussion per view; default that column to asc.
+      setSortDir(key === "comment_view_ratio" ? "asc" : "desc");
     }
   }
 
@@ -541,7 +553,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
     typeof prog?.done === "number" ? Math.min(Math.max(0, prog.done), totalSteps) : 0;
   const floor = (done / totalSteps) * 100;
   const segSpan = (100 / totalSteps) * 0.88;
-  const elapsed = Date.now() - segmentStartRef.current;
+  const elapsed = wallMs - segmentStartMs;
   const tEase = Math.min(1, elapsed / SEGMENT_MS);
   let barPct = 0;
   if (!trackedJobId) barPct = 0;
@@ -683,8 +695,8 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                 onClick={() => handleSort("comments")}
               />
               <SortHeader
-                label="C/V%"
-                title="Comments ÷ views — primary engagement signal."
+                label="V:C"
+                title="Views ÷ comments (e.g. 20:1 = 20 views per comment)."
                 active={sortKey === "comment_view_ratio"}
                 dir={sortDir}
                 onClick={() => handleSort("comment_view_ratio")}
@@ -835,7 +847,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                     {row.comments != null ? row.comments.toLocaleString() : "—"}
                   </td>
                   <td className="py-2.5 pr-2 align-middle tabular-nums font-medium text-zinc-900 dark:text-app-fg">
-                    {formatCommentViewPct(row)}
+                    {formatViewsToComments(row)}
                   </td>
                   <td className="py-2.5 pr-2 align-middle tabular-nums">
                     {row.saves != null ? row.saves.toLocaleString() : "—"}
@@ -868,7 +880,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                           disabled={disableReelAnalysis}
                           onClick={() => setRecreateRow(row)}
                           className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 hover:underline disabled:cursor-not-allowed disabled:opacity-40 dark:text-emerald-300/90"
-                          title="Adapt this reel for your client (Generate)"
+                          title="Adapt for your client: same format & idea as this reel (opens Generate)"
                         >
                           <Clapperboard className="h-3 w-3 shrink-0" aria-hidden />
                           Recreate

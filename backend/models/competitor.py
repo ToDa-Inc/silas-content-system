@@ -57,3 +57,18 @@ class DiscoverBody(BaseModel):
     limit: int = 15
     threshold: int = 60
     posts_per_account: int = 8
+
+
+class NicheReelScrapeBody(BaseModel):
+    """Queue niche keyword reel search + enrich into scraped_reels (no competitors)."""
+
+    keyword: Optional[str] = None
+    keywords: Optional[List[str]] = None
+    keyword_mode: str = Field(
+        default="all",
+        description='Same as discovery: "all" | "de" | "en" for niche_config keywords',
+    )
+    max_items_per_keyword: int = Field(default=25, ge=5, le=80)
+    max_total_reels: int = Field(default=50, ge=5, le=200)
+    include_hashtags: bool = True
+    max_hashtag_queries: int = Field(default=6, ge=0, le=12)

@@ -24,7 +24,10 @@ def normalize_scraped_reel_row_for_api(reel: dict) -> dict:
 
 
 def enrich_engagement_metrics(reel: dict) -> dict:
-    """Mutates and returns ``reel`` with engagement_rate, comment_view_ratio, save_rate, share_rate (0–1 floats)."""
+    """Mutates and returns ``reel`` with engagement_rate, comment_view_ratio, save_rate, share_rate.
+
+    ``comment_view_ratio`` is views ÷ comments (e.g. 20 = 20 views per comment), not bounded to 0–1.
+    """
     v = _int_metric_val(reel.get("views"))
     l = _int_metric_val(reel.get("likes"))
     c = _int_metric_val(reel.get("comments"))
@@ -32,20 +35,20 @@ def enrich_engagement_metrics(reel: dict) -> dict:
     sh = _int_metric_val(reel.get("shares"))
     total_eng = l + c + s + sh
     reel["engagement_rate"] = round(total_eng / v, 4) if v > 0 else None
-    reel["comment_view_ratio"] = round(c / v, 4) if v > 0 else None
+    reel["comment_view_ratio"] = round(v / c, 4) if c > 0 else None
     reel["save_rate"] = round(s / v, 4) if v > 0 else None
     reel["share_rate"] = round(sh / v, 4) if v > 0 else None
     return reel
 
 
 def compute_niche_benchmarks(supabase: Client, client_id: str) -> Dict[str, Any]:
-    """Aggregates over competitor reels only (competitor_id IS NOT NULL)."""
+    """Aggregates over tracked competitor reels plus niche_search discoveries (excludes client_baseline)."""
     try:
         res = (
             supabase.table("scraped_reels")
             .select("views, likes, comments, saves, shares, video_duration")
             .eq("client_id", client_id)
-            .not_.is_("competitor_id", "null")
+            .or_("competitor_id.not.is.null,source.eq.niche_search")
             .execute()
         )
     except Exception:

@@ -10,6 +10,7 @@ import {
   getContentApiBase,
 } from "@/lib/api-client";
 import { AnalyzeReelTrigger } from "./analyze-reel-trigger";
+import { NicheReelScrapeButton } from "./niche-reel-scrape-button";
 import {
   INTELLIGENCE_TOOLBAR_ICON_CLASS,
   INTELLIGENCE_TOOLBAR_SYNC_LABELED_CLASS,
@@ -177,6 +178,16 @@ export function IntelligenceToolbar({
           )}
           {showSyncLabel ? <span>Sync</span> : null}
         </button>
+        <NicheReelScrapeButton
+          clientSlug={clientSlug}
+          orgSlug={orgSlug}
+          disabled={disabled}
+          disabledHint={disabledHint}
+          onMessage={(msg, tone) => {
+            setToolbarMessage(msg);
+            setToolbarTone(tone);
+          }}
+        />
         <AnalyzeReelTrigger
           clientSlug={clientSlug}
           orgSlug={orgSlug}

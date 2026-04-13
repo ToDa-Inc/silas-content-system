@@ -178,3 +178,12 @@ class ScrapedReelOut(BaseModel):
     save_rate: Optional[float] = None
     share_rate: Optional[float] = None
     analysis: Optional[ReelAnalysisSummary] = None
+    # Replicate suggestions (set only by replicate-suggestions endpoint)
+    outbreaker_ratio: Optional[float] = None
+    outbreaker_ratio_source: Optional[str] = None
+    # Activity lanes (set by trending / proven / growth helpers)
+    trending_ratio: Optional[float] = None
+    growth_views: Optional[int] = None
+    growth_likes: Optional[int] = None
+    growth_comments: Optional[int] = None
+    proven_growth_source: Optional[str] = None

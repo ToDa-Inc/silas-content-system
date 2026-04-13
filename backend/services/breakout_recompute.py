@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from supabase import Client
 
+from services.first_day_stats import update_milestones_for_competitor
+
 DEFAULT_OUTLIER_RATIO_THRESHOLD = 5.0
 
 
@@ -116,6 +118,14 @@ def recompute_breakouts_for_client(supabase: Client, *, client_id: str) -> Dict[
                 "avg_comments": avg_c,
             }
         ).eq("id", comp_id).eq("client_id", client_id).execute()
+
+        try:
+            update_milestones_for_competitor(
+                supabase, competitor_id=comp_id, client_id=client_id
+            )
+        except Exception:
+            pass
+
         competitors_updated += 1
 
         for r in comp_rows:

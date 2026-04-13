@@ -24,6 +24,32 @@ export function formatFastApiError(json: unknown, fallback: string): string {
 import { createClient } from "@/lib/supabase/client";
 import { resolveTenancy } from "@/lib/tenancy";
 
+/** One in-flight GET — many `clientApiHeaders` calls share a single session read per burst. */
+let preferredClientSlugFromSession: Promise<string | null> | null = null;
+
+async function getPreferredClientSlugFromSession(): Promise<string | null> {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  if (preferredClientSlugFromSession) {
+    return preferredClientSlugFromSession;
+  }
+  preferredClientSlugFromSession = (async () => {
+    try {
+      const r = await fetch("/api/session/active-client", { method: "GET", cache: "no-store" });
+      if (!r.ok) return null;
+      const j = (await r.json()) as { slug?: string | null };
+      const s = (j.slug ?? "").trim();
+      return s || null;
+    } catch {
+      return null;
+    } finally {
+      preferredClientSlugFromSession = null;
+    }
+  })();
+  return preferredClientSlugFromSession;
+}
+
 export type ClientApiHeaderOptions = {
   /** Explicit org override; otherwise `resolveTenancy` + `X-Org-Slug` from Supabase (no repo `.env` default). */
   orgSlug?: string;
@@ -57,7 +83,8 @@ export async function clientApiContext(opts?: ClientApiHeaderOptions): Promise<{
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  const tenancy = await resolveTenancy(supabase, user?.id);
+  const preferred = await getPreferredClientSlugFromSession();
+  const tenancy = await resolveTenancy(supabase, user?.id, preferred);
   const orgSlug = opts?.orgSlug?.trim() || tenancy?.orgSlug || "";
   const clientSlug = tenancy?.clientSlug?.trim() || "";
 
@@ -104,16 +131,18 @@ export async function fetchReelAnalysisDetail(
   }
 }
 
-/** Competitor reels with highest comments÷views (for Generate → adapt URL quick picks). */
-export async function fetchAdaptPreviewReels(
+/** Outbreaker reels posted in the last N hours for the Replicate section. */
+export async function fetchReplicateSuggestions(
   clientSlug: string,
   orgSlug: string,
+  hours: number = 24,
+  limit: number = 8,
 ): Promise<{ ok: true; data: ScrapedReelRow[] } | { ok: false; error: string }> {
   const base = getContentApiBase();
   const headers = await clientApiHeaders({ orgSlug });
   try {
     const res = await contentApiFetch(
-      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/reels/adapt-preview?limit=5`,
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/reels/replicate-suggestions?hours=${hours}&limit=${limit}`,
       { headers },
     );
     const json = (await res.json().catch(() => [])) as unknown;
@@ -288,7 +317,7 @@ export type FormatDigestSummary = {
   reel_count?: number | null;
   mature_count?: number | null;
   avg_engagement?: number | null;
-  /** Mean comments/views over mature reels in this format (0–1). */
+  /** Mean views ÷ comments over mature reels in this format. */
   avg_comment_view_ratio?: number | null;
   avg_save_rate?: number | null;
   avg_share_rate?: number | null;

@@ -83,11 +83,11 @@ def is_digest_stale(supabase: Client, client_id: str) -> bool:
 
 
 def _digest_summary_sort_key(row: Dict[str, Any]) -> tuple:
-    """Prefer avg_comment_view_ratio for ordering; fall back to legacy avg_engagement."""
+    """Prefer avg_comment_view_ratio (views ÷ comments, lower = more discussion per view); fall back to avg_engagement."""
     cvr = row.get("avg_comment_view_ratio")
     if cvr is not None:
         try:
-            return (0, -float(cvr))
+            return (0, float(cvr))
         except (TypeError, ValueError):
             pass
     ae = row.get("avg_engagement")
@@ -283,7 +283,8 @@ def compute_format_digests(
             cvr = m.get("comment_view_ratio")
             if cvr is not None:
                 try:
-                    return float(cvr)
+                    # Lower views÷comments = more discussion per view → higher rank (sort reverse=True).
+                    return -float(cvr)
                 except (TypeError, ValueError):
                     pass
             er = m.get("engagement_rate")

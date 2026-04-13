@@ -42,6 +42,11 @@ from services.content_generation import (
     run_script_adaptation_synthesis,
 )
 from services.format_classifier import canonicalize_stored_format_key
+
+
+def _session_adapts_single_reference_reel(row: Dict[str, Any]) -> bool:
+    """True when patterns were synthesized from one competitor reel (URL adapt)."""
+    return str(row.get("source_type") or "").strip() == "url_adapt"
 from services.format_digest import (
     compute_format_digests,
     ensure_format_digests_fresh,
@@ -339,6 +344,7 @@ def generation_start(
                 client_row=client_row,
                 synthesized_patterns=patterns,
                 extra_instruction=extra_adapt,
+                adapt_single_reference_reel=True,
             )
             if one.get("id"):
                 analysis_ids.append(str(one["id"]))
@@ -510,6 +516,7 @@ def generation_choose_angle(
             synthesized_patterns=patterns,
             chosen_angle=chosen,
             source_format_key=fk,
+            adapt_single_reference_reel=_session_adapts_single_reference_reel(row),
         )
     except Exception as e:
         logger.exception("generation choose-angle failed")
@@ -591,6 +598,7 @@ def generation_regenerate(
             current_stories=stories,
             source_format_key=fk,
             current_text_blocks=cur_tb,
+            adapt_single_reference_reel=_session_adapts_single_reference_reel(row),
         )
     except Exception as e:
         logger.exception("generation regenerate failed")

@@ -9,7 +9,8 @@ from typing import Any, Dict, List, Optional
 from core.config import Settings
 from core.database import get_supabase_for_settings
 from core.id_generator import generate_competitor_id
-from services.apify import SEARCH_ACTOR, instagram_reel_scraper_input, run_actor, run_keyword_reel_search
+from services.apify import SEARCH_ACTOR, instagram_reel_scraper_input, run_actor
+from services.niche_queries import collect_keywords
 from services.apify_reel_fields import video_duration_seconds_from_item
 from services.instagram_account_lookup import fetch_instagram_user_by_username
 from services.competitor_scoring import evaluate_competitor
@@ -194,74 +195,6 @@ def _scrape_account_posts(
     return posts
 
 
-def _pick_default_keyword(niche_config: List) -> str:
-    if not niche_config:
-        return "instagram marketing"
-    n0 = niche_config[0]
-    k_de = n0.get("keywords_de") or []
-    k_en = n0.get("keywords") or []
-    if k_de:
-        return str(k_de[0])
-    if k_en:
-        return str(k_en[0])
-    return str(n0.get("name") or "content creator")
-
-
-def _collect_hashtag_queries(niches: List, max_q: int = 6) -> List[str]:
-    """Topic hashtags from niche_config (auto-profile). Used as reel-search keywords."""
-    out: List[str] = []
-    seen: set[str] = set()
-    for n in niches or []:
-        if not isinstance(n, dict):
-            continue
-        for key in ("hashtags", "hashtags_de"):
-            for h in n.get(key) or []:
-                s = str(h).strip().lstrip("#")
-                if not s:
-                    continue
-                low = s.lower()
-                if low in seen:
-                    continue
-                seen.add(low)
-                out.append(s)
-                if len(out) >= max_q:
-                    return out
-    return out
-
-
-def _collect_keywords(niches: List, payload: Dict[str, Any]) -> List[str]:
-    """Same idea as scripts/competitor-batch-discover.js (--keywords / --lang)."""
-    raw = payload.get("keywords")
-    if isinstance(raw, list) and len(raw) > 0:
-        out = [str(x).strip() for x in raw if str(x).strip()]
-        if out:
-            return out
-    one = payload.get("keyword")
-    if one and str(one).strip():
-        return [str(one).strip()]
-    mode = str(payload.get("keyword_mode") or "all").lower()
-    if mode not in ("all", "de", "en"):
-        mode = "all"
-    seen: set[str] = set()
-    ordered: List[str] = []
-    for n in niches or []:
-        if mode in ("all", "de"):
-            for k in n.get("keywords_de") or []:
-                s = str(k).strip()
-                if s and s not in seen:
-                    seen.add(s)
-                    ordered.append(s)
-        if mode in ("all", "en"):
-            for k in n.get("keywords") or []:
-                s = str(k).strip()
-                if s and s not in seen:
-                    seen.add(s)
-                    ordered.append(s)
-    if not ordered:
-        return [_pick_default_keyword(niches)]
-    return ordered
-
-
 def _latest_valid_baseline(supabase, client_id: str) -> Optional[dict]:
     res = (
         supabase.table("client_baselines")
@@ -319,7 +252,7 @@ def run_competitor_discovery(settings: Settings, job: Dict[str, Any]) -> None:
     limit = int(payload.get("limit") or 15)
     threshold = int(payload.get("threshold") or 60)
     posts_per = int(payload.get("posts_per_account") or 8)
-    keywords_list = _collect_keywords(cfg["niches"], payload)
+    keywords_list = collect_keywords(cfg["niches"], payload)
 
     products = client.get("products") or {}
     raw_seeds = products.get("competitor_seeds") if isinstance(products, dict) else []

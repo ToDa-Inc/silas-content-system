@@ -48,6 +48,9 @@ const MAX_SERIES = 8;
 
 type MetricKey = "views" | "likes" | "comments";
 type ChartKind = "line" | "area" | "bars";
+/** Presets use the latest snapshot as the window end; custom uses calendar from/to (local day bounds). */
+type PresetTimeRange = "30d" | "90d" | "all";
+type TrendTimeRange = PresetTimeRange | "custom";
 
 type ChartRow = Record<string, string | number | null | undefined>;
 
@@ -76,6 +79,72 @@ function latestMetricValue(r: OwnReelsMetricsSeries, m: MetricKey): number {
     if (v !== null) return v;
   }
   return 0;
+}
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+function filterReelsByTimeRange(
+  reels: OwnReelsMetricsSeries[],
+  range: PresetTimeRange,
+): OwnReelsMetricsSeries[] {
+  if (range === "all") return reels;
+  const days = range === "30d" ? 30 : 90;
+  let anchor = 0;
+  for (const r of reels) {
+    for (const p of r.points) {
+      const t = new Date(p.scraped_at).getTime();
+      if (Number.isFinite(t)) anchor = Math.max(anchor, t);
+    }
+  }
+  if (!anchor) return reels;
+  const cut = anchor - days * MS_PER_DAY;
+  return reels.map((r) => ({
+    ...r,
+    points: r.points.filter((p) => new Date(p.scraped_at).getTime() >= cut),
+  }));
+}
+
+function toYmdLocal(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** Default custom range: last 30 days before newest snapshot (same idea as the 30d preset). */
+function defaultCustomBounds(
+  reels: OwnReelsMetricsSeries[],
+): { from: string; to: string } {
+  let anchor = 0;
+  for (const r of reels) {
+    for (const p of r.points) {
+      const t = new Date(p.scraped_at).getTime();
+      if (Number.isFinite(t)) anchor = Math.max(anchor, t);
+    }
+  }
+  if (!anchor) return { from: "", to: "" };
+  const toD = new Date(anchor);
+  const fromD = new Date(anchor - 30 * MS_PER_DAY);
+  return { from: toYmdLocal(fromD), to: toYmdLocal(toD) };
+}
+
+function filterReelsByCustomRange(
+  reels: OwnReelsMetricsSeries[],
+  fromYmd: string,
+  toYmd: string,
+): OwnReelsMetricsSeries[] {
+  if (!fromYmd || !toYmd) return reels;
+  let startMs = new Date(`${fromYmd}T00:00:00`).getTime();
+  let endMs = new Date(`${toYmd}T23:59:59.999`).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return reels;
+  if (startMs > endMs) [startMs, endMs] = [endMs, startMs];
+  return reels.map((r) => ({
+    ...r,
+    points: r.points.filter((p) => {
+      const t = new Date(p.scraped_at).getTime();
+      return Number.isFinite(t) && t >= startMs && t <= endMs;
+    }),
+  }));
 }
 
 function pickSeries(
@@ -184,6 +253,9 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
   const { resolvedTheme } = useTheme();
   const [metric, setMetric] = useState<MetricKey>("views");
   const [chartKind, setChartKind] = useState<ChartKind>("line");
+  const [timeRange, setTimeRange] = useState<TrendTimeRange>("all");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
   const [raw, setRaw] = useState<OwnReelsMetricsSeries[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const canFetch = Boolean(clientSlug.trim() && orgSlug.trim());
@@ -215,6 +287,16 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
     };
   }, [canFetch, clientSlug, orgSlug]);
 
+  useEffect(() => {
+    if (timeRange !== "custom" || !raw?.length) return;
+    if (customFrom && customTo) return;
+    const d = defaultCustomBounds(raw);
+    if (d.from && d.to) {
+      setCustomFrom(d.from);
+      setCustomTo(d.to);
+    }
+  }, [timeRange, raw, customFrom, customTo]);
+
   const isDark = resolvedTheme !== "light";
   const tickFill = isDark ? "#e4e4e7" : "#3f3f46";
   const axisLineStroke = isDark ? "rgba(244,244,245,0.4)" : "rgba(24,24,27,0.35)";
@@ -225,9 +307,35 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
 
   const effectiveRaw = canFetch ? raw : null;
 
+  const snapshotYmdBounds = useMemo(() => {
+    if (!effectiveRaw?.length) return { min: "", max: "" };
+    let lo = Infinity;
+    let hi = 0;
+    for (const r of effectiveRaw) {
+      for (const p of r.points) {
+        const t = new Date(p.scraped_at).getTime();
+        if (Number.isFinite(t)) {
+          lo = Math.min(lo, t);
+          hi = Math.max(hi, t);
+        }
+      }
+    }
+    if (!Number.isFinite(lo) || !hi) return { min: "", max: "" };
+    return { min: toYmdLocal(new Date(lo)), max: toYmdLocal(new Date(hi)) };
+  }, [effectiveRaw]);
+
+  const rangeFilteredRaw = useMemo(() => {
+    if (!effectiveRaw) return null;
+    if (timeRange === "custom") {
+      if (!customFrom || !customTo) return effectiveRaw;
+      return filterReelsByCustomRange(effectiveRaw, customFrom, customTo);
+    }
+    return filterReelsByTimeRange(effectiveRaw, timeRange);
+  }, [effectiveRaw, timeRange, customFrom, customTo]);
+
   const series = useMemo(
-    () => (effectiveRaw ? pickSeries(effectiveRaw, metric) : []),
-    [effectiveRaw, metric],
+    () => (rangeFilteredRaw ? pickSeries(rangeFilteredRaw, metric) : []),
+    [rangeFilteredRaw, metric],
   );
 
   const { rows, dataKeys, labels } = useMemo(
@@ -249,6 +357,17 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
   const hasAnyPoint = rows.some((row) =>
     dataKeys.some((k) => row[k] != null && row[k] !== ""),
   );
+
+  const hasSnapshotsInRange = useMemo(() => {
+    if (!rangeFilteredRaw) return false;
+    return rangeFilteredRaw.some((r) => r.points.length > 0);
+  }, [rangeFilteredRaw]);
+
+  const rangeHasNoSnapshots =
+    Boolean(effectiveRaw?.length) &&
+    timeRange !== "all" &&
+    !(timeRange === "custom" && (!customFrom || !customTo)) &&
+    !hasSnapshotsInRange;
 
   const hasBarData = barRows.some((r) => r.v > 0);
 
@@ -293,7 +412,8 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
           <h2 className="text-sm font-semibold text-app-fg">Trends over time</h2>
           <p className="text-[11px] text-app-fg-muted">
             Lines carry each reel&apos;s last known value forward between syncs so trends stay readable ·
-            2+ syncs recommended · One snapshot → bar comparison · Bars = latest per reel
+            2+ syncs recommended · One snapshot → bar comparison · Bars = latest per reel · Presets end at
+            your newest sync; custom range uses calendar dates (snapshot timestamps in your timezone)
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -320,27 +440,91 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
         </div>
       </div>
 
-      <div className="mb-4 flex flex-wrap items-center gap-2 border-b border-app-divider pb-4">
-        {(["views", "likes", "comments"] as const).map((m) => (
+      <div className="mb-4 space-y-3 border-b border-app-divider pb-4">
+        <div className="flex flex-wrap items-center gap-2">
+          {(["views", "likes", "comments"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setMetric(m)}
+              className={
+                metric === m
+                  ? "rounded-full bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-white dark:bg-white dark:text-zinc-900"
+                  : "rounded-full border border-app-card-border bg-app-chip-bg px-3 py-1.5 text-xs font-medium text-app-fg-secondary transition-colors hover:bg-app-chip-bg-hover"
+              }
+            >
+              {m.charAt(0).toUpperCase() + m.slice(1)}
+            </button>
+          ))}
+          <span className="hidden h-4 w-px shrink-0 bg-app-divider sm:block" aria-hidden />
+          {(
+            [
+              ["30d", "Last month"],
+              ["90d", "Last 3 months"],
+              ["all", "Historic"],
+            ] as const
+          ).map(([k, label]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setTimeRange(k)}
+              className={
+                timeRange === k
+                  ? "rounded-full border border-app-accent/40 bg-app-accent/15 px-3 py-1.5 text-xs font-semibold text-app-accent"
+                  : "rounded-full border border-app-card-border bg-app-chip-bg px-3 py-1.5 text-xs font-medium text-app-fg-secondary transition-colors hover:bg-app-chip-bg-hover"
+              }
+            >
+              {label}
+            </button>
+          ))}
           <button
-            key={m}
             type="button"
-            onClick={() => setMetric(m)}
+            onClick={() => setTimeRange("custom")}
             className={
-              metric === m
-                ? "rounded-full bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-white dark:bg-white dark:text-zinc-900"
+              timeRange === "custom"
+                ? "rounded-full border border-app-accent/40 bg-app-accent/15 px-3 py-1.5 text-xs font-semibold text-app-accent"
                 : "rounded-full border border-app-card-border bg-app-chip-bg px-3 py-1.5 text-xs font-medium text-app-fg-secondary transition-colors hover:bg-app-chip-bg-hover"
             }
           >
-            {m.charAt(0).toUpperCase() + m.slice(1)}
+            Custom range
           </button>
-        ))}
-        <Link
-          href="/intelligence"
-          className="ml-auto rounded-full border border-app-card-border px-3 py-1.5 text-xs font-semibold text-app-accent hover:bg-app-chip-bg"
-        >
-          Intelligence
-        </Link>
+          <Link
+            href="/intelligence"
+            className="ml-auto rounded-full border border-app-card-border px-3 py-1.5 text-xs font-semibold text-app-accent hover:bg-app-chip-bg"
+          >
+            Intelligence
+          </Link>
+        </div>
+        {timeRange === "custom" && effectiveRaw?.length ? (
+          <div
+            className="flex flex-wrap items-center gap-3 pl-0.5"
+            role="group"
+            aria-label="Custom date range"
+          >
+            <label className="flex items-center gap-2 text-[11px] text-app-fg-muted">
+              <span className="shrink-0 font-medium text-app-fg-secondary">From</span>
+              <input
+                type="date"
+                value={customFrom}
+                onChange={(e) => setCustomFrom(e.target.value)}
+                min={snapshotYmdBounds.min || undefined}
+                max={customTo || snapshotYmdBounds.max || undefined}
+                className="rounded-lg border border-app-card-border bg-app-chip-bg px-2 py-1.5 text-xs text-app-fg [color-scheme:light] dark:[color-scheme:dark]"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-[11px] text-app-fg-muted">
+              <span className="shrink-0 font-medium text-app-fg-secondary">To</span>
+              <input
+                type="date"
+                value={customTo}
+                onChange={(e) => setCustomTo(e.target.value)}
+                min={customFrom || snapshotYmdBounds.min || undefined}
+                max={snapshotYmdBounds.max || undefined}
+                className="rounded-lg border border-app-card-border bg-app-chip-bg px-2 py-1.5 text-xs text-app-fg [color-scheme:light] dark:[color-scheme:dark]"
+              />
+            </label>
+          </div>
+        ) : null}
       </div>
 
       {!canFetch ? (
@@ -364,6 +548,14 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
           >
             Open Intelligence
           </Link>
+        </div>
+      ) : rangeHasNoSnapshots ? (
+        <div className="space-y-2 py-12 text-center">
+          <p className="text-sm font-medium text-app-fg">No snapshots in this range</p>
+          <p className="text-xs text-app-fg-muted">
+            Try <strong className="text-app-fg">Historic</strong> or widen your custom dates, or sync reels
+            again so data falls inside the window.
+          </p>
         </div>
       ) : chartKind === "bars" ? (
         !hasBarData ? (

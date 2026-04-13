@@ -368,13 +368,28 @@ def run_angle_generation(
     client_row: Dict[str, Any],
     synthesized_patterns: Dict[str, Any],
     extra_instruction: Optional[str],
+    adapt_single_reference_reel: bool = False,
 ) -> List[Dict[str, Any]]:
     lang = _lang_instruction(str(client_row.get("language") or "de"))
+    if adapt_single_reference_reel:
+        task = (
+            "TASK: PATTERNS_JSON was built from ONE competitor Instagram reel we are adapting for this client. "
+            "Propose exactly 5 ANGLES. Each angle must be a different client-specific EXECUTION of the SAME "
+            "underlying reel — same video format type, same structural beats and hook mechanism implied by the "
+            "patterns (e.g. text-overlay cadence vs talking-head sections), same \"job\" the video does for the "
+            "viewer — but with distinct situations, examples, and wording for this ICP and language. "
+            "Do NOT propose five unrelated video concepts; each title should read like another take on the same "
+            "viral recipe.\n\n"
+        )
+    else:
+        task = (
+            "TASK: Propose exactly 5 content ANGLES for this client — not generic topics. "
+            "Each angle must name a concrete, recognizable situation for the ICP described in the briefs "
+            "(e.g. workplace, client calls, leadership — whatever matches GENERATION_BRIEF and ICP).\n\n"
+        )
     user = (
         f"{lang}\n\n"
-        "TASK: Propose exactly 5 content ANGLES for this client — not generic topics. "
-        "Each angle must name a concrete, recognizable situation for the ICP described in the briefs "
-        "(e.g. workplace, client calls, leadership — whatever matches GENERATION_BRIEF and ICP).\n\n"
+        f"{task}"
         "Output JSON: {\"angles\": [ {...}, ... ]} with exactly 5 objects. Each object:\n"
         "{\n"
         '  "title": string (short label),\n'
@@ -477,6 +492,7 @@ def run_content_package(
     previous: Optional[Dict[str, Any]] = None,
     source_format_key: Optional[str] = None,
     german_polish: GermanPolishMode = "full",
+    adapt_single_reference_reel: bool = False,
 ) -> Dict[str, Any]:
     lang = _lang_instruction(str(client_row.get("language") or "de"))
     prev_note = ""
@@ -506,9 +522,24 @@ def run_content_package(
             "- CTA: \"👇 Schreib 'KEYWORD' für …\" matching the offer.\n"
             "- Derive from CHOSEN_ANGLE_JSON — not a script summary.\n"
         )
+    adapt_block = ""
+    if adapt_single_reference_reel:
+        adapt_block = (
+            "\nREFERENCE_REEL_ADAPTATION (non-negotiable):\n"
+            "PATTERNS_JSON comes from a single competitor reel. Treat it as a blueprint of THAT video, not a "
+            "generic style guide.\n"
+            "- Keep the same format class and beat structure implied by format_insights and hook_patterns "
+            "(e.g. text-on-B-roll cadence vs talking-head sections). Do not switch to a different production "
+            "format unless the patterns clearly describe that format.\n"
+            "- Preserve the core idea or payoff the viewer gets from the source reel; replace settings, "
+            "examples, names, and language so everything fits this client's ICP and CLIENT_CONTEXT.\n"
+            "- Hooks, script, caption, and text_blocks must all feel like the same adapted reel, not a new "
+            "unrelated concept.\n\n"
+        )
     user = (
         f"{lang}\n\n"
         "TASK: Write a full Instagram Reels copy package for ONE chosen angle.\n\n"
+        f"{adapt_block}"
         "Output JSON with this exact shape:\n"
         f"{json_shape}\n"
         "Rules:\n"
@@ -595,6 +626,7 @@ def run_regenerate(
     current_stories: List[str],
     source_format_key: Optional[str] = None,
     current_text_blocks: Optional[List[Dict[str, Any]]] = None,
+    adapt_single_reference_reel: bool = False,
 ) -> Dict[str, Any]:
     """Regenerate all or one facet; one LLM call, then merge by scope."""
     polish_for_scope: Dict[str, GermanPolishMode] = {
@@ -622,6 +654,7 @@ def run_regenerate(
         previous=previous,
         source_format_key=source_format_key,
         german_polish=german_polish,
+        adapt_single_reference_reel=adapt_single_reference_reel,
     )
     if scope == "all":
         return full
@@ -658,8 +691,16 @@ def run_adaptation_synthesis(
     lang = _lang_instruction(str(client_row.get("language") or "de"))
     user = (
         f"{lang}\n\n"
-        "TASK: This reel is the TEMPLATE to adapt for the client below. Extract "
-        "repeatable structure, hooks, tension, and value delivery — then output JSON "
+        "TASK: This reel is the sole TEMPLATE to adapt for the client below — same format and creative idea, "
+        "rewritten for the client's world (language, ICP, offer). Separate three layers in your reasoning "
+        "(reflect this in the JSON fields):\n"
+        "(1) FORMAT RECIPE: production type (e.g. talking head, B-roll + on-screen text, carousel-style beats), "
+        "pacing, visual rhythm, and segment order — what must stay the same in a faithful adaptation.\n"
+        "(2) CORE IDEA: the one-line promise or transformation the viewer gets; the mechanism that made the reel "
+        "work — keep this intent while swapping surface details.\n"
+        "(3) SURFACE TO LOCALIZE: examples, setting, jargon, competitor-specific context to replace using "
+        "CLIENT_CONTEXT.\n"
+        "Extract repeatable structure, hooks, tension, and value delivery — then output JSON "
         "with the same shape as pattern synthesis:\n"
         "{\n"
         '  "hook_patterns": [{"name": string, "description": string, "example_from_data": string}],\n'
@@ -671,7 +712,9 @@ def run_adaptation_synthesis(
         '  "performance_summary": string,\n'
         '  "one_paragraph_synthesis": string\n'
         "}\n\n"
-        "Use the PERFORMANCE block when present to note what worked in context.\n\n"
+        "Use the PERFORMANCE block when present to note what worked in context.\n"
+        "In one_paragraph_synthesis, explicitly name: (a) format recipe to preserve, (b) core idea / viewer "
+        "payoff to preserve, (c) what must be localized for the client.\n\n"
         f"CLIENT_CONTEXT:\n{_pack_client_row_for_llm(client_row)[:100_000]}\n\n"
         f"SOURCE_REEL_ANALYSIS_JSON:\n{json.dumps(packed_analysis, ensure_ascii=False)[:120_000]}\n"
     )

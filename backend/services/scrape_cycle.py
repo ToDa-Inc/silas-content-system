@@ -227,3 +227,106 @@ def enqueue_sync_all_jobs_all_clients(supabase: Client) -> Dict[str, Any]:
         "profile_jobs_queued": total_profile_queued,
         "profile_jobs_skipped": total_profile_skipped,
     }
+
+
+# ---------------------------------------------------------------------------
+# Milestone scrapes — enqueue per-reel jobs for reels crossing 24h/48h/72h
+# ---------------------------------------------------------------------------
+
+_MILESTONE_HOURS = (24, 48, 72)
+_MILESTONE_MAX_AGE_HOURS = 96  # ignore reels older than this
+
+
+def enqueue_milestone_scrapes_for_client(
+    supabase: Client, *, org_id: str, client_id: str
+) -> Dict[str, Any]:
+    """Enqueue milestone_scrape jobs for competitor reels that just crossed a milestone."""
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(hours=_MILESTONE_MAX_AGE_HOURS)
+    since_iso = since.isoformat()
+
+    reel_res = (
+        supabase.table("scraped_reels")
+        .select(
+            "id, post_url, posted_at, competitor_id, "
+            "milestone_24h_at, milestone_48h_at, milestone_72h_at"
+        )
+        .eq("client_id", client_id)
+        .not_.is_("competitor_id", "null")
+        .not_.is_("posted_at", "null")
+        .gte("posted_at", since_iso)
+        .execute()
+    )
+    reels: List[dict] = reel_res.data or []
+    if not reels:
+        return {"reels_checked": 0, "jobs_queued": 0, "jobs_skipped": 0}
+
+    queued = 0
+    skipped = 0
+    for r in reels:
+        posted = _parse_ts(r.get("posted_at"))
+        if posted is None:
+            continue
+        reel_url = (r.get("post_url") or "").strip()
+        if not reel_url:
+            continue
+        competitor_id = r.get("competitor_id")
+        if not competitor_id:
+            continue
+
+        for h in _MILESTONE_HOURS:
+            ts_col = f"milestone_{h}h_at"
+            if r.get(ts_col) is not None:
+                continue
+            if now < posted + timedelta(hours=h):
+                continue
+
+            if has_active_job(
+                supabase,
+                job_type="milestone_scrape",
+                client_id=client_id,
+                payload_match={"reel_id": r["id"], "milestone_hours": h},
+            ):
+                skipped += 1
+                continue
+
+            supabase.table("background_jobs").insert({
+                "id": generate_job_id(),
+                "org_id": org_id,
+                "client_id": client_id,
+                "job_type": "milestone_scrape",
+                "payload": {
+                    "reel_id": r["id"],
+                    "reel_url": reel_url,
+                    "milestone_hours": h,
+                    "competitor_id": competitor_id,
+                    "posted_at": r["posted_at"],
+                },
+                "status": "queued",
+            }).execute()
+            queued += 1
+
+    return {"reels_checked": len(reels), "jobs_queued": queued, "jobs_skipped": skipped}
+
+
+def enqueue_milestone_scrapes_all_clients(supabase: Client) -> Dict[str, Any]:
+    """Enqueue milestone scrapes for all active clients."""
+    clients = supabase.table("clients").select("id, org_id").eq("is_active", True).execute()
+    total_reels = 0
+    total_queued = 0
+    total_skipped = 0
+    clients_checked = 0
+    for c in clients.data or []:
+        clients_checked += 1
+        stats = enqueue_milestone_scrapes_for_client(
+            supabase, org_id=c["org_id"], client_id=c["id"]
+        )
+        total_reels += stats["reels_checked"]
+        total_queued += stats["jobs_queued"]
+        total_skipped += stats["jobs_skipped"]
+    return {
+        "clients_checked": clients_checked,
+        "reels_checked": total_reels,
+        "milestone_jobs_queued": total_queued,
+        "milestone_jobs_skipped": total_skipped,
+    }

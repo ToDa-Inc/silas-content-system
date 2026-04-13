@@ -1,6 +1,6 @@
-/** Comments ÷ views (0–1), primary “conversation rate” signal for reels. */
+/** Views ÷ comments — vistas por cada comentario (p. ej. 20 → "20:1"). */
 
-export function commentViewRatio(row: {
+export function viewsToCommentsRatio(row: {
   views?: number | null;
   comments?: number | null;
   comment_view_ratio?: number | null;
@@ -11,12 +11,17 @@ export function commentViewRatio(row: {
   }
   const v = row.views;
   const c = row.comments;
-  if (v == null || c == null || v <= 0) return null;
-  return c / v;
+  if (v == null || c == null || c <= 0) return null;
+  return v / c;
 }
 
-export function formatCommentViewPct(row: Parameters<typeof commentViewRatio>[0]): string {
-  const r = commentViewRatio(row);
+export function formatViewsToCommentsValue(r: number): string {
+  if (!Number.isFinite(r) || r <= 0) return "—";
+  return `${Math.round(r)}:1`;
+}
+
+export function formatViewsToComments(row: Parameters<typeof viewsToCommentsRatio>[0]): string {
+  const r = viewsToCommentsRatio(row);
   if (r == null || Number.isNaN(r)) return "—";
-  return `${(r * 100).toFixed(2)}%`;
+  return formatViewsToCommentsValue(r);
 }

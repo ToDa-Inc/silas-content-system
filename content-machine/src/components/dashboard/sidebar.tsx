@@ -35,7 +35,8 @@ export function Sidebar({
   const [pendingHref, setPendingHref] = useState<string | null>(null);
 
   useEffect(() => {
-    setPendingHref(null);
+    const id = requestAnimationFrame(() => setPendingHref(null));
+    return () => cancelAnimationFrame(id);
   }, [pathname]);
 
   function navActive(href: string) {

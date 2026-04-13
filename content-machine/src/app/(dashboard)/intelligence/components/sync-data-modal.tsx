@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Loader2, RefreshCw, X } from "lucide-react";
 import {
   clientApiHeaders,
@@ -27,18 +27,21 @@ function useFakeProgress(active: boolean, fromPct: number, toPct: number) {
   const [pct, setPct] = useState(fromPct);
   useEffect(() => {
     if (!active) {
-      setPct(fromPct);
       return;
     }
-    setPct(fromPct);
     const start = Date.now();
     const span = toPct - fromPct;
+    let raf = 0;
     const iv = setInterval(() => {
       const t = Math.min(1, (Date.now() - start) / 12000);
       const eased = 1 - Math.exp(-3 * t);
       setPct(fromPct + span * eased);
     }, 160);
-    return () => clearInterval(iv);
+    raf = requestAnimationFrame(() => setPct(fromPct));
+    return () => {
+      cancelAnimationFrame(raf);
+      clearInterval(iv);
+    };
   }, [active, fromPct, toPct]);
   return active ? Math.min(toPct, pct) : fromPct;
 }
@@ -66,32 +69,45 @@ export function SyncDataModal({
   const animOwn = useFakeProgress(busy && progressPhase === "own", 0, 42);
   const animComp = useFakeProgress(busy && progressPhase === "competitors", 45, 93);
 
-  useEffect(() => {
-    if (!busy) return;
-    if (progressPhase === "own") setProgressPct(animOwn);
-    else if (progressPhase === "competitors") setProgressPct(animComp);
-    else setProgressPct(0);
-  }, [busy, progressPhase, animOwn, animComp]);
+  const barPercent =
+    busy && progressPhase === "own"
+      ? animOwn
+      : busy && progressPhase === "competitors"
+        ? animComp
+        : progressPct;
+
+  const closeModal = useCallback(() => {
+    if (busy) return;
+    setError(null);
+    setProgressLabel("");
+    setProgressPct(0);
+    setProgressStatus(null);
+    setProgressPhase("idle");
+    setMode("own");
+    onClose();
+  }, [busy, onClose]);
 
   useEffect(() => {
-    if (!open && !busy) {
+    if (open || busy) return;
+    const raf = requestAnimationFrame(() => {
       setError(null);
       setProgressLabel("");
       setProgressPct(0);
       setProgressStatus(null);
       setProgressPhase("idle");
       setMode("own");
-    }
+    });
+    return () => cancelAnimationFrame(raf);
   }, [open, busy]);
 
   useEffect(() => {
     if (!open) return;
     const h = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busy) onClose();
+      if (e.key === "Escape" && !busy) closeModal();
     };
     document.addEventListener("keydown", h);
     return () => document.removeEventListener("keydown", h);
-  }, [open, busy, onClose]);
+  }, [open, busy, closeModal]);
 
   async function runOwn(): Promise<boolean> {
     const apiBase = getContentApiBase();
@@ -260,7 +276,7 @@ export function SyncDataModal({
       role="dialog"
       aria-modal="true"
       aria-labelledby="sync-data-title"
-      onClick={() => !busy && onClose()}
+      onClick={() => closeModal()}
     >
       <div
         className="relative max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl border border-zinc-200/90 bg-zinc-50 p-5 shadow-2xl dark:border-white/12 dark:bg-zinc-950/95"
@@ -278,7 +294,7 @@ export function SyncDataModal({
           </div>
           <button
             type="button"
-            onClick={() => !busy && onClose()}
+            onClick={() => closeModal()}
             disabled={busy}
             className="rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-200/80 disabled:opacity-40 dark:text-app-fg-subtle dark:hover:bg-white/10"
             aria-label="Close"
@@ -291,7 +307,7 @@ export function SyncDataModal({
           <div className="mb-4">
             <IntelligenceProgressBar
               label={progressLabel}
-              percent={progressPct}
+              percent={barPercent}
               status={progressStatus}
             />
           </div>
@@ -371,7 +387,7 @@ export function SyncDataModal({
             </button>
             <button
               type="button"
-              onClick={() => onClose()}
+              onClick={() => closeModal()}
               className="inline-flex items-center justify-center rounded-xl border border-zinc-200/90 px-4 py-2.5 text-xs font-semibold text-zinc-800 dark:border-white/15 dark:text-app-fg dark:hover:bg-zinc-800"
             >
               Cancel

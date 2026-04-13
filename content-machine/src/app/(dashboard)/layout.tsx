@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { DashboardShell } from "@/components/dashboard/dashboard-shell";
 import { getCachedServerApiContext } from "@/lib/api";
 import { createClient } from "@/lib/supabase/server";
@@ -8,9 +9,12 @@ export default async function DashboardLayout({
   children: React.ReactNode;
 }) {
   const ctx = await getCachedServerApiContext();
-  let clients: { slug: string; name: string }[] = [];
+  if (ctx.user && !ctx.tenancy) {
+    redirect("/onboarding");
+  }
+  let clients: { slug: string; name: string }[] = ctx.workspaceClients ?? [];
 
-  if (ctx.user) {
+  if (ctx.workspaceClients === null && ctx.user) {
     const supabase = await createClient();
     const { data: mem } = await supabase
       .from("organization_members")

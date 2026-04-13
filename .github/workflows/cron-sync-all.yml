@@ -10,7 +10,7 @@ name: Cron sync-all
 
 on:
   schedule:
-    # 05:00 UTC daily — change as needed (GitHub cron is UTC only)
+    # Once daily at 05:00 UTC — milestone mini-cron handles recent reels every 2h
     - cron: "0 5 * * *"
   workflow_dispatch:
 

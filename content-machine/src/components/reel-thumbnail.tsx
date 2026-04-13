@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { cn } from "@/lib/cn";
 
 type Size = "sm" | "md";
@@ -36,12 +36,11 @@ const dim: Record<Size, string> = {
 };
 
 export function ReelThumbnail({ src, alt = "Reel thumbnail", href, size = "md", className }: Props) {
-  const [imgBroken, setImgBroken] = useState(false);
+  /** Which `url` last fired onError — avoids an effect when the thumbnail URL changes. */
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
 
   const url = src?.trim() ?? "";
-  useEffect(() => {
-    setImgBroken(false);
-  }, [url]);
+  const imgBroken = failedUrl === url && url.length > 0;
 
   const empty = (
     <div
@@ -81,7 +80,7 @@ export function ReelThumbnail({ src, alt = "Reel thumbnail", href, size = "md", 
         className="h-full w-full object-cover transition duration-300 ease-out group-hover:scale-[1.06] group-hover:brightness-[1.14]"
         loading="lazy"
         decoding="async"
-        onError={() => setImgBroken(true)}
+        onError={() => setFailedUrl(url)}
       />
       <span
         className="pointer-events-none absolute inset-0 rounded-[inherit] shadow-[inset_0_1px_0_rgba(255,255,255,0.12)] opacity-70 transition-opacity duration-300 group-hover:opacity-100 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]"

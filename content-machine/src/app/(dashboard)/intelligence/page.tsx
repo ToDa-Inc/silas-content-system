@@ -46,6 +46,12 @@ export default async function IntelligencePage() {
           ? "Pick a creator in the top bar or finish onboarding."
           : null;
   const loadError = !compRes.ok || !reelsRes.ok;
+  const loadErrorDetails = [
+    compRes.ok ? null : compRes.error,
+    reelsRes.ok ? null : reelsRes.error,
+  ]
+    .filter((s): s is string => Boolean(s && s.trim()))
+    .join(" · ");
 
   return (
     <main className="mx-auto max-w-[1100px] px-4 py-8 md:px-8">
@@ -85,9 +91,28 @@ export default async function IntelligencePage() {
       </header>
 
       {loadError ? (
-        <p className="mb-6 text-sm text-app-fg-muted">
-          Some data couldn&apos;t be loaded. Try refreshing in a moment.
-        </p>
+        <div className="mb-6 space-y-2">
+          <p className="text-sm text-app-fg-muted">
+            Some data couldn&apos;t be loaded. Try refreshing in a moment.
+          </p>
+          {loadErrorDetails ? (
+            <p className="text-xs leading-relaxed text-app-fg-subtle">
+              <span className="font-medium text-app-fg-secondary">Details: </span>
+              <span className="break-words font-mono">{loadErrorDetails}</span>
+            </p>
+          ) : null}
+          {loadErrorDetails.includes("401") ||
+          loadErrorDetails.toLowerCase().includes("missing api key") ? (
+            <p className="text-xs leading-relaxed text-app-fg-muted">
+              The server must send your profile API key to FastAPI. Ensure{" "}
+              <code className="rounded bg-zinc-200 px-1 dark:bg-zinc-800">SUPABASE_SERVICE_ROLE_KEY</code> is set
+              in the repo <code className="rounded bg-zinc-200 px-1 dark:bg-zinc-800">.env</code> (Next loads it via{" "}
+              <code className="rounded bg-zinc-200 px-1 dark:bg-zinc-800">next.config</code>), and that your user has
+              a row in <code className="rounded bg-zinc-200 px-1 dark:bg-zinc-800">profiles</code> with{" "}
+              <code className="rounded bg-zinc-200 px-1 dark:bg-zinc-800">api_key</code> (onboarding creates it).
+            </p>
+          ) : null}
+        </div>
       ) : null}
 
       {clientSlug.trim() && orgSlug.trim() ? (
@@ -100,7 +125,7 @@ export default async function IntelligencePage() {
       ) : null}
 
       {clientSlug.trim() && orgSlug.trim() ? (
-        <div className="mb-8 flex flex-col gap-4">
+        <div className="mb-8 grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-3">
           <BreakoutsTeaserCard count={reelsRes.ok ? nOutliers : "—"} />
           <CompetitorsTeaserCard count={compRes.ok ? competitors.length : "—"} />
         </div>

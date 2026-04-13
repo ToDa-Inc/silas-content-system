@@ -6,6 +6,8 @@ import { cache } from "react";
 import type { User } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
+import { resolveProfileApiKeyForServer } from "@/lib/supabase/service-admin";
+import { tryLoadServerWorkspace } from "@/lib/server-workspace";
 import { getContentApiBase } from "@/lib/env";
 import { resolveTenancy, type ResolvedTenancy } from "@/lib/tenancy";
 import { ACTIVE_CLIENT_SLUG_COOKIE } from "@/lib/workspace-cookie";
@@ -24,6 +26,11 @@ export type ServerApiContext = {
   orgSlug: string;
   user: User | null;
   tenancy: ResolvedTenancy | null;
+  /**
+   * Client list for the sidebar when workspace was loaded with the service role.
+   * `null` means the anon/RLS path was used instead — layout may run its own query.
+   */
+  workspaceClients: { slug: string; name: string }[] | null;
 };
 
 async function loadServerApiContext(): Promise<ServerApiContext> {
@@ -33,8 +40,20 @@ async function loadServerApiContext(): Promise<ServerApiContext> {
   } = await supabase.auth.getUser();
   const cookieStore = await cookies();
   const preferredClient = cookieStore.get(ACTIVE_CLIENT_SLUG_COOKIE)?.value ?? null;
-  const tenancy = await resolveTenancy(supabase, user?.id, preferredClient);
-  /** Org + client only from Supabase membership / cookie (`resolveTenancy`) — no `.env` fallbacks. */
+  let tenancy: ResolvedTenancy | null = null;
+  let workspaceClients: { slug: string; name: string }[] | null = null;
+
+  if (user?.id) {
+    const ws = await tryLoadServerWorkspace(user.id, preferredClient);
+    if (ws.ok) {
+      tenancy = ws.tenancy;
+      workspaceClients = ws.clients;
+    } else {
+      tenancy = await resolveTenancy(supabase, user.id, preferredClient);
+    }
+  }
+
+  /** Org + client from service-role workspace when available, else anon `resolveTenancy`. */
   const orgSlug = tenancy?.orgSlug || "";
   const clientSlug = tenancy?.clientSlug?.trim() || "";
 
@@ -48,11 +67,18 @@ async function loadServerApiContext(): Promise<ServerApiContext> {
       .select("api_key")
       .eq("id", user.id)
       .maybeSingle();
-    if (profile?.api_key) {
-      h["X-Api-Key"] = profile.api_key;
+    let apiKey =
+      typeof profile?.api_key === "string" && profile.api_key.trim()
+        ? profile.api_key.trim()
+        : null;
+    if (!apiKey) {
+      apiKey = await resolveProfileApiKeyForServer(user.id);
+    }
+    if (apiKey) {
+      h["X-Api-Key"] = apiKey;
     }
   }
-  return { headers: h, clientSlug, orgSlug, user, tenancy };
+  return { headers: h, clientSlug, orgSlug, user, tenancy, workspaceClients };
 }
 
 export const getCachedServerApiContext = cache(loadServerApiContext);
@@ -172,7 +198,7 @@ export type ScrapedReelRow = {
   last_updated_at: string | null;
   source?: string | null;
   analysis?: ReelAnalysisSummary | null;
-  /** Present on GET /activity week_breakouts tops — delta vs snapshot at or before ~7d ago. */
+  /** Present on GET /activity week_breakouts tops — delta from snapshots in post-age window (days 8–14 by default). */
   growth_views?: number | null;
   growth_likes?: number | null;
   growth_comments?: number | null;
@@ -180,7 +206,7 @@ export type ScrapedReelRow = {
   video_duration?: number | null;
   /** API-computed: (likes+comments+saves+shares)/views when views > 0. */
   engagement_rate?: number | null;
-  /** API-computed: comments/views when views > 0. */
+  /** API-computed: views ÷ comments when comments > 0 (e.g. 20 = 20 views per comment). */
   comment_view_ratio?: number | null;
   save_rate?: number | null;
   share_rate?: number | null;
@@ -188,6 +214,10 @@ export type ScrapedReelRow = {
   trending_ratio?: number | null;
   /** GET /activity proven_performers — how growth_views was derived. */
   proven_growth_source?: "snapshots" | "raw_views" | null;
+  /** GET /reels/replicate-suggestions — views ÷ competitor avg_first_day_views. */
+  outbreaker_ratio?: number | null;
+  /** Whether ratio used milestone avg or fell back to lifetime account avg. */
+  outbreaker_ratio_source?: "milestone_avg" | "account_avg_fallback" | null;
 };
 
 export type ScrapeQueueStats = {
@@ -410,7 +440,12 @@ export type OwnReelGrowthItem = {
 
 export type WeekBreakoutsPayload = {
   /** When set, tops are from all stored reels (GET /reels), not weekly competitor breakouts. */
-  scope?: "all_stored" | "weekly_breakouts" | "growth_7d";
+  scope?: "all_stored" | "weekly_breakouts" | "growth_7d" | "growth_7d_post_age";
+  /** growth_7d_post_age: window is posted_at + maturity_days … + measure_days (not scrape time). */
+  anchor?: string | null;
+  maturity_days?: number | null;
+  measure_days?: number | null;
+  min_post_age_days?: number | null;
   window_start?: string | null;
   window_end?: string | null;
   days: number;
@@ -427,7 +462,7 @@ export type NicheBenchmarksPayload = {
   niche_avg_views: number | null;
   niche_avg_likes: number | null;
   niche_avg_engagement_rate: number | null;
-  /** Mean comments/views over competitor reels (when API sends niche benchmarks). */
+  /** Mean views ÷ comments over competitor reels (when API sends niche benchmarks). */
   niche_avg_comment_view_ratio?: number | null;
   niche_avg_duration_seconds: number | null;
 };

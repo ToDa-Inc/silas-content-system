@@ -105,7 +105,7 @@ export function BreakoutsReelsGrid({ reels, clientSlug, orgSlug }: Props) {
                   type="button"
                   onClick={() => setRecreateRow(row)}
                   className="inline-flex items-center gap-1 font-semibold text-emerald-700 hover:underline dark:text-emerald-300/90"
-                  title="Adapt this reel for your client"
+                  title="Adapt for your client: same format & idea as this reel"
                 >
                   <Clapperboard className="h-3 w-3 shrink-0" aria-hidden />
                   Recreate

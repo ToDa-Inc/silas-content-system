@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Copy, KeyRound, Loader2 } from "lucide-react";
+import { Copy, Loader2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
 export function ApiKeyPanel() {

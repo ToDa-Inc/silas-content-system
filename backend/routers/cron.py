@@ -7,6 +7,7 @@ from core.database import get_supabase
 from services.breakout_recompute import recompute_breakouts_all_clients
 from services.cleanup_renders import cleanup_old_renders
 from services.scrape_cycle import (
+    enqueue_milestone_scrapes_all_clients,
     enqueue_stale_profile_scrapes_all_clients,
     enqueue_sync_all_jobs_all_clients,
 )
@@ -60,6 +61,17 @@ def cron_cleanup_renders(
     _require_cron_secret(settings, x_cron_secret)
     supabase = get_supabase()
     return cleanup_old_renders(supabase, days=30)
+
+
+@router.post("/milestone-scrapes", status_code=status.HTTP_200_OK)
+def milestone_scrapes(
+    settings: Annotated[Settings, Depends(get_settings)],
+    x_cron_secret: Annotated[Optional[str], Header(alias="X-Cron-Secret")] = None,
+) -> Dict[str, Any]:
+    """Enqueue milestone_scrape jobs for reels that just crossed 24h/48h/72h."""
+    _require_cron_secret(settings, x_cron_secret)
+    supabase = get_supabase()
+    return enqueue_milestone_scrapes_all_clients(supabase)
 
 
 @router.post("/recompute-breakouts", status_code=status.HTTP_200_OK)

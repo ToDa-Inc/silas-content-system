@@ -35,17 +35,19 @@ def enqueue_auto_analyze_scraped(
     *,
     org_id: str,
     client_id: str,
+    batch_limit: int = 50,
 ) -> bool:
-    """Queue auto-analyze batch for mature reels missing analyses."""
+    """Queue auto-analyze for scraped reels missing reel_analyses (caption-only)."""
     if has_active_job(supabase, client_id=client_id, job_type="auto_analyze_scraped"):
         return False
+    bl = max(1, min(int(batch_limit), 100))
     supabase.table("background_jobs").insert(
         {
             "id": generate_job_id(),
             "org_id": org_id,
             "client_id": client_id,
             "job_type": "auto_analyze_scraped",
-            "payload": {"batch_limit": 10},
+            "payload": {"batch_limit": bl},
             "status": "queued",
         }
     ).execute()
