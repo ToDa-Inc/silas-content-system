@@ -14,7 +14,7 @@ from services.reel_metrics import enrich_engagement_metrics
 
 logger = logging.getLogger(__name__)
 
-GENERATION_PROMPT_VERSION = "silas_gen_v4_2026_04_09"
+GENERATION_PROMPT_VERSION = "silas_gen_v4_2026_04_11"
 
 GermanPolishMode = Literal["none", "full", "script", "caption", "stories"]
 
@@ -373,13 +373,22 @@ def run_angle_generation(
     lang = _lang_instruction(str(client_row.get("language") or "de"))
     if adapt_single_reference_reel:
         task = (
-            "TASK: PATTERNS_JSON was built from ONE competitor Instagram reel we are adapting for this client. "
-            "Propose exactly 5 ANGLES. Each angle must be a different client-specific EXECUTION of the SAME "
-            "underlying reel — same video format type, same structural beats and hook mechanism implied by the "
-            "patterns (e.g. text-overlay cadence vs talking-head sections), same \"job\" the video does for the "
-            "viewer — but with distinct situations, examples, and wording for this ICP and language. "
-            "Do NOT propose five unrelated video concepts; each title should read like another take on the same "
-            "viral recipe.\n\n"
+            "TASK: PATTERNS_JSON was built from ONE source reel (competitor URL or pasted script) we are adapting. "
+            "Return exactly 5 angles in ORDER — order is mandatory:\n\n"
+            "ANGLE 1 (array index 0) — FAITHFUL BLUEPRINT / direct adaptation:\n"
+            "- This is the \"recreate this reel\" option: keep the same format class, hook mechanism, beat structure, "
+            "pacing, topic arc, and payoff as the source implied by hook_patterns, tension_mechanisms, "
+            "value_delivery_formats, and format_insights. Do not invent a different video concept.\n"
+            "- Only swap what must change for the client: language, names, setting, and concrete examples so they "
+            "fit GENERATION_BRIEF, VOICE_BRIEF, and ICP. The viewer should recognize it as the same recipe as the "
+            "source.\n"
+            "- Title should read like a direct adaptation (e.g. start with \"Blueprint:\" or \"Direct adaptation —\").\n\n"
+            "ANGLES 2–5 (indices 1–4) — VARIANTS / same recipe, different execution:\n"
+            "- Stay in the same format family and same \"job\" for the viewer as the source reel, but you MAY change "
+            "the concrete situation, add a twist, or emphasize a different beat from PATTERNS_JSON while still "
+            "clearly belonging to the same blueprint family.\n"
+            "- Pull alternative situations from ICP / GENERATION_BRIEF where helpful; do not jump to unrelated topics "
+            "or a different video format.\n\n"
         )
     else:
         task = (
@@ -390,13 +399,14 @@ def run_angle_generation(
     user = (
         f"{lang}\n\n"
         f"{task}"
-        "Output JSON: {\"angles\": [ {...}, ... ]} with exactly 5 objects. Each object:\n"
+        "Output JSON: {\"angles\": [ {...}, ... ]} with exactly 5 objects in the order above. Each object:\n"
         "{\n"
         '  "title": string (short label),\n'
         '  "situation": string (specific scenario),\n'
         '  "emotional_trigger": string,\n'
-        '  "mechanism_note": string (why it could perform — tie to patterns),\n'
-        '  "draft_hook": string (one opening line in the output language)\n'
+        '  "mechanism_note": string (why it could perform — tie to patterns; for angle 1 cite what you preserve from the source),\n'
+        '  "draft_hook": string (one opening line in the output language),\n'
+        '  "angle_role": string (optional; use "blueprint" for angle 1 only, "variant" for angles 2–5 when adapting one source reel)\n'
         "}\n\n"
         f"CLIENT_CONTEXT:\n{_pack_client_row_for_llm(client_row)[:100_000]}\n\n"
         f"PATTERNS_JSON:\n{json.dumps(synthesized_patterns, ensure_ascii=False)[:60_000]}\n"
@@ -416,9 +426,13 @@ def run_angle_generation(
     if not isinstance(angles, list):
         return []
     out: List[Dict[str, Any]] = []
-    for a in angles[:5]:
-        if isinstance(a, dict):
-            out.append(a)
+    for i, a in enumerate(angles[:5]):
+        if not isinstance(a, dict):
+            continue
+        row = dict(a)
+        if adapt_single_reference_reel:
+            row["angle_role"] = "blueprint" if i == 0 else "variant"
+        out.append(row)
     return out
 
 
@@ -526,7 +540,7 @@ def run_content_package(
     if adapt_single_reference_reel:
         adapt_block = (
             "\nREFERENCE_REEL_ADAPTATION (non-negotiable):\n"
-            "PATTERNS_JSON comes from a single competitor reel. Treat it as a blueprint of THAT video, not a "
+            "PATTERNS_JSON comes from a single source reel or pasted script. Treat it as a blueprint of THAT video, not a "
             "generic style guide.\n"
             "- Keep the same format class and beat structure implied by format_insights and hook_patterns "
             "(e.g. text-on-B-roll cadence vs talking-head sections). Do not switch to a different production "
@@ -536,10 +550,17 @@ def run_content_package(
             "- Hooks, script, caption, and text_blocks must all feel like the same adapted reel, not a new "
             "unrelated concept.\n\n"
         )
+    blueprint_note = ""
+    if adapt_single_reference_reel and str(chosen_angle.get("angle_role") or "").strip().lower() == "blueprint":
+        blueprint_note = (
+            "\nBLUEPRINT_ANGLE: CHOSEN_ANGLE_JSON is the faithful-remake slot. Maximize fidelity to the source "
+            "reel's structure, hook type, narrative arc, tension → payoff, and CTA mechanism in PATTERNS_JSON. "
+            "Do not drift to a different topic or format; only localize and ICP-fit the same blueprint.\n"
+        )
     user = (
         f"{lang}\n\n"
         "TASK: Write a full Instagram Reels copy package for ONE chosen angle.\n\n"
-        f"{adapt_block}"
+        f"{adapt_block}{blueprint_note}"
         "Output JSON with this exact shape:\n"
         f"{json_shape}\n"
         "Rules:\n"

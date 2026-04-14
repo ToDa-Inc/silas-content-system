@@ -132,6 +132,31 @@ export async function fetchReelAnalysisDetail(
 }
 
 /** Outbreaker reels posted in the last N hours for the Replicate section. */
+export async function fetchAdaptPreviewReels(
+  clientSlug: string,
+  orgSlug: string,
+  limit: number = 15,
+): Promise<{ ok: true; data: ScrapedReelRow[] } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/reels/adapt-preview?limit=${limit}`,
+      { headers },
+    );
+    const json = (await res.json().catch(() => [])) as unknown;
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(json as Record<string, unknown>, `Request failed (${res.status})`),
+      };
+    }
+    return { ok: true, data: Array.isArray(json) ? (json as ScrapedReelRow[]) : [] };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
 export async function fetchReplicateSuggestions(
   clientSlug: string,
   orgSlug: string,

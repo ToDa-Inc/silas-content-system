@@ -1,0 +1,33 @@
+# Triggers POST /api/v1/cron/keyword-reel-similarity (enqueue niche keyword + similarity job per active client).
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   NICHE_DISCOVERY_CRON_URL — full URL, e.g. https://<host>/api/v1/cron/keyword-reel-similarity
+#   CRON_SECRET              — same value as CRON_SECRET on the API service (reuse from sync-all)
+#
+# Schedules only run from the repository’s default branch.
+
+name: Cron niche discovery
+
+on:
+  schedule:
+    # Weekly — offset from sync-all (05:00 UTC); adjust as you like
+    - cron: "0 6 * * 2"
+  workflow_dispatch:
+
+jobs:
+  niche-discovery:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST keyword-reel-similarity
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          NICHE_DISCOVERY_CRON_URL: ${{ secrets.NICHE_DISCOVERY_CRON_URL }}
+        run: |
+          if [ -z "$CRON_SECRET" ] || [ -z "$NICHE_DISCOVERY_CRON_URL" ]; then
+            echo "::error::Set Actions secrets CRON_SECRET and NICHE_DISCOVERY_CRON_URL"
+            exit 1
+          fi
+          curl -fsS --max-time 600 -X POST "$NICHE_DISCOVERY_CRON_URL" \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            -w "\nHTTP %{http_code}\n"

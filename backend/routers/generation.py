@@ -59,8 +59,15 @@ logger = logging.getLogger(__name__)
 
 
 def _session_adapts_single_reference_reel(row: Dict[str, Any]) -> bool:
-    """True when patterns were synthesized from one competitor reel (URL adapt)."""
-    return str(row.get("source_type") or "").strip() == "url_adapt"
+    """True when patterns come from one explicit source (URL, pasted script, or one picked analysis)."""
+    st = str(row.get("source_type") or "").strip()
+    if st in ("url_adapt", "script_adapt"):
+        return True
+    if st == "outlier":
+        ids = row.get("source_analysis_ids")
+        if isinstance(ids, list):
+            return len([x for x in ids if str(x).strip()]) == 1
+    return False
 
 
 def _now_iso() -> str:
@@ -385,6 +392,7 @@ def generation_start(
                 client_row=client_row,
                 synthesized_patterns=patterns,
                 extra_instruction=extra_script,
+                adapt_single_reference_reel=True,
             )
 
         else:
@@ -421,11 +429,13 @@ def generation_start(
             )
             if not isinstance(patterns, dict):
                 patterns = {}
+            single_reference_outlier = st == "outlier" and len(rows) == 1
             angles = run_angle_generation(
                 settings,
                 client_row=client_row,
                 synthesized_patterns=patterns,
                 extra_instruction=body.extra_instruction,
+                adapt_single_reference_reel=single_reference_outlier,
             )
     except HTTPException:
         raise

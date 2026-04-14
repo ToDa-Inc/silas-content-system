@@ -480,8 +480,8 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
       setSortDir((d) => (d === "desc" ? "asc" : "desc"));
     } else {
       setSortKey(key);
-      // Lower views÷comments = more discussion per view; default that column to asc.
-      setSortDir(key === "comment_view_ratio" ? "asc" : "desc");
+      // Higher C/V = more engagement; default desc so best performers sort to top.
+      setSortDir("desc");
     }
   }
 
@@ -695,8 +695,8 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                 onClick={() => handleSort("comments")}
               />
               <SortHeader
-                label="V:C"
-                title="Views ÷ comments (e.g. 20:1 = 20 views per comment)."
+                label="C/V"
+                title="Comments ÷ views — conversation rate. Higher % = more discussion per view."
                 active={sortKey === "comment_view_ratio"}
                 dir={sortDir}
                 onClick={() => handleSort("comment_view_ratio")}

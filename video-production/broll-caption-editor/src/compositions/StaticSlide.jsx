@@ -1,9 +1,10 @@
 import React from 'react';
-import { Img } from 'remotion';
+import { Img, Video } from 'remotion';
 import TextOverlay from '../components/TextOverlay';
 import HookText from '../components/HookText';
 
-const StaticSlide = ({ backgroundUrl, hook, textBlocks }) => {
+const StaticSlide = ({ backgroundUrl, backgroundKind, hook, textBlocks }) => {
+  const useVideo = backgroundKind === 'video';
   return (
     <div
       style={{
@@ -18,17 +19,33 @@ const StaticSlide = ({ backgroundUrl, hook, textBlocks }) => {
         alignItems: 'center',
       }}
     >
-      <Img
-        src={backgroundUrl}
-        style={{
-          width: '100%',
-          height: '100%',
-          objectFit: 'cover',
-          position: 'absolute',
-          top: 0,
-          left: 0,
-        }}
-      />
+      {useVideo ? (
+        <Video
+          src={backgroundUrl}
+          loop
+          muted
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            position: 'absolute',
+            top: 0,
+            left: 0,
+          }}
+        />
+      ) : (
+        <Img
+          src={backgroundUrl}
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            position: 'absolute',
+            top: 0,
+            left: 0,
+          }}
+        />
+      )}
       <div
         style={{
           position: 'absolute',

@@ -16,9 +16,13 @@ import {
   ThumbsUp,
   Trash2,
 } from "lucide-react";
+import { ReelThumbnail } from "@/components/reel-thumbnail";
 import { useToast } from "@/components/ui/toast-provider";
+import type { ScrapedReelRow } from "@/lib/api";
+import { formatCommentViewPct } from "@/lib/reel-comment-view";
 import {
   clientApiContext,
+  fetchAdaptPreviewReels,
   fetchFormatDigests,
   generationChooseAngle,
   generationDeleteSession,
@@ -33,21 +37,10 @@ import {
   type FormatRecommendation,
   type GenerationSession,
 } from "@/lib/api-client";
-import { formatViewsToCommentsValue } from "@/lib/reel-comment-view";
 
 type Step = "source" | "angles" | "content";
 
 type SourceMode = "format_pick" | "idea_match" | "url_adapt" | "script_adapt";
-
-function isLikelyInstagramReelUrl(s: string): boolean {
-  const t = s.trim().toLowerCase();
-  return (
-    t.includes("instagram.com/reel") ||
-    t.includes("instagram.com/reels/") ||
-    t.includes("instagram.com/p/") ||
-    t.includes("instagram.com/tv/")
-  );
-}
 
 function str(v: unknown): string {
   return typeof v === "string" ? v : v != null ? String(v) : "";
@@ -106,12 +99,34 @@ function getChosenAngleRecord(session: GenerationSession): Record<string, unknow
 function sourceTypeLabel(t: string): string {
   if (t === "format_pick") return "Format";
   if (t === "idea_match") return "Idea";
-  if (t === "url_adapt") return "Adapt reel";
+  if (t === "url_adapt") return "Adapt URL";
   if (t === "script_adapt") return "Adapt script";
   if (t === "patterns") return "Patterns";
   if (t === "outlier") return "Selected";
   if (t === "manual") return "Manual";
   return t;
+}
+
+/** Sessions where angle 0 is the faithful blueprint (backend sets angle_role). */
+function sessionUsesBlueprintFirstAngle(s: GenerationSession): boolean {
+  if (s.source_type === "url_adapt" || s.source_type === "script_adapt") return true;
+  if (
+    s.source_type === "outlier" &&
+    Array.isArray(s.source_analysis_ids) &&
+    s.source_analysis_ids.filter((x) => String(x).trim()).length === 1
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function angleIsBlueprint(raw: unknown, index: number, session: GenerationSession): boolean {
+  if (raw && typeof raw === "object" && "angle_role" in raw) {
+    const r = String((raw as { angle_role?: unknown }).angle_role || "").toLowerCase();
+    if (r === "blueprint") return true;
+    if (r === "variant") return false;
+  }
+  return sessionUsesBlueprintFirstAngle(session) && index === 0;
 }
 
 function formatKeyLabel(key: string): string {
@@ -169,21 +184,7 @@ function parseScriptSections(text: string): { heading: string; body: string }[] 
 
 type NamedDesc = { name?: unknown; description?: unknown; example_from_data?: unknown };
 
-type PatternsSnapshotOrigin = "format_digest" | "single_reel" | "single_script";
-
-function patternsSnapshotOrigin(sourceType: string | undefined): PatternsSnapshotOrigin {
-  if (sourceType === "url_adapt") return "single_reel";
-  if (sourceType === "script_adapt") return "single_script";
-  return "format_digest";
-}
-
-function SynthesizedPatternsView({
-  patterns,
-  snapshotOrigin = "format_digest",
-}: {
-  patterns: Record<string, unknown>;
-  snapshotOrigin?: PatternsSnapshotOrigin;
-}) {
+function SynthesizedPatternsView({ patterns }: { patterns: Record<string, unknown> }) {
   const hookPatterns = patterns.hook_patterns;
   const tension = patterns.tension_mechanisms;
   const valueFormats = patterns.value_delivery_formats;
@@ -194,20 +195,8 @@ function SynthesizedPatternsView({
   const formatInsights =
     fiRaw && typeof fiRaw === "object" && !Array.isArray(fiRaw) ? (fiRaw as Record<string, unknown>) : null;
 
-  const intro =
-    snapshotOrigin === "single_reel" ? (
-      <p className="text-[11px] leading-relaxed text-app-fg-muted">
-        Snapshot from when this run started: patterns extracted from{" "}
-        <span className="text-app-fg-secondary">one competitor reel</span> (format recipe + core idea) so we can
-        adapt it to your client. If a step failed, sections below may be sparse — start a new session from Source
-        with the same URL.
-      </p>
-    ) : snapshotOrigin === "single_script" ? (
-      <p className="text-[11px] leading-relaxed text-app-fg-muted">
-        Snapshot from when this run started: structure extracted from the{" "}
-        <span className="text-app-fg-secondary">English script</span> you pasted (not a format digest).
-      </p>
-    ) : (
+  return (
+    <div className="max-h-[28rem] space-y-4 overflow-y-auto pr-1">
       <p className="text-[11px] leading-relaxed text-app-fg-muted">
         Snapshot from when this run started: your team&apos;s{" "}
         <span className="text-app-fg-secondary">format digest</span> (competitor reels → stats + one AI pass).
@@ -215,11 +204,6 @@ function SynthesizedPatternsView({
         exists — use <strong className="font-semibold text-app-fg-muted">Refresh format digests</strong> on
         Source to retry.
       </p>
-    );
-
-  return (
-    <div className="max-h-[28rem] space-y-4 overflow-y-auto pr-1">
-      {intro}
 
       {formatInsights &&
       [
@@ -403,7 +387,7 @@ function UrlAdaptReferenceCard({
   return (
     <div className="rounded-xl border border-amber-500/25 bg-amber-500/[0.07] p-4">
       <p className="text-[10px] font-bold uppercase tracking-wider text-app-fg-subtle">
-        Competitor reel you&apos;re adapting
+        Reference reel (URL adapt)
       </p>
       {u ? (
         <p className="mt-2 text-xs">
@@ -502,6 +486,9 @@ export default function GeneratePage() {
   const [formatRecommendations, setFormatRecommendations] = useState<FormatRecommendation[]>([]);
   const [adaptUrl, setAdaptUrl] = useState(urlFromUrl?.trim() ?? "");
   const [scriptAdaptText, setScriptAdaptText] = useState("");
+  const [adaptPreviewRows, setAdaptPreviewRows] = useState<ScrapedReelRow[]>([]);
+  const [adaptPreviewLoading, setAdaptPreviewLoading] = useState(false);
+  const [adaptPreviewError, setAdaptPreviewError] = useState<string | null>(null);
   const [session, setSession] = useState<GenerationSession | null>(null);
   const [sessions, setSessions] = useState<GenerationSession[]>([]);
   const [loading, setLoading] = useState(false);
@@ -514,8 +501,7 @@ export default function GeneratePage() {
   const [regenScope, setRegenScope] = useState<"all" | "hooks" | "script" | "caption" | "story">("all");
   const [regenFeedback, setRegenFeedback] = useState("");
   const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
-  const [thumbnailLoading, setThumbnailLoading] = useState(false);
-  const [coverText, setCoverText] = useState<string>("");
+  const [thumbnailLoading, setThumbnailLoading] = useState(false);  const [coverText, setCoverText] = useState<string>("");
 
   const refreshSessions = useCallback(async () => {
     if (!clientSlug || !orgSlug) return;
@@ -571,6 +557,26 @@ export default function GeneratePage() {
       }
     })();
   }, [refreshContext]);
+
+  /** Top competitor reels by comments÷views — URL adapt quick picks. */
+  useEffect(() => {
+    if (!clientSlug || !orgSlug || sourceMode !== "url_adapt") return;
+    let cancelled = false;
+    setAdaptPreviewLoading(true);
+    setAdaptPreviewError(null);
+    void fetchAdaptPreviewReels(clientSlug, orgSlug).then((res) => {
+      if (cancelled) return;
+      setAdaptPreviewLoading(false);
+      if (res.ok) setAdaptPreviewRows(res.data);
+      else {
+        setAdaptPreviewRows([]);
+        setAdaptPreviewError(res.error);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [clientSlug, orgSlug, sourceMode]);
 
   /** Open session from Intelligence “Recreate” flow (`/generate?session=…`). */
   useEffect(() => {
@@ -669,8 +675,8 @@ export default function GeneratePage() {
       }
     }
     if (sourceMode === "url_adapt") {
-      const url = adaptUrl.trim();
-      if (!url || !isLikelyInstagramReelUrl(url)) {
+      const u = adaptUrl.trim();
+      if (!u || !u.includes("instagram.com")) {
         show("Paste a valid Instagram reel URL.", "error");
         return;
       }
@@ -697,16 +703,16 @@ export default function GeneratePage() {
           idea_text: ideaText.trim(),
           extra_instruction: extraInstruction.trim() || undefined,
         };
-      } else if (sourceMode === "url_adapt") {
+      } else if (sourceMode === "script_adapt") {
         body = {
-          source_type: "url_adapt",
-          url: adaptUrl.trim(),
+          source_type: "script_adapt",
+          source_script: scriptAdaptText.trim(),
           extra_instruction: extraInstruction.trim() || undefined,
         };
       } else {
         body = {
-          source_type: "script_adapt",
-          source_script: scriptAdaptText.trim(),
+          source_type: "url_adapt",
+          url: adaptUrl.trim(),
           extra_instruction: extraInstruction.trim() || undefined,
         };
       }
@@ -950,8 +956,8 @@ export default function GeneratePage() {
                       },
                       {
                         mode: "url_adapt" as SourceMode,
-                        label: "Adapt a reel URL",
-                        sub: "Paste a competitor reel link; we analyze it and generate angles for your client",
+                        label: "Adapt a competitor reel",
+                        sub: "Paste an Instagram URL; we reverse-engineer it for your client",
                       },
                       {
                         mode: "script_adapt" as SourceMode,
@@ -989,7 +995,7 @@ export default function GeneratePage() {
                         These are the video styles we found in your competitors&apos; analyzed reels. Pick one to
                         generate angles in that style.{" "}
                         <span className="text-app-fg-subtle">
-                          Numbers = how many reels we analyzed · avg views per comment · typical length.
+                          Numbers = how many reels we analyzed · avg comments/views · typical length.
                         </span>
                       </p>
                     </div>
@@ -1038,8 +1044,8 @@ export default function GeneratePage() {
                             <span className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 tabular-nums text-[11px] text-app-fg-muted">
                               <span title="Analyzed reels in this style (all ages)">{d.reel_count ?? "—"} reels</span>
                               {d.avg_comment_view_ratio != null ? (
-                                <span title="Avg views ÷ comments for reels in this style (e.g. 20:1 = 20 views per comment)">
-                                  avg {formatViewsToCommentsValue(d.avg_comment_view_ratio)}
+                                <span title="Avg comments ÷ views — how much conversation each view tends to generate">
+                                  {d.avg_comment_view_ratio > 0 ? ((1 / d.avg_comment_view_ratio) * 100).toFixed(2) : "0"}% C/V
                                 </span>
                               ) : d.avg_engagement != null ? (
                                 <span title="Avg (likes+comments+saves+shares) ÷ views">
@@ -1135,21 +1141,100 @@ export default function GeneratePage() {
                 </div>
               ) : null}
 
-              {/* ── URL adapt (competitor reel) ── */}
+              {/* ── URL adapt ── */}
               {sourceMode === "url_adapt" ? (
-                <div className="space-y-3 rounded-xl border border-app-divider bg-app-chip-bg/25 p-4 md:p-5">
-                  <p className="text-xs font-semibold text-app-fg">Paste any reel URL</p>
-                  <p className="text-[11px] leading-relaxed text-app-fg-muted">
-                    Not in the list above? Paste a competitor reel URL to adapt it directly.
-                  </p>
-                  <input
-                    type="url"
-                    id="gen-adapt-url"
-                    value={adaptUrl}
-                    onChange={(e) => setAdaptUrl(e.target.value)}
-                    placeholder="https://www.instagram.com/reel/…"
-                    className="glass-inset w-full rounded-xl px-3 py-2.5 font-mono text-sm text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
-                  />
+                <div className="space-y-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-app-fg">Competitor reel URL</h3>
+                    <p className="mt-0.5 text-xs text-app-fg-muted">
+                      We&apos;ll fetch the reel, analyse its structure, and rewrite it in your client&apos;s voice
+                      and niche. Takes a bit longer than the other modes.
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-app-divider bg-app-chip-bg/25 p-3 md:p-4">
+                    <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-semibold text-app-fg">Suggested competitor reels</p>
+                        <p className="mt-0.5 text-[11px] leading-relaxed text-app-fg-muted">
+                          Top five by <span className="text-app-fg-secondary">comments ÷ views</span> among
+                          synced competitor reels (not your creator&apos;s own). Tap a card to paste its URL
+                          below.
+                        </p>
+                      </div>
+                      <Link
+                        href="/intelligence/reels"
+                        className="shrink-0 text-xs font-semibold text-amber-600 hover:underline dark:text-amber-400"
+                      >
+                        View all reels →
+                      </Link>
+                    </div>
+                    {adaptPreviewLoading ? (
+                      <div className="flex justify-center py-6">
+                        <Loader2 className="size-5 animate-spin text-app-fg-subtle" />
+                      </div>
+                    ) : adaptPreviewError ? (
+                      <p className="text-xs text-red-400/90">{adaptPreviewError}</p>
+                    ) : adaptPreviewRows.length === 0 ? (
+                      <p className="text-xs text-app-fg-muted">
+                        No competitor reels with enough views yet. Sync accounts in{" "}
+                        <Link href="/intelligence/reels" className="font-semibold text-amber-600 hover:underline dark:text-amber-400">
+                          Intelligence → Reels
+                        </Link>
+                        .
+                      </p>
+                    ) : (
+                      <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-5">
+                        {adaptPreviewRows.map((row) => {
+                          const url = (row.post_url ?? "").trim();
+                          const selected = url && adaptUrl.trim() === url;
+                          return (
+                            <li key={row.id}>
+                              <button
+                                type="button"
+                                disabled={!url}
+                                onClick={() => {
+                                  if (url) setAdaptUrl(url);
+                                }}
+                                className={`flex w-full flex-col gap-1.5 rounded-xl border p-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                                  selected
+                                    ? "border-amber-500/55 bg-amber-500/10"
+                                    : "border-app-divider hover:bg-white/[0.04]"
+                                }`}
+                              >
+                                <ReelThumbnail
+                                  src={row.thumbnail_url}
+                                  alt={`@${row.account_username} reel`}
+                                  size="md"
+                                  className="mx-auto"
+                                />
+                                <span className="truncate text-center text-[10px] font-semibold text-app-fg">
+                                  @{row.account_username}
+                                </span>
+                                <span className="text-center text-[10px] tabular-nums text-app-fg-muted">
+                                  {formatCommentViewPct(row)} C/V
+                                </span>
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+
+                  <div>
+                    <label htmlFor="gen-url" className="text-xs font-semibold text-app-fg-muted">
+                      Paste URL (or pick above)
+                    </label>
+                    <input
+                      id="gen-url"
+                      type="url"
+                      value={adaptUrl}
+                      onChange={(e) => setAdaptUrl(e.target.value)}
+                      placeholder="https://www.instagram.com/reel/…"
+                      className="glass-inset mt-1.5 w-full rounded-xl px-3 py-2.5 font-mono text-sm text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+                    />
+                  </div>
                 </div>
               ) : null}
 
@@ -1205,13 +1290,14 @@ export default function GeneratePage() {
                   )}
                   {loading ? "Running models…" : "Generate angles"}
                 </button>
+                {sourceMode === "url_adapt" ? (
+                  <p className="text-right text-xs text-app-fg-muted">
+                    URL mode fetches and analyses the reel first — expect 30–60s.
+                  </p>
+                ) : null}
                 {sourceMode === "script_adapt" ? (
                   <p className="text-right text-xs text-app-fg-muted">
                     Script mode runs two model steps (structure → angles) — usually under a minute.
-                  </p>
-                ) : sourceMode === "url_adapt" ? (
-                  <p className="text-right text-xs text-app-fg-muted">
-                    We fetch and analyze the reel, then propose angles — usually under a minute.
                   </p>
                 ) : null}
               </div>
@@ -1319,13 +1405,7 @@ export default function GeneratePage() {
             {session.synthesized_patterns && (
               <button
                 type="button"
-                title={
-                  session.source_type === "url_adapt"
-                    ? "Patterns extracted from the reference competitor reel for this adaptation run."
-                    : session.source_type === "script_adapt"
-                      ? "Patterns extracted from the pasted English script."
-                      : "Digest JSON from format pick / idea match. Includes AI-written hooks and summaries."
-                }
+                title="Digest JSON copied onto this session when you started Generate (format pick, idea match, or URL adapt). Includes AI-written hooks and summaries; may show an error string if the digest AI failed."
                 onClick={() => setPatternsOpen((o) => !o)}
                 className="flex items-center gap-1 text-xs font-semibold text-app-fg-muted hover:text-app-fg"
               >
@@ -1335,10 +1415,7 @@ export default function GeneratePage() {
             )}
           </div>
           {patternsOpen && synthesizedPatterns ? (
-            <SynthesizedPatternsView
-              patterns={synthesizedPatterns}
-              snapshotOrigin={patternsSnapshotOrigin(session.source_type)}
-            />
+            <SynthesizedPatternsView patterns={synthesizedPatterns} />
           ) : null}
           {session.source_type === "url_adapt" ? (
             <UrlAdaptReferenceCard
@@ -1353,11 +1430,11 @@ export default function GeneratePage() {
             />
           ) : null}
           <h2 className="text-sm font-semibold text-app-fg">Pick an angle</h2>
-          {session.source_type === "url_adapt" ? (
+          {sessionUsesBlueprintFirstAngle(session) ? (
             <p className="max-w-2xl text-xs leading-relaxed text-app-fg-muted">
-              These five options are meant as different ways to film the{" "}
-              <span className="font-medium text-app-fg-secondary">same adapted reel</span> — same underlying format
-              and idea as the competitor link, tailored to your client.
+              The <span className="font-semibold text-app-fg-secondary">first angle</span> is the direct
+              blueprint — same structure and topic arc as your source, rewritten in your client&apos;s voice.
+              The others are same-format variants you can use if you want a twist.
             </p>
           ) : null}
           <div className="grid gap-3 md:grid-cols-2">
@@ -1365,6 +1442,7 @@ export default function GeneratePage() {
               const choosing = choosingAngleIndex !== null;
               const isPicked = choosingAngleIndex === i;
               const dimSibling = choosing && !isPicked;
+              const blueprint = angleIsBlueprint(raw, i, session);
               return (
                 <div
                   key={i}
@@ -1372,7 +1450,14 @@ export default function GeneratePage() {
                     dimSibling ? "pointer-events-none opacity-40" : ""
                   } ${isPicked && choosing ? "ring-2 ring-amber-500/45" : ""}`}
                 >
-                  <p className="text-sm font-semibold text-app-fg">{str(raw.title)}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-semibold text-app-fg">{str(raw.title)}</p>
+                    {blueprint ? (
+                      <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-300">
+                        Blueprint
+                      </span>
+                    ) : null}
+                  </div>
                   <p className="text-xs text-app-fg-muted">{str(raw.situation)}</p>
                   <p className="text-[11px] text-app-fg-subtle">
                     <span className="font-medium text-app-fg-muted">Hook: </span>

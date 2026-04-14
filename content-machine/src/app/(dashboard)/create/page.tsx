@@ -92,6 +92,121 @@ function formatDate(iso: string | null | undefined): string {
 
 // ── Step header ───────────────────────────────────────────────────────────────
 
+function BrollLibrarySection({
+  clips,
+  loading,
+  deletingClipId,
+  selectedClipId,
+  sessionBrollClipId,
+  showClipBanner,
+  clipBannerUrl,
+  onPick,
+  onDelete,
+}: {
+  clips: BrollClipRow[];
+  loading: boolean;
+  deletingClipId: string | null;
+  selectedClipId: string;
+  sessionBrollClipId?: string | null;
+  showClipBanner: boolean;
+  clipBannerUrl?: string | null;
+  onPick: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <div>
+      {showClipBanner && clipBannerUrl ? (
+        <div className="mb-4 flex items-center gap-3 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.07] px-4 py-3">
+          <Film className="h-4 w-4 shrink-0 text-emerald-500" />
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">B-roll set</p>
+            <p className="truncate text-[11px] text-app-fg-muted">{clipBannerUrl}</p>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mb-3 flex items-center justify-between">
+        <p className="text-xs font-semibold text-app-fg">
+          B-roll library <span className="font-normal text-app-fg-muted">({clips.length} clip{clips.length !== 1 ? "s" : ""})</span>
+        </p>
+        <Link
+          href="/media?tab=broll"
+          className="text-[11px] font-semibold text-sky-500 hover:underline dark:text-sky-400"
+        >
+          Manage in Media →
+        </Link>
+      </div>
+
+      {clips.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-app-divider/60 py-8 text-center">
+          <Film className="mx-auto mb-2 h-6 w-6 text-app-fg-subtle opacity-30" />
+          <p className="mb-3 text-xs text-app-fg-subtle">No clips yet.</p>
+          <Link
+            href="/media?tab=broll"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25"
+          >
+            <Plus className="h-3 w-3" />
+            Upload B-roll
+          </Link>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {clips.map((c) => {
+            const isActive = selectedClipId === c.id || sessionBrollClipId === c.id;
+            return (
+              <div
+                key={c.id}
+                className={`group relative flex flex-col gap-1.5 rounded-xl border p-3 transition-colors ${
+                  isActive
+                    ? "border-amber-500/45 bg-amber-500/10"
+                    : "border-app-divider hover:border-white/20"
+                }`}
+              >
+                <div className="flex aspect-video items-center justify-center overflow-hidden rounded-lg bg-black/30">
+                  {c.thumbnail_url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={c.thumbnail_url}
+                      alt=""
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <Film className="h-5 w-5 text-app-fg-subtle opacity-40" />
+                  )}
+                </div>
+                <p className="line-clamp-1 text-[11px] font-medium text-app-fg">
+                  {c.label || `Clip ${c.id.slice(0, 6)}`}
+                </p>
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    disabled={loading || isActive}
+                    onClick={() => void onPick(c.id)}
+                    className="flex-1 rounded-lg bg-amber-500/15 py-1 text-[10px] font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-40"
+                  >
+                    {isActive ? "Active" : "Use clip"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={deletingClipId === c.id}
+                    onClick={() => void onDelete(c.id)}
+                    className="rounded-lg p-1 text-app-fg-subtle hover:bg-red-500/10 hover:text-red-400"
+                    aria-label="Delete clip"
+                  >
+                    {deletingClipId === c.id
+                      ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      : <Trash2 className="h-3.5 w-3.5" />}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StepHeader({
   n,
   label,
@@ -555,148 +670,99 @@ export default function CreatePage() {
               <StepHeader n={2} label="Background" done={step2Done} />
 
               {isTextOverlay && (
-                <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
-                  {/* Preview */}
-                  <div className="mx-auto shrink-0 sm:mx-0">
-                    {bgBusy ? (
-                      <div className="flex aspect-[2/3] w-[140px] flex-col items-center justify-center gap-2 rounded-xl border border-app-divider bg-app-chip-bg/40">
-                        <Loader2 className="h-6 w-6 animate-spin text-app-fg-subtle" />
-                        <p className="text-[10px] text-app-fg-muted">~30–60s</p>
-                      </div>
-                    ) : session.background_url ? (
-                      <a href={session.background_url} target="_blank" rel="noreferrer" title="Open full size">
-                        <div className="w-[140px] overflow-hidden rounded-xl border border-app-divider shadow-md">
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img
-                            src={session.background_url}
-                            alt="Background"
-                            width={140}
-                            className="block aspect-[2/3] w-full object-cover"
-                            style={{ aspectRatio: "2/3" }}
-                          />
+                <div className="space-y-5">
+                  <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
+                    <div className="mx-auto shrink-0 sm:mx-0">
+                      {bgBusy ? (
+                        <div className="flex aspect-[2/3] w-[140px] flex-col items-center justify-center gap-2 rounded-xl border border-app-divider bg-app-chip-bg/40">
+                          <Loader2 className="h-6 w-6 animate-spin text-app-fg-subtle" />
+                          <p className="text-[10px] text-app-fg-muted">~30–60s</p>
                         </div>
-                      </a>
-                    ) : (
-                      <div className="flex aspect-[2/3] w-[140px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-app-divider/70 bg-app-chip-bg/20">
-                        <ImageIcon className="h-6 w-6 text-app-fg-subtle opacity-30" />
-                        <p className="px-3 text-center text-[10px] text-app-fg-subtle">No background</p>
-                      </div>
-                    )}
+                      ) : session.background_url ? (
+                        <a href={session.background_url} target="_blank" rel="noreferrer" title="Open full size">
+                          <div className="w-[140px] overflow-hidden rounded-xl border border-app-divider shadow-md">
+                            {session.background_type === "broll" ? (
+                              <video
+                                src={session.background_url}
+                                muted
+                                loop
+                                autoPlay
+                                playsInline
+                                className="block aspect-[2/3] w-full object-cover"
+                                style={{ aspectRatio: "2/3" }}
+                              />
+                            ) : (
+                              /* eslint-disable-next-line @next/next/no-img-element */
+                              <img
+                                src={session.background_url}
+                                alt="Background"
+                                width={140}
+                                className="block aspect-[2/3] w-full object-cover"
+                                style={{ aspectRatio: "2/3" }}
+                              />
+                            )}
+                          </div>
+                        </a>
+                      ) : (
+                        <div className="flex aspect-[2/3] w-[140px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-app-divider/70 bg-app-chip-bg/20">
+                          <ImageIcon className="h-6 w-6 text-app-fg-subtle opacity-30" />
+                          <p className="px-3 text-center text-[10px] text-app-fg-subtle">No background</p>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex flex-col gap-3">
+                      <p className="text-xs font-semibold text-app-fg">AI still (2:3)</p>
+                      <p className="text-xs leading-relaxed text-app-fg-muted">
+                        Generates an atmospheric workplace scene matched to the chosen angle.
+                        Uses <span className="font-semibold text-app-fg-secondary">gpt-5-image</span> via OpenRouter.
+                        Regenerating replaces a library clip if one is active.
+                      </p>
+                      <button
+                        type="button"
+                        disabled={bgBusy}
+                        onClick={() => void onGenerateBg()}
+                        className="inline-flex items-center gap-2 self-start rounded-xl bg-amber-500/15 px-4 py-2 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-50"
+                      >
+                        {bgBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                        {bgBusy ? "Generating…" : session.background_url ? "Regenerate" : "Generate image"}
+                      </button>
+                    </div>
                   </div>
 
-                  {/* Controls */}
-                  <div className="flex flex-col gap-3">
-                    <p className="text-xs leading-relaxed text-app-fg-muted">
-                      Generates an atmospheric workplace scene matched to the chosen angle.
-                      Uses <span className="font-semibold text-app-fg-secondary">gpt-5-image</span> via OpenRouter.
+                  <div className="border-t border-app-divider/50 pt-5">
+                    <p className="mb-1 text-xs font-semibold text-app-fg">Or: library footage</p>
+                    <p className="mb-4 text-xs leading-relaxed text-app-fg-muted">
+                      Same clips as B-roll reels — here they use the center text-overlay template (hook + stacked lines).
+                      Footage loops; video length follows your script timing in render.
                     </p>
-                    <button
-                      type="button"
-                      disabled={bgBusy}
-                      onClick={() => void onGenerateBg()}
-                      className="inline-flex items-center gap-2 self-start rounded-xl bg-amber-500/15 px-4 py-2 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-50"
-                    >
-                      {bgBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                      {bgBusy ? "Generating…" : session.background_url ? "Regenerate" : "Generate image"}
-                    </button>
+                    <BrollLibrarySection
+                      clips={clips}
+                      loading={loading}
+                      deletingClipId={deletingClipId}
+                      selectedClipId={selectedClipId}
+                      sessionBrollClipId={session.broll_clip_id}
+                      showClipBanner={session.background_type === "broll" && Boolean(session.background_url)}
+                      clipBannerUrl={session.background_url}
+                      onPick={(id) => void onSetBroll(id)}
+                      onDelete={(id) => void onDeleteClip(id)}
+                    />
                   </div>
                 </div>
               )}
 
               {isBroll && (
-                <div>
-                  {/* Current background */}
-                  {session.background_url && (
-                    <div className="mb-4 flex items-center gap-3 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.07] px-4 py-3">
-                      <Film className="h-4 w-4 shrink-0 text-emerald-500" />
-                      <div className="min-w-0">
-                        <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">B-roll set</p>
-                        <p className="truncate text-[11px] text-app-fg-muted">{session.background_url}</p>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Library header */}
-                  <div className="mb-3 flex items-center justify-between">
-                    <p className="text-xs font-semibold text-app-fg">
-                      B-roll library <span className="font-normal text-app-fg-muted">({clips.length} clip{clips.length !== 1 ? "s" : ""})</span>
-                    </p>
-                    <Link
-                      href="/media?tab=broll"
-                      className="text-[11px] font-semibold text-sky-500 hover:underline dark:text-sky-400"
-                    >
-                      Manage in Media →
-                    </Link>
-                  </div>
-
-                  {clips.length === 0 ? (
-                    <div className="rounded-xl border border-dashed border-app-divider/60 py-8 text-center">
-                      <Film className="mx-auto mb-2 h-6 w-6 text-app-fg-subtle opacity-30" />
-                      <p className="mb-3 text-xs text-app-fg-subtle">No clips yet.</p>
-                      <Link
-                        href="/media?tab=broll"
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25"
-                      >
-                        <Plus className="h-3 w-3" />
-                        Upload B-roll
-                      </Link>
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                      {clips.map((c) => {
-                        const isActive = selectedClipId === c.id || session.broll_clip_id === c.id;
-                        return (
-                          <div
-                            key={c.id}
-                            className={`group relative flex flex-col gap-1.5 rounded-xl border p-3 transition-colors ${
-                              isActive
-                                ? "border-amber-500/45 bg-amber-500/10"
-                                : "border-app-divider hover:border-white/20"
-                            }`}
-                          >
-                            <div className="flex aspect-video items-center justify-center overflow-hidden rounded-lg bg-black/30">
-                              {c.thumbnail_url ? (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img
-                                  src={c.thumbnail_url}
-                                  alt=""
-                                  className="h-full w-full object-cover"
-                                />
-                              ) : (
-                                <Film className="h-5 w-5 text-app-fg-subtle opacity-40" />
-                              )}
-                            </div>
-                            <p className="line-clamp-1 text-[11px] font-medium text-app-fg">
-                              {c.label || `Clip ${c.id.slice(0, 6)}`}
-                            </p>
-                            <div className="flex gap-1">
-                              <button
-                                type="button"
-                                disabled={loading || isActive}
-                                onClick={() => void onSetBroll(c.id)}
-                                className="flex-1 rounded-lg bg-amber-500/15 py-1 text-[10px] font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-40"
-                              >
-                                {isActive ? "Active" : "Use clip"}
-                              </button>
-                              <button
-                                type="button"
-                                disabled={deletingClipId === c.id}
-                                onClick={() => void onDeleteClip(c.id)}
-                                className="rounded-lg p-1 text-app-fg-subtle hover:bg-red-500/10 hover:text-red-400"
-                                aria-label="Delete clip"
-                              >
-                                {deletingClipId === c.id
-                                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                  : <Trash2 className="h-3.5 w-3.5" />
-                                }
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+                <BrollLibrarySection
+                  clips={clips}
+                  loading={loading}
+                  deletingClipId={deletingClipId}
+                  selectedClipId={selectedClipId}
+                  sessionBrollClipId={session.broll_clip_id}
+                  showClipBanner={Boolean(session.background_url)}
+                  clipBannerUrl={session.background_url}
+                  onPick={(id) => void onSetBroll(id)}
+                  onDelete={(id) => void onDeleteClip(id)}
+                />
               )}
 
               {!isTextOverlay && !isBroll && (

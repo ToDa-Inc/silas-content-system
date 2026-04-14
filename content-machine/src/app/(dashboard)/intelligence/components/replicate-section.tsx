@@ -5,7 +5,6 @@ import Link from "next/link";
 import { Loader2, Sparkles } from "lucide-react";
 import { ReelThumbnail } from "@/components/reel-thumbnail";
 import type { ScrapedReelRow } from "@/lib/api";
-import { formatViewsToComments, viewsToCommentsRatio } from "@/lib/reel-comment-view";
 import { fetchReplicateSuggestions } from "@/lib/api-client";
 import { ReelCardWithAnalysis } from "./reel-card-with-analysis";
 import { RecreateReelModal } from "./recreate-reel-modal";
@@ -147,32 +146,26 @@ export function ReplicateSection({ clientSlug, orgSlug, disabled, disabledHint }
                         : "—"}
                     </span>
                   </div>
-                  {viewsToCommentsRatio(reel) != null ? (
-                    <p
-                      className="mt-1 text-[9px] tabular-nums text-app-fg-subtle"
-                      title="Views ÷ comments"
+                  <div className="mt-1.5 flex items-center gap-2">
+                    {reel.outbreaker_ratio != null ? (
+                      <span className="rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-bold tabular-nums text-amber-700 dark:text-amber-400">
+                        {reel.outbreaker_ratio.toFixed(1)}×
+                        {reel.outbreaker_ratio_source === "account_avg_fallback" ? " avg" : ` @${hours}h`}
+                      </span>
+                    ) : null}
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => {
+                        setModalReel(reel);
+                        setModalOpen(true);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[9px] font-semibold text-amber-700 hover:bg-amber-500/10 disabled:opacity-50 dark:text-amber-400"
                     >
-                      {formatViewsToComments(reel)}
-                    </p>
-                  ) : null}
-                  {reel.outbreaker_ratio != null ? (
-                    <span className="mt-1 inline-block rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-bold tabular-nums text-amber-700 dark:text-amber-400">
-                      {reel.outbreaker_ratio.toFixed(1)}×
-                      {reel.outbreaker_ratio_source === "account_avg_fallback" ? " avg" : ` @${hours}h`}
-                    </span>
-                  ) : null}
-                  <button
-                    type="button"
-                    disabled={disabled}
-                    onClick={() => {
-                      setModalReel(reel);
-                      setModalOpen(true);
-                    }}
-                    className="mt-1.5 flex w-full items-center justify-center gap-1 rounded-lg bg-amber-500/15 py-1.5 text-[10px] font-bold text-amber-800 hover:bg-amber-500/25 disabled:opacity-50 dark:text-amber-400"
-                  >
-                    <Sparkles className="h-3 w-3" aria-hidden />
-                    Replicate
-                  </button>
+                      <Sparkles className="h-2.5 w-2.5" aria-hidden />
+                      Adapt
+                    </button>
+                  </div>
                 </div>
               </ReelCardWithAnalysis>
             ))}

@@ -25,6 +25,7 @@ export const defaultVisualProps = {
   hook: '',
   textBlocks: [],
   backgroundUrl: '',
+  backgroundKind: 'image',
   hookDurationSeconds: 3,
   secondsPerBlock: 2.5,
 };

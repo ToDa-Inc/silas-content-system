@@ -32,7 +32,27 @@ type Props = {
   disabledHint?: string | null;
 };
 
+type Tab = "act" | "track";
+
+const TABS: { id: Tab; label: string; hint: string }[] = [
+  {
+    id: "act",
+    label: "Act now",
+    hint: "Recent competitor reels outperforming their own baseline — ranked for adaptation.",
+  },
+  {
+    id: "track",
+    label: "Track performance",
+    hint: "What has grown the most over time — proven posts and weekly momentum.",
+  },
+];
+
 function formatWindowHint(wb: WeekBreakoutsPayload | undefined): string {
+  if (wb?.scope === "growth_7d_post_age") {
+    const m = wb.maturity_days ?? 7;
+    const d = wb.measure_days ?? 7;
+    return `Top 3 by growth (days ${m + 1}–${m + d} after publish)`;
+  }
   if (wb?.scope === "growth_7d") {
     return "Top 3 by growth (last 7 days)";
   }
@@ -52,14 +72,12 @@ function formatWindowHint(wb: WeekBreakoutsPayload | undefined): string {
   }
 }
 
-/** API may return arrays (new) or a single reel (legacy). */
 function normalizeTopList(raw: unknown): ScrapedReelRow[] {
   if (Array.isArray(raw)) return raw as ScrapedReelRow[];
   if (raw && typeof raw === "object") return [raw as ScrapedReelRow];
   return [];
 }
 
-/** Preserve backend order (growth-ranked); pad to 3 slots when catalog is non-empty. */
 function topThreeSlotsOrdered(reels: ScrapedReelRow[]): (ScrapedReelRow | null)[] {
   if (!reels.length) return [];
   const out: (ScrapedReelRow | null)[] = reels.slice(0, 3).map((r) => r);
@@ -67,7 +85,6 @@ function topThreeSlotsOrdered(reels: ScrapedReelRow[]): (ScrapedReelRow | null)[
   return out.slice(0, 3);
 }
 
-/** Compact absolute value (no sign). */
 function formatCompactAbs(n: number): string {
   const abs = Math.abs(n);
   if (abs >= 1_000_000) return `${(abs / 1_000_000).toFixed(1)}M`;
@@ -75,24 +92,18 @@ function formatCompactAbs(n: number): string {
   return String(Math.round(abs));
 }
 
-/** +12K / −1.2K / 0 for badge and titles. */
 function formatCompactDeltaSigned(n: number): string {
   if (n === 0) return "0";
   const body = formatCompactAbs(n);
-  if (n > 0) return `+${body}`;
-  return `−${body}`;
+  return n > 0 ? `+${body}` : `−${body}`;
 }
 
 function growthDeltaForMetric(
   reel: ScrapedReelRow,
   metric: "views" | "likes" | "comments",
 ): number | null {
-  if (metric === "views") {
-    return reel.growth_views != null ? Number(reel.growth_views) : null;
-  }
-  if (metric === "likes") {
-    return reel.growth_likes != null ? Number(reel.growth_likes) : null;
-  }
+  if (metric === "views") return reel.growth_views != null ? Number(reel.growth_views) : null;
+  if (metric === "likes") return reel.growth_likes != null ? Number(reel.growth_likes) : null;
   return reel.growth_comments != null ? Number(reel.growth_comments) : null;
 }
 
@@ -244,7 +255,7 @@ function CompactBreakoutRow({
         ) : null}
         {lane === "proven" && reel.proven_growth_source === "raw_views" ? (
           <p className="mt-0.5 text-[8px] leading-snug text-app-fg-muted">
-            Ranked by total views — more daily syncs unlock baseline growth here.
+            Ranked by total views (no snapshot history yet)
           </p>
         ) : null}
       </div>
@@ -291,15 +302,14 @@ function ActivityLaneBlock({
   clientSlug: string;
   orgSlug: string;
   lane: "trending" | "proven";
-  /** Cap how many cards render (e.g. top 5 proven). */
   maxReels?: number;
   onOpenReel: (reel: ScrapedReelRow) => void;
 }) {
   if (!reels.length) return null;
   const list = maxReels != null ? reels.slice(0, maxReels) : reels;
   return (
-    <div className="mb-6">
-      <h3 className="text-xs font-semibold text-app-fg">{title}</h3>
+    <div className="mb-2">
+      {title ? <h3 className="mb-1 text-xs font-semibold text-app-fg">{title}</h3> : null}
       <p className="mb-3 text-[11px] leading-relaxed text-app-fg-muted">{subtitle}</p>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 lg:items-stretch">
         {list.map((reel) => (
@@ -378,7 +388,7 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [activityRefreshKey, setActivityRefreshKey] = useState(0);
-  /** Single-column weekly momentum; default comments (engagement-first). */
+  const [activeTab, setActiveTab] = useState<Tab>("act");
   const [weeklyMetric, setWeeklyMetric] = useState<"views" | "likes" | "comments">("comments");
   const [hubReel, setHubReel] = useState<ScrapedReelRow | null>(null);
 
@@ -394,9 +404,10 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
       try {
         const apiBase = getContentApiBase();
         const headers = await clientApiHeaders({ orgSlug });
-        const res = await contentApiFetch(`${apiBase}/api/v1/clients/${encodeURIComponent(clientSlug)}/activity`, {
-          headers,
-        });
+        const res = await contentApiFetch(
+          `${apiBase}/api/v1/clients/${encodeURIComponent(clientSlug)}/activity`,
+          { headers },
+        );
         if (!res.ok) {
           const t = await res.text();
           if (!cancelled) setErr(t.slice(0, 200));
@@ -416,9 +427,7 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
     };
   }, [clientSlug, orgSlug, disabled, activityRefreshKey]);
 
-  if (disabled || !clientSlug.trim()) {
-    return null;
-  }
+  if (disabled || !clientSlug.trim()) return null;
 
   if (loading) {
     return (
@@ -459,9 +468,12 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
   const weeklyMomentumBadge =
     wb?.scope === "growth_7d_post_age" ? `d${mDays + 1}–${mDays + measDays}` : "7d";
 
+  const activeTabMeta = TABS.find((t) => t.id === activeTab)!;
+
   return (
     <section className="mb-8">
-      <div className="mb-2 flex flex-wrap items-start justify-between gap-3">
+      {/* Header */}
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <h2 className="text-sm font-semibold text-app-fg">What happened</h2>
         <StoredBreakoutsRecomputeButton
           clientSlug={clientSlug}
@@ -472,60 +484,94 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
         />
       </div>
 
-      <ReplicateSection
-        clientSlug={clientSlug}
-        orgSlug={orgSlug}
-        disabled={disabled}
-        disabledHint={disabledHint}
-      />
-
-      <ActivityLaneBlock
-        title="Trending now"
-        subtitle={`Competitor reels posted in the last ${trendHours}h with views at least ${Math.round(trendFloor * 100)}% of that account’s average (from the latest sync). Updates when your cron or manual sync refreshes metrics. Use Details & actions on a card for analysis, recreate, and links.`}
-        reels={data?.trending_now?.reels ?? []}
-        clientSlug={clientSlug}
-        orgSlug={orgSlug}
-        lane="trending"
-        onOpenReel={setHubReel}
-      />
-      <ActivityLaneBlock
-        title="Proven performers"
-        subtitle={`Top 5 competitor posts at least ${provenDays} days old, ranked by view growth vs a snapshot taken around ${provenDays} days after the post (daily syncs append history). Without enough snapshots, we fall back to strongest totals in your catalog.`}
-        reels={data?.proven_performers?.reels ?? []}
-        clientSlug={clientSlug}
-        orgSlug={orgSlug}
-        lane="proven"
-        maxReels={5}
-        onOpenReel={setHubReel}
-      />
-
-      <div className="mb-1 flex flex-wrap items-end justify-between gap-3">
-        <p className="text-[11px] font-medium text-app-fg-secondary">Weekly momentum</p>
-        <AppSelect
-          label="Growth signal"
-          value={weeklyMetric}
-          onChange={(v) => setWeeklyMetric(v as "views" | "likes" | "comments")}
-          options={WEEKLY_METRIC_OPTIONS}
-          dense
-          triggerClassName="min-w-[10.5rem] px-2.5 py-1.5 text-xs"
-          menuAbove
-        />
+      {/* Tab bar */}
+      <div className="mb-1 flex gap-1 rounded-xl border border-zinc-200/80 bg-zinc-100/60 p-1 dark:border-white/10 dark:bg-white/[0.04]">
+        {TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id)}
+            className={`flex-1 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+              activeTab === tab.id
+                ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-800 dark:text-app-fg"
+                : "text-app-fg-muted hover:text-app-fg"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
-      <p className="mb-1 text-[11px] text-app-fg-subtle">{formatWindowHint(wb)}</p>
-      <p className="mb-4 text-[11px] leading-relaxed text-app-fg-muted">
-        Ranked by how much each reel grew in the selected metric over the last 7 days (vs the latest stored snapshot
-        from before that window). Reels without snapshot history fall back to ranking by absolute totals. Hover a
-        thumbnail for the 7-day delta badge.
-      </p>
+      <p className="mb-5 text-[11px] leading-relaxed text-app-fg-muted">{activeTabMeta.hint}</p>
 
-      <WeeklyMomentumGrid
-        slots={weeklySlots}
-        highlight={weeklyMetric}
-        clientSlug={clientSlug}
-        orgSlug={orgSlug}
-        weeklyMomentumBadge={weeklyMomentumBadge}
-        onOpenReel={setHubReel}
-      />
+      {/* Tab: Act now — Replicate + Trending */}
+      {activeTab === "act" ? (
+        <div>
+          <ReplicateSection
+            clientSlug={clientSlug}
+            orgSlug={orgSlug}
+            disabled={disabled}
+            disabledHint={disabledHint}
+          />
+          {(data?.trending_now?.reels ?? []).length > 0 ? (
+            <div className="mt-2 border-t border-zinc-200/50 pt-5 dark:border-white/[0.08]">
+              <ActivityLaneBlock
+                title="Also trending"
+                subtitle={`Competitor reels posted in the last ${trendHours}h with views at least ${Math.round(trendFloor * 100)}% of that account's average. Ranked by ratio vs account baseline — use Details & actions on a card to analyze or recreate.`}
+                reels={data?.trending_now?.reels ?? []}
+                clientSlug={clientSlug}
+                orgSlug={orgSlug}
+                lane="trending"
+                onOpenReel={setHubReel}
+              />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* Tab: Track performance — Proven + Weekly momentum */}
+      {activeTab === "track" ? (
+        <div>
+          <ActivityLaneBlock
+            title="Proven performers"
+            subtitle={`Top 5 competitor posts at least ${provenDays} days old, ranked by view growth vs a snapshot taken around ${provenDays} days after the post. Without enough snapshots, falls back to strongest totals in your catalog.`}
+            reels={data?.proven_performers?.reels ?? []}
+            clientSlug={clientSlug}
+            orgSlug={orgSlug}
+            lane="proven"
+            maxReels={5}
+            onOpenReel={setHubReel}
+          />
+
+          <div className="mt-2 border-t border-zinc-200/50 pt-5 dark:border-white/[0.08]">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold text-app-fg">Weekly momentum</p>
+                <p className="text-[11px] text-app-fg-subtle">{formatWindowHint(wb)}</p>
+              </div>
+              <AppSelect
+                label="Growth signal"
+                value={weeklyMetric}
+                onChange={(v) => setWeeklyMetric(v as "views" | "likes" | "comments")}
+                options={WEEKLY_METRIC_OPTIONS}
+                dense
+                triggerClassName="min-w-[10.5rem] px-2.5 py-1.5 text-xs"
+                menuAbove
+              />
+            </div>
+            <p className="mb-4 text-[11px] leading-relaxed text-app-fg-muted">
+              Top 3 reels by growth in the selected metric over the last 7 days. Hover a thumbnail for the delta badge.
+            </p>
+            <WeeklyMomentumGrid
+              slots={weeklySlots}
+              highlight={weeklyMetric}
+              clientSlug={clientSlug}
+              orgSlug={orgSlug}
+              weeklyMomentumBadge={weeklyMomentumBadge}
+              onOpenReel={setHubReel}
+            />
+          </div>
+        </div>
+      ) : null}
 
       {hubReel ? (
         <ActivityReelHubModal

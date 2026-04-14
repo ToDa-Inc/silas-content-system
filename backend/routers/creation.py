@@ -219,8 +219,12 @@ def set_session_broll(
             status_code=400,
             detail="Session must be content_ready or approved with a visual format (text_overlay, b_roll_reel, carousel)",
         )
-    if _effective_create_format_key(row) != "b_roll_reel":
-        raise HTTPException(status_code=400, detail="set-broll applies only to b_roll_reel sessions")
+    fk_eff = _effective_create_format_key(row)
+    if fk_eff not in ("text_overlay", "carousel", "b_roll_reel"):
+        raise HTTPException(
+            status_code=400,
+            detail="set-broll applies only to text_overlay, carousel, or b_roll_reel sessions",
+        )
 
     cid = body.broll_clip_id.strip()
     cres = (

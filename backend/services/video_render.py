@@ -70,10 +70,18 @@ def build_remotion_props(session: Dict[str, Any]) -> Dict[str, Any]:
     if not bg:
         raise ValueError("session missing background_url")
 
+    bg_type = str(session.get("background_type") or "").strip().lower()
+    has_broll_id = bool(str(session.get("broll_clip_id") or "").strip())
+    # static-slide uses image vs video layer; captioned-broll ignores this prop
+    background_kind = (
+        "video" if bg_type == "broll" or (not bg_type and has_broll_id) else "image"
+    )
+
     return {
         "hook": hook_text,
         "textBlocks": tb_out,
         "backgroundUrl": bg,
+        "backgroundKind": background_kind,
         "hookDurationSeconds": 3,
         "secondsPerBlock": 2.5,
     }
@@ -130,6 +138,16 @@ def run_video_render_job(settings: Settings, job_id: str) -> None:
         fail_video_render_job(supabase, job_id, session_id, str(e))
         return
 
+    cli_js = remotion_dir / "node_modules" / "@remotion" / "cli" / "remotion-cli.js"
+    if not cli_js.is_file():
+        fail_video_render_job(
+            supabase,
+            job_id,
+            session_id,
+            f"Remotion CLI missing at {cli_js} — run npm install in video-production/broll-caption-editor",
+        )
+        return
+
     tmpdir = tempfile.mkdtemp(prefix="remotion_")
     props_path = os.path.join(tmpdir, "props.json")
     out_mp4 = os.path.join(tmpdir, f"{session_id}.mp4")
@@ -137,14 +155,18 @@ def run_video_render_job(settings: Settings, job_id: str) -> None:
         with open(props_path, "w", encoding="utf-8") as f:
             json.dump(props, f, ensure_ascii=False)
 
+        # Remotion resolves --props with path.resolve(cwd, value); file:// URLs are not supported.
+        props_arg = os.path.abspath(props_path)
+
+        # Use node + remotion-cli.js (not npx .bin/remotion): some installs copy the CLI into
+        # node_modules/.bin with require('./dist/index'), which resolves against .bin/ and fails.
         cmd = [
-            "npx",
-            "--yes",
-            "remotion",
+            "node",
+            str(cli_js),
             "render",
             str(entry),
             comp_id,
-            f"--props=file://{props_path}",
+            f"--props={props_arg}",
             f"--output-path={out_mp4}",
         ]
         env = {**os.environ, "NODE_ENV": "production"}
