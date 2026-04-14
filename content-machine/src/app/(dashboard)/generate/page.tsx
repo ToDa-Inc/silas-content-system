@@ -7,6 +7,8 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  Download,
+  Image as ImageIcon,
   Loader2,
   RefreshCw,
   Sparkles,
@@ -20,6 +22,7 @@ import {
   fetchFormatDigests,
   generationChooseAngle,
   generationDeleteSession,
+  generationGenerateThumbnail,
   generationGetSession,
   generationListSessions,
   generationRegenerate,
@@ -484,15 +487,21 @@ export default function GeneratePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const sessionIdFromUrl = searchParams.get("session");
+  const modeFromUrl = searchParams.get("mode") as SourceMode | null;
+  const urlFromUrl = searchParams.get("url");
   const [step, setStep] = useState<Step>("source");
-  const [sourceMode, setSourceMode] = useState<SourceMode>("format_pick");
+  const [sourceMode, setSourceMode] = useState<SourceMode>(
+    modeFromUrl === "url_adapt" || modeFromUrl === "idea_match" || modeFromUrl === "script_adapt"
+      ? modeFromUrl
+      : "format_pick",
+  );
   const [extraInstruction, setExtraInstruction] = useState("");
   const [formatDigests, setFormatDigests] = useState<FormatDigestSummary[]>([]);
   const [selectedFormatKey, setSelectedFormatKey] = useState<string | null>(null);
   const [ideaText, setIdeaText] = useState("");
   const [formatRecommendations, setFormatRecommendations] = useState<FormatRecommendation[]>([]);
+  const [adaptUrl, setAdaptUrl] = useState(urlFromUrl?.trim() ?? "");
   const [scriptAdaptText, setScriptAdaptText] = useState("");
-  const [adaptUrl, setAdaptUrl] = useState("");
   const [session, setSession] = useState<GenerationSession | null>(null);
   const [sessions, setSessions] = useState<GenerationSession[]>([]);
   const [loading, setLoading] = useState(false);
@@ -504,6 +513,9 @@ export default function GeneratePage() {
   const [orgSlug, setOrgSlug] = useState("");
   const [regenScope, setRegenScope] = useState<"all" | "hooks" | "script" | "caption" | "story">("all");
   const [regenFeedback, setRegenFeedback] = useState("");
+  const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
+  const [thumbnailLoading, setThumbnailLoading] = useState(false);
+  const [coverText, setCoverText] = useState<string>("");
 
   const refreshSessions = useCallback(async () => {
     if (!clientSlug || !orgSlug) return;
@@ -704,6 +716,8 @@ export default function GeneratePage() {
         return;
       }
       setSession(res.data);
+      setThumbnailUrl(null);
+      setCoverText("");
       setStep("angles");
       show("Angles ready — pick one.", "success");
       const lr = await generationListSessions(ctx.clientSlug, ctx.orgSlug, 15);
@@ -807,6 +821,23 @@ export default function GeneratePage() {
       setLoading(false);
     }
   }, [clientSlug, orgSlug, session, show]);
+
+  const onGenerateThumbnail = useCallback(async (textOverride?: string) => {
+    if (!session?.id || !clientSlug || !orgSlug) return;
+    setThumbnailLoading(true);
+    try {
+      const text = (textOverride ?? coverText).trim() || undefined;
+      const res = await generationGenerateThumbnail(clientSlug, orgSlug, session.id, text);
+      if (!res.ok) {
+        show(res.error, "error");
+        return;
+      }
+      setThumbnailUrl(res.data.thumbnail_url);
+      show("Cover generated.", "success");
+    } finally {
+      setThumbnailLoading(false);
+    }
+  }, [clientSlug, orgSlug, coverText, session, show]);
 
   const copyText = useCallback(
     async (label: string, text: string) => {
@@ -1542,6 +1573,136 @@ export default function GeneratePage() {
               })}
             </div>
           </div>
+
+          {/* ── Reel cover ── */}
+          {(session.hooks?.length ?? 0) > 0 && (
+            <div className="glass rounded-2xl border border-app-divider/80 p-5 md:p-6">
+              <div className="mb-4">
+                <h2 className="flex items-center gap-2 text-sm font-semibold text-app-fg">
+                  <ImageIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
+                  Reel cover
+                </h2>
+                <p className="mt-0.5 text-xs text-app-fg-muted">
+                  Generate a minimal editorial cover image (9:16) — the selected hook becomes the headline.
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-5 lg:flex-row lg:items-start">
+                {/* ── Left: portrait preview ── */}
+                <div className="mx-auto shrink-0 lg:mx-0">
+                  {thumbnailLoading ? (
+                    <div className="flex aspect-[9/16] w-[180px] flex-col items-center justify-center gap-3 rounded-xl border border-app-divider bg-app-chip-bg/40">
+                      <Loader2 className="h-7 w-7 animate-spin text-app-fg-subtle" />
+                      <p className="px-4 text-center text-[10px] text-app-fg-muted">~30–60s</p>
+                    </div>
+                  ) : thumbnailUrl ? (
+                    <div className="w-[180px] overflow-hidden rounded-xl border border-app-divider shadow-lg">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={thumbnailUrl}
+                        alt="Generated reel cover"
+                        width={180}
+                        height={320}
+                        className="block aspect-[9/16] w-full object-cover"
+                        style={{ aspectRatio: "9/16" }}
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex aspect-[9/16] w-[180px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-app-divider/70 bg-app-chip-bg/20">
+                      <ImageIcon className="h-7 w-7 text-app-fg-subtle opacity-30" aria-hidden />
+                      <p className="px-4 text-center text-[10px] text-app-fg-subtle">Cover preview</p>
+                    </div>
+                  )}
+                </div>
+
+                {/* ── Right: controls ── */}
+                <div className="flex min-w-0 flex-1 flex-col gap-4">
+                  {/* Hook picker */}
+                  <div>
+                    <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-app-fg-subtle">
+                      Headline for cover
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(session.hooks ?? []).map((h, i) => {
+                        const isSelected = coverText === h.text;
+                        return (
+                          <button
+                            key={i}
+                            type="button"
+                            onClick={() => setCoverText(h.text)}
+                            className={`max-w-[260px] truncate rounded-lg border px-2.5 py-1 text-left text-[11px] transition-colors ${
+                              isSelected
+                                ? "border-amber-500/50 bg-amber-500/15 font-semibold text-app-fg"
+                                : "border-app-divider text-app-fg-muted hover:border-amber-500/30 hover:bg-amber-500/5"
+                            }`}
+                            title={h.text}
+                          >
+                            {h.text.length > 60 ? `${h.text.slice(0, 58)}…` : h.text}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Custom text override */}
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-app-fg-subtle">
+                      Or type a custom headline
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={coverText}
+                      onChange={(e) => setCoverText(e.target.value)}
+                      placeholder="Type a custom headline for the cover…"
+                      className="glass-inset w-full resize-none rounded-xl px-3 py-2 text-sm text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+                    />
+                  </div>
+
+                  {/* Active text preview */}
+                  {coverText.trim() && (
+                    <p className="rounded-lg border border-app-divider/60 bg-app-chip-bg/30 px-3 py-2 text-xs italic leading-relaxed text-app-fg-secondary">
+                      &ldquo;{coverText.trim()}&rdquo;
+                    </p>
+                  )}
+
+                  {/* Actions */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={thumbnailLoading}
+                      onClick={() => void onGenerateThumbnail()}
+                      className="inline-flex items-center gap-2 rounded-xl bg-amber-500/15 px-4 py-2 text-sm font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-50"
+                    >
+                      {thumbnailLoading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                      ) : (
+                        <Sparkles className="h-4 w-4" aria-hidden />
+                      )}
+                      {thumbnailLoading ? "Generating…" : thumbnailUrl ? "Regenerate" : "Generate cover"}
+                    </button>
+
+                    {thumbnailUrl && !thumbnailLoading && (
+                      <a
+                        href={thumbnailUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-2 rounded-xl border border-app-divider px-4 py-2 text-sm font-semibold text-app-fg hover:bg-white/5"
+                      >
+                        <Download className="h-4 w-4" aria-hidden />
+                        Open full size
+                      </a>
+                    )}
+                  </div>
+
+                  {thumbnailUrl && !thumbnailLoading && (
+                    <p className="text-[10px] text-app-fg-subtle">
+                      Right-click → Save image as, or use Open full size to download.
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           <div>
             <div className="mb-2 flex items-center justify-between">

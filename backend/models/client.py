@@ -1,4 +1,4 @@
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -27,9 +27,16 @@ class ClientUpdate(BaseModel):
 
 
 class DnaChatUpdateBody(BaseModel):
-    """Natural-language instruction to surgically update client_context strategy sections."""
+    """Natural-language instruction to propose edits to client_dna.analysis_brief (preview)."""
 
     message: str = Field(..., min_length=10, max_length=2000)
+
+
+class DnaChatApplyBody(BaseModel):
+    """Apply preview from POST …/dna/chat-preview. Only ``analysis_brief`` is read from changed_sections."""
+
+    changed_sections: Dict[str, str] = Field(default_factory=dict)
+    summary: Optional[str] = Field(None, max_length=4000)
 
 
 class ClientOut(BaseModel):

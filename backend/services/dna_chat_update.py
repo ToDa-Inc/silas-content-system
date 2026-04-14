@@ -1,76 +1,73 @@
-"""LLM: natural-language instruction → surgical updates to client_context strategy sections."""
+"""LLM: natural-language instruction → surgical edits to client_dna.analysis_brief only."""
 
 from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 
-from services.client_context_generate import SECTION_KEYS
+ANALYSIS_BRIEF_KEY = "analysis_brief"
+MAX_ANALYSIS_BRIEF_CHARS = 120_000
 
-DNA_CHAT_SYSTEM = """You are maintaining the strategic profile of a creator for an AI content system.
-The profile has five source sections. Each section is prose text used as context
-for AI reel analysis and content generation. Based on the user's instruction, you
-must apply surgical updates to the affected section(s) only.
+DNA_PROFILE_CHAT_SYSTEM = """You edit ONE artifact: the "analysis brief" stored as client_dna.analysis_brief.
+This is dense prose (often with • section labels) that tells an AI how to score competitor reels for THIS creator:
+identity, niche boundaries, audience, pains/desires, what content resonates, what fails, voice.
 
-═══════════════════════
-SECTION DEFINITIONS
-═══════════════════════
-- icp: Ideal client profile — demographics, psychographics, pain points, desires.
-- brand_map: Brand identity — positioning, values, personality, differentiators.
-- story_board: Stories, origin, signature anecdotes (only confirmed facts, no invention).
-- communication_guideline: Tone, vocabulary, phrases to use/avoid, style rules.
-- offer_documentation: What they sell, pricing if known, promise, objections.
+The user described a change (pivot, tone shift, new angle). Update the brief to reflect it.
 
 ═══════════════════════
 STRICT RULES
 ═══════════════════════
-1. Only include sections that the instruction actually changes. If the instruction
-   only affects icp, return icp only in changed_sections. Do not return unchanged sections.
-2. Within a section you do update: preserve all content the instruction does NOT
-   contradict. Add, modify, or remove only what the instruction explicitly requires.
-3. Never invent facts. If the user says "she launched a group program," add that.
-   Do not add pricing, modules, or details that were not stated.
-4. When the instruction contradicts existing content, the instruction wins.
-5. If a section currently says "Not covered" or is empty and the instruction adds relevant
-   information, replace it with the new content.
-6. If nothing in the profile needs updating (e.g. the instruction is a question,
-   is out of scope, or is already fully reflected), return "changed_sections": {}.
-7. Write in the same language as the existing section you are updating when that section
-   has substantial text. If the section is in German, write the updated text in German.
-   If the section is empty or only a placeholder, match the client's content language from the payload.
+1. Return the COMPLETE revised analysis_brief as one string (not a diff, not a fragment).
+2. Surgical edits: keep paragraphs, bullets, and facts that the instruction does NOT require changing.
+   Do NOT wipe or rewrite unrelated sections. Prefer small insertions and targeted rewrites.
+3. Never invent facts. If the instruction implies something vague, integrate cautiously without new concrete claims.
+4. If the instruction is a question, off-topic, or nothing should change, return the current brief UNCHANGED
+   and explain in summary.
+5. Match the language of the existing brief when it has substantial text; otherwise match client_content_language.
 
 ═══════════════════════
 OUTPUT FORMAT
 ═══════════════════════
-Respond with a single JSON object. No markdown fences. No text outside the JSON.
+A single JSON object. No markdown fences. No text outside the JSON.
 
 {
-  "changed_sections": {
-    "<section_key>": "<full updated text for this section>"
-  },
-  "summary": "<1-2 sentence summary of what was updated, or why nothing changed>"
+  "analysis_brief": "<full updated brief text>",
+  "summary": "<1-2 sentences: what you changed, or why nothing changed>"
 }
-
-The keys in changed_sections must be exactly from: icp, brand_map, story_board, communication_guideline, offer_documentation.
 """
 
 
-def _extract_section_text(raw: Any) -> str:
-    if raw is None:
-        return ""
-    if isinstance(raw, dict) and "text" in raw:
-        return str(raw.get("text") or "").strip()
-    if isinstance(raw, str):
-        return raw.strip()
-    return ""
+def coerce_analysis_brief_patch(changed_sections: Any) -> Optional[str]:
+    """Extract validated analysis_brief text from apply body (only this key is allowed)."""
+    if not isinstance(changed_sections, dict):
+        return None
+    raw = changed_sections.get(ANALYSIS_BRIEF_KEY)
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    if len(text) > MAX_ANALYSIS_BRIEF_CHARS:
+        text = text[:MAX_ANALYSIS_BRIEF_CHARS]
+    return text
 
 
-def sections_text_from_context(client_context: Any) -> Dict[str, str]:
-    ctx = client_context if isinstance(client_context, dict) else {}
-    return {k: _extract_section_text(ctx.get(k)) for k in SECTION_KEYS}
+def merge_analysis_brief_into_client_dna(
+    existing_dna: Any,
+    new_brief: str,
+    *,
+    now_iso: str,
+) -> Dict[str, Any]:
+    """Patch client_dna JSON; does not touch client_context or trigger recompile."""
+    d: Dict[str, Any] = dict(existing_dna) if isinstance(existing_dna, dict) else {}
+    d[ANALYSIS_BRIEF_KEY] = new_brief
+    d["analysis_brief_edit_source"] = "chat"
+    d["analysis_brief_edited_at"] = now_iso
+    d["compiled_at"] = now_iso
+    return d
 
 
 def _parse_json_response(content: str) -> Dict[str, Any]:
@@ -83,22 +80,22 @@ def _parse_json_response(content: str) -> Dict[str, Any]:
     return parsed
 
 
-def run_dna_chat_update(
+def run_dna_profile_chat_update(
     *,
     openrouter_key: str,
     model: str,
-    sections: Dict[str, str],
+    current_brief: str,
     instruction: str,
     client_language: str,
 ) -> Tuple[Dict[str, str], str]:
-    """Call OpenRouter; return (changed_sections filtered to valid keys, summary)."""
+    """Return ({analysis_brief: new_text}, summary) or ({}, summary) if nothing to apply."""
     if not openrouter_key:
         raise RuntimeError("OPENROUTER_API_KEY not configured")
 
     user_msg = json.dumps(
         {
             "client_content_language": (client_language or "de").strip() or "de",
-            "current_sections": {k: sections.get(k, "") for k in SECTION_KEYS},
+            "current_analysis_brief": current_brief or "",
             "instruction": instruction.strip(),
         },
         ensure_ascii=False,
@@ -107,10 +104,10 @@ def run_dna_chat_update(
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": DNA_CHAT_SYSTEM},
+            {"role": "system", "content": DNA_PROFILE_CHAT_SYSTEM},
             {"role": "user", "content": user_msg},
         ],
-        "max_tokens": 8192,
+        "max_tokens": 12_288,
         "temperature": 0.2,
     }
     try:
@@ -141,28 +138,26 @@ def run_dna_chat_update(
     except json.JSONDecodeError as e:
         raise RuntimeError(f"Model returned invalid JSON: {e}") from e
 
-    raw_changed = parsed.get("changed_sections")
-    if not isinstance(raw_changed, dict):
-        raw_changed = {}
-
-    allowed = set(SECTION_KEYS)
-    changed: Dict[str, str] = {}
-    for k, v in raw_changed.items():
-        sk = str(k).strip()
-        if sk not in allowed:
-            continue
-        if not isinstance(v, str):
-            continue
-        text = v.strip()
-        if not text:
-            continue
-        if len(text) > 120_000:
-            text = text[:120_000]
-        changed[sk] = text
-
+    brief_raw = parsed.get(ANALYSIS_BRIEF_KEY)
+    brief_str = str(brief_raw).strip() if brief_raw is not None else ""
     summary = parsed.get("summary")
     summary_str = str(summary).strip() if summary is not None else ""
-    if not summary_str:
-        summary_str = "No summary from model." if changed else "No sections were updated."
 
-    return changed, summary_str
+    if not brief_str:
+        if not summary_str:
+            summary_str = "No updated brief returned."
+        return {}, summary_str
+
+    if len(brief_str) > MAX_ANALYSIS_BRIEF_CHARS:
+        brief_str = brief_str[:MAX_ANALYSIS_BRIEF_CHARS]
+
+    cur = (current_brief or "").strip()
+    if brief_str == cur:
+        if not summary_str:
+            summary_str = "No changes — brief already matches your instruction."
+        return {}, summary_str
+
+    if not summary_str:
+        summary_str = "Analysis brief updated."
+
+    return {ANALYSIS_BRIEF_KEY: brief_str}, summary_str

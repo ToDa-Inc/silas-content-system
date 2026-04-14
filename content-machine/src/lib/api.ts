@@ -163,8 +163,16 @@ export type ClientRow = {
   outlier_ratio_threshold?: number | null;
 };
 
-/** POST /clients/{slug}/dna/chat-update */
-export type DnaChatUpdateResponse = {
+/** POST /clients/{slug}/dna/chat-preview — LLM only; may include only `analysis_brief` keys. */
+export type DnaChatPreviewResponse = {
+  summary: string;
+  changed_sections: Record<string, string>;
+  before: Record<string, string>;
+  updated_sections: string[];
+};
+
+/** POST /clients/{slug}/dna/chat-apply — persist `analysis_brief` into client_dna only. */
+export type DnaChatApplyResponse = {
   summary: string;
   updated_sections: string[];
   client: ClientRow;

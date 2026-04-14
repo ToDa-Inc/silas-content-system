@@ -295,6 +295,7 @@ export type GenerationSession = {
   broll_clip_id?: string | null;
   background_url?: string | null;
   rendered_video_url?: string | null;
+  thumbnail_url?: string | null;
   render_status?: string | null;
   render_error?: string | null;
   status: string;
@@ -657,6 +658,36 @@ export async function patchCreateSession(
   }
 }
 
+export async function generationGenerateThumbnail(
+  clientSlug: string,
+  orgSlug: string,
+  sessionId: string,
+  hookText?: string,
+): Promise<{ ok: true; data: { thumbnail_url: string } } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/generate/sessions/${encodeURIComponent(sessionId)}/generate-thumbnail`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ hook_text: hookText ?? null }),
+      },
+    );
+    const json = (await res.json().catch(() => ({}))) as { thumbnail_url?: string; detail?: unknown };
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
+    }
+    if (!json.thumbnail_url) {
+      return { ok: false, error: "No thumbnail URL returned" };
+    }
+    return { ok: true, data: { thumbnail_url: json.thumbnail_url } };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
 export async function creationGenerateBackground(
   clientSlug: string,
   orgSlug: string,
@@ -733,6 +764,7 @@ export async function creationRenderVideo(
 export type BrollClipRow = {
   id: string;
   file_url: string;
+  thumbnail_url?: string | null;
   label?: string | null;
   created_at?: string | null;
 };
@@ -756,6 +788,28 @@ export async function brollList(
       };
     }
     return { ok: true, data: Array.isArray(json) ? (json as BrollClipRow[]) : [] };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function brollDelete(
+  clientSlug: string,
+  orgSlug: string,
+  clipId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/broll/${encodeURIComponent(clipId)}`,
+      { method: "DELETE", headers },
+    );
+    if (!res.ok) {
+      const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      return { ok: false, error: formatFastApiError(json, `Failed (${res.status})`) };
+    }
+    return { ok: true };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
   }

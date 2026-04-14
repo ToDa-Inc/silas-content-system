@@ -11,7 +11,7 @@ from supabase import Client
 
 from core.config import Settings, get_settings
 from core.database import get_supabase
-from core.deps import resolve_client_id
+from core.deps import require_org_access, resolve_client_id
 from core.id_generator import generate_generation_session_id, generate_job_id
 from jobs.reel_analyze_url import (
     ReelAnalyzeTerminalError,
@@ -26,6 +26,7 @@ from models.generation import (
     GenerationRegenerateBody,
     GenerationSessionOut,
     GenerationStartBody,
+    GenerateThumbnailBody,
 )
 from services.content_generation import (
     GENERATION_PROMPT_VERSION,
@@ -42,11 +43,8 @@ from services.content_generation import (
     run_script_adaptation_synthesis,
 )
 from services.format_classifier import canonicalize_stored_format_key
-
-
-def _session_adapts_single_reference_reel(row: Dict[str, Any]) -> bool:
-    """True when patterns were synthesized from one competitor reel (URL adapt)."""
-    return str(row.get("source_type") or "").strip() == "url_adapt"
+from services.image_generation import generate_thumbnail_freepik_pillow
+from services.video_render import RENDERS_BUCKET
 from services.format_digest import (
     compute_format_digests,
     ensure_format_digests_fresh,
@@ -58,6 +56,11 @@ from services.reel_metrics import compute_niche_benchmarks, enrich_engagement_me
 
 router = APIRouter(prefix="/api/v1", tags=["generation"])
 logger = logging.getLogger(__name__)
+
+
+def _session_adapts_single_reference_reel(row: Dict[str, Any]) -> bool:
+    """True when patterns were synthesized from one competitor reel (URL adapt)."""
+    return str(row.get("source_type") or "").strip() == "url_adapt"
 
 
 def _now_iso() -> str:
@@ -713,3 +716,87 @@ def generation_delete_session(
     supabase.table("generation_sessions").delete().eq("id", session_id).eq(
         "client_id", client_id
     ).execute()
+
+
+def _public_render_url(supabase_url: str, bucket: str, path: str) -> str:
+    return f"{supabase_url.rstrip('/')}/storage/v1/object/public/{bucket}/{path}"
+
+
+@router.post("/clients/{slug}/generate/sessions/{session_id}/generate-thumbnail")
+def generation_generate_thumbnail(
+    slug: str,
+    session_id: str,
+    body: GenerateThumbnailBody,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Dict[str, Any]:
+    """Generate a 9:16 reel cover thumbnail.
+
+    Uses Freepik flux-2-turbo for the background + Pillow for text overlay,
+    matching Conny's editorial style (soft washed-out photo + serif headline).
+
+    Pass ``hook_text`` in the body to control which text appears on the cover.
+    Falls back to the session's first hook, then chosen angle title.
+    Returns ``{"thumbnail_url": "<public url>"}``.
+    """
+    _ = slug
+    if not settings.freepik_api_key:
+        raise HTTPException(status_code=503, detail="FREEPIK_API_KEY not configured")
+
+    row = _load_session(supabase, client_id, session_id)
+
+    # Resolve cover text: explicit override > first hook > angle title
+    text = (body.hook_text or "").strip()
+    angle_context = ""
+    if not text:
+        hooks: List[Any] = row.get("hooks") or []
+        if hooks and isinstance(hooks[0], dict):
+            text = str(hooks[0].get("text") or "").strip()
+
+        angles: List[Any] = row.get("angles") or []
+        idx = row.get("chosen_angle_index")
+        try:
+            chosen = angles[int(idx)] if idx is not None and 0 <= int(idx) < len(angles) else (angles[0] if angles else {})
+            if isinstance(chosen, dict):
+                angle_context = str(chosen.get("title") or "").strip()
+                if not text:
+                    text = angle_context
+        except (TypeError, ValueError, IndexError):
+            pass
+
+    if not text:
+        raise HTTPException(
+            status_code=400,
+            detail="Session has no hooks or angles — pass hook_text in the request body.",
+        )
+
+    try:
+        png = generate_thumbnail_freepik_pillow(
+            settings.freepik_api_key,
+            text,
+            angle_context=angle_context,
+        )
+    except Exception as e:
+        logger.exception("Thumbnail generation failed")
+        raise HTTPException(status_code=502, detail=f"Thumbnail generation failed: {e}") from e
+
+    path = f"{client_id}/thumb_{session_id}.png"
+    try:
+        supabase.storage.from_(RENDERS_BUCKET).upload(
+            path,
+            png,
+            {"content-type": "image/png", "upsert": "true"},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Storage upload failed: {e}") from e
+
+    url = _public_render_url(settings.supabase_url, RENDERS_BUCKET, path)
+
+    # Persist so the Media page can list covers without extra endpoints
+    try:
+        supabase.table("generation_sessions").update({"thumbnail_url": url}).eq("id", session_id).execute()
+    except Exception:
+        logger.warning("Could not persist thumbnail_url to generation_sessions — column may not exist yet")
+
+    return {"thumbnail_url": url}

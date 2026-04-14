@@ -976,18 +976,17 @@ Silas wants to constantly update Connie's profile with new context — via chat,
 
 ### Implementation
 
-New endpoint: `POST /clients/{slug}/dna/chat-update`
+Two-step flow: `POST /clients/{slug}/dna/chat-preview` (LLM proposes `analysis_brief` only, no DB write) then `POST /clients/{slug}/dna/chat-apply` (patch `client_dna.analysis_brief` only; `client_context` unchanged, no auto-recompile).
 
 ```python
-@router.post("/clients/{slug}/dna/chat-update")
-def chat_update_dna(slug: str, body: DnaChatBody, ...):
-    current_dna = load_client_dna(supabase, client_id)
-    updated = llm_apply_instruction(current_dna, body.message)
-    supabase.table("clients").update({"client_dna": updated}).eq("id", client_id).execute()
-    return {"updated_fields": [...], "dna": updated}
+@router.post("/clients/{slug}/dna/chat-preview")
+def dna_chat_preview(...):  # run_dna_profile_chat_update → summary, changed_sections, before
+
+@router.post("/clients/{slug}/dna/chat-apply")
+def dna_chat_apply(...):  # coerce_analysis_brief_patch → merge_analysis_brief_into_client_dna
 ```
 
-Frontend: chat-like input on client settings page.
+Frontend: message input on Context page → Preview (diff) → Approve or Reject.
 
 **Effort:** Medium. Needs careful prompt to avoid overwriting unrelated DNA sections.
 

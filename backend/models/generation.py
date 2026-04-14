@@ -64,6 +64,11 @@ class GenerationFeedbackBody(BaseModel):
     feedback: Optional[str] = Field(None, max_length=4000)
 
 
+class GenerateThumbnailBody(BaseModel):
+    """Optional override for the text rendered on the reel cover."""
+    hook_text: Optional[str] = Field(None, max_length=500)
+
+
 class GenerationSessionOut(BaseModel):
     model_config = ConfigDict(extra="ignore")
 

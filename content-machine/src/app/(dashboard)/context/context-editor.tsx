@@ -20,7 +20,8 @@ import {
 import type {
   ClientContextData,
   ClientContextSection,
-  DnaChatUpdateResponse,
+  DnaChatApplyResponse,
+  DnaChatPreviewResponse,
 } from "@/lib/api";
 import {
   formatProfileCompiledRel,
@@ -149,6 +150,36 @@ function parseJsonObject(text: string): unknown {
   }
 }
 
+function ProfileBriefSideBySide({ beforeText, afterText }: { beforeText: string; afterText: string }) {
+  const beforeDisplay = beforeText.trim() ? beforeText : "— (empty — save context and refresh profile first)";
+  return (
+    <div className="mt-3 grid gap-3 md:grid-cols-2">
+      <div className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-outline-variant/15 bg-surface-container-low/70">
+        <div className="shrink-0 border-b border-outline-variant/10 px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+          Current reel analysis profile
+        </div>
+        <div className="max-h-[min(28rem,55vh)] min-h-[8rem] overflow-y-auto px-3 py-3 text-[12px] leading-relaxed text-zinc-700 dark:text-zinc-300">
+          <p className="whitespace-pre-wrap">{beforeDisplay}</p>
+        </div>
+      </div>
+      <div className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-emerald-500/30 bg-emerald-500/[0.07] dark:bg-emerald-500/[0.09]">
+        <div className="shrink-0 border-b border-emerald-500/25 px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-emerald-900 dark:text-emerald-200/95">
+          Proposed reel analysis profile
+        </div>
+        <div className="max-h-[min(28rem,55vh)] min-h-[8rem] overflow-y-auto px-3 py-3 text-[12px] leading-relaxed text-on-surface">
+          <p className="whitespace-pre-wrap">{afterText}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function dnaUpdatedSectionLabel(key: string): string {
+  if (key === "analysis_brief") return "Reel analysis profile";
+  const meta = SECTION_META[key as ContextSectionKey];
+  return meta?.title ?? key;
+}
+
 function firstLinePreview(text: string, max = 64): string {
   const line = text.trim().split(/\r?\n/).find((l) => l.trim()) ?? "";
   const t = line.trim();
@@ -246,6 +277,8 @@ export function ContextEditor({
   const [dnaBusy, setDnaBusy] = useState(false);
   const [dnaChatInput, setDnaChatInput] = useState("");
   const [dnaChatBusy, setDnaChatBusy] = useState(false);
+  const [dnaApplyBusy, setDnaApplyBusy] = useState(false);
+  const [dnaChatPreview, setDnaChatPreview] = useState<DnaChatPreviewResponse | null>(null);
   const [dnaChatUpdatedKeys, setDnaChatUpdatedKeys] = useState<string[]>([]);
 
   useEffect(() => {
@@ -308,19 +341,39 @@ export function ContextEditor({
     setOpenStrategy((prev) => (prev === key ? null : key));
   }
 
-  const canDnaChat =
-    dnaChatInput.trim().length >= 10 && !disabled && !dnaChatBusy && !saveBusy;
+  const canDnaChatPreview =
+    dnaChatInput.trim().length >= 10 &&
+    !disabled &&
+    !dnaChatBusy &&
+    !dnaApplyBusy &&
+    !saveBusy &&
+    dnaChatPreview === null;
 
-  async function handleDnaChatUpdate() {
-    if (!canDnaChat || !clientSlug.trim() || !orgSlug.trim()) return;
+  const previewSectionKeys = useMemo(() => {
+    if (!dnaChatPreview?.changed_sections) return [];
+    return Object.keys(dnaChatPreview.changed_sections).filter(
+      (k) => typeof dnaChatPreview.changed_sections[k] === "string",
+    );
+  }, [dnaChatPreview]);
+
+  const canDnaChatApply =
+    dnaChatPreview !== null &&
+    previewSectionKeys.length > 0 &&
+    !dnaApplyBusy &&
+    !dnaChatBusy &&
+    !saveBusy;
+
+  async function handleDnaChatPreview() {
+    if (!canDnaChatPreview || !clientSlug.trim() || !orgSlug.trim()) return;
     setDnaChatBusy(true);
     setStatus(null);
     setDnaChatUpdatedKeys([]);
+    setDnaChatPreview(null);
     const apiBase = getContentApiBase();
     const headersBase = await clientApiHeaders({ orgSlug });
     try {
       const r = await contentApiFetch(
-        `${apiBase}/api/v1/clients/${encodeURIComponent(clientSlug)}/dna/chat-update`,
+        `${apiBase}/api/v1/clients/${encodeURIComponent(clientSlug)}/dna/chat-preview`,
         {
           method: "POST",
           headers: { ...headersBase, "Content-Type": "application/json" },
@@ -328,7 +381,7 @@ export function ContextEditor({
         },
       );
       const text = await r.text();
-      const json = parseJsonObject(text) as DnaChatUpdateResponse | Record<string, unknown> | null;
+      const json = parseJsonObject(text) as DnaChatPreviewResponse | Record<string, unknown> | null;
       if (!r.ok) {
         setStatus(formatFastApiError(json as Record<string, unknown>, text));
         return;
@@ -337,10 +390,64 @@ export function ContextEditor({
         setStatus("Unexpected response.");
         return;
       }
-      const u = json as DnaChatUpdateResponse;
+      const u = json as DnaChatPreviewResponse;
+      setDnaChatPreview({
+        summary: typeof u.summary === "string" ? u.summary : "",
+        changed_sections:
+          u.changed_sections && typeof u.changed_sections === "object"
+            ? (u.changed_sections as Record<string, string>)
+            : {},
+        before: u.before && typeof u.before === "object" ? (u.before as Record<string, string>) : {},
+        updated_sections: Array.isArray(u.updated_sections) ? u.updated_sections : [],
+      });
       setStatus(u.summary);
+    } catch {
+      setStatus("Network error.");
+    } finally {
+      setDnaChatBusy(false);
+    }
+  }
+
+  function handleDnaChatRejectPreview() {
+    setDnaChatPreview(null);
+    setStatus(null);
+    setDnaChatUpdatedKeys([]);
+  }
+
+  async function handleDnaChatApply() {
+    if (!canDnaChatApply || !dnaChatPreview || !clientSlug.trim() || !orgSlug.trim()) return;
+    setDnaApplyBusy(true);
+    setStatus(null);
+    setDnaChatUpdatedKeys([]);
+    const apiBase = getContentApiBase();
+    const headersBase = await clientApiHeaders({ orgSlug });
+    try {
+      const r = await contentApiFetch(
+        `${apiBase}/api/v1/clients/${encodeURIComponent(clientSlug)}/dna/chat-apply`,
+        {
+          method: "POST",
+          headers: { ...headersBase, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            changed_sections: dnaChatPreview.changed_sections,
+            summary: dnaChatPreview.summary,
+          }),
+        },
+      );
+      const text = await r.text();
+      const json = parseJsonObject(text) as DnaChatApplyResponse | Record<string, unknown> | null;
+      if (!r.ok) {
+        setStatus(formatFastApiError(json as Record<string, unknown>, text));
+        return;
+      }
+      if (!json || typeof json !== "object" || !("client" in json)) {
+        setStatus("Unexpected response.");
+        return;
+      }
+      const u = json as DnaChatApplyResponse;
+      setStatus(typeof u.summary === "string" ? u.summary : "Changes applied.");
       setDnaChatUpdatedKeys(Array.isArray(u.updated_sections) ? u.updated_sections : []);
       setDnaChatInput("");
+      setDnaChatPreview(null);
       if (u.client?.client_dna && typeof u.client.client_dna === "object") {
         setClientDna({ ...(u.client.client_dna as Record<string, unknown>) });
       }
@@ -355,7 +462,7 @@ export function ContextEditor({
     } catch {
       setStatus("Network error.");
     } finally {
-      setDnaChatBusy(false);
+      setDnaApplyBusy(false);
     }
   }
 
@@ -657,57 +764,105 @@ export function ContextEditor({
           )}
         </div>
 
+        <div className="mt-5 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.04] p-4 dark:border-emerald-500/15 dark:bg-emerald-500/[0.05]">
+          <h3 className="text-[11px] font-semibold uppercase tracking-wide text-emerald-900 dark:text-emerald-200/95">
+            Refine reel analysis profile from a message
+          </h3>
+          <p className="mt-1 text-xs leading-relaxed text-zinc-600 dark:text-zinc-400">
+            Adjusts only the compiled profile above — not your strategy sections or uploads. Use
+            after a pivot or tone change; tap Refresh AI profile anytime to rebuild from saved
+            context instead.
+          </p>
+          <textarea
+            value={dnaChatInput}
+            onChange={(e) => setDnaChatInput(e.target.value)}
+            disabled={disabled || dnaChatBusy || dnaApplyBusy || dnaChatPreview !== null}
+            rows={3}
+            className="mt-3 w-full resize-y rounded-xl border border-outline-variant/15 bg-surface-container-low/90 px-3 py-2.5 text-sm text-on-surface placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/35 disabled:opacity-50"
+            placeholder="e.g. She is moving away from toxic-boss angles and focusing on assertive leadership for women in tech."
+          />
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            {dnaChatPreview ? (
+              <>
+                <button
+                  type="button"
+                  disabled={!canDnaChatApply || dnaApplyBusy}
+                  onClick={() => void handleDnaChatApply()}
+                  className="inline-flex items-center gap-2 rounded-lg border border-emerald-600/45 bg-emerald-600/15 px-4 py-2 text-sm font-semibold text-emerald-950 disabled:opacity-50 dark:text-emerald-100"
+                >
+                  {dnaApplyBusy ? (
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                  ) : null}
+                  {dnaApplyBusy ? "Saving…" : "Approve & save profile"}
+                </button>
+                <button
+                  type="button"
+                  disabled={dnaApplyBusy}
+                  onClick={handleDnaChatRejectPreview}
+                  className="inline-flex items-center gap-2 rounded-lg border border-outline-variant/25 bg-surface-container/80 px-4 py-2 text-sm font-medium text-app-fg-secondary disabled:opacity-50"
+                >
+                  Reject
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                disabled={!canDnaChatPreview}
+                onClick={() => void handleDnaChatPreview()}
+                className="inline-flex items-center gap-2 rounded-lg border border-emerald-600/45 bg-emerald-600/15 px-4 py-2 text-sm font-semibold text-emerald-950 disabled:opacity-50 dark:text-emerald-100"
+              >
+                {dnaChatBusy ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                ) : null}
+                {dnaChatBusy ? "Previewing…" : "Preview changes"}
+              </button>
+            )}
+            {dnaChatPreview === null &&
+            dnaChatInput.trim().length > 0 &&
+            dnaChatInput.trim().length < 10 ? (
+              <span className="text-[11px] text-zinc-500">At least 10 characters.</span>
+            ) : null}
+          </div>
+          {dnaChatPreview && previewSectionKeys.length > 0 ? (
+            <div className="mt-4 rounded-xl border border-outline-variant/12 bg-surface-container/75 p-3">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+                Review
+              </p>
+              {dnaChatPreview.summary ? (
+                <p className="mt-2 text-xs leading-relaxed text-zinc-700 dark:text-zinc-300">
+                  {dnaChatPreview.summary}
+                </p>
+              ) : null}
+              <ProfileBriefSideBySide
+                beforeText={dnaChatPreview.before["analysis_brief"] ?? ""}
+                afterText={dnaChatPreview.changed_sections["analysis_brief"] ?? ""}
+              />
+            </div>
+          ) : null}
+          {dnaChatPreview && previewSectionKeys.length === 0 ? (
+            <p className="mt-3 text-xs text-zinc-600 dark:text-zinc-400">
+              No change to the reel analysis profile was proposed. Adjust your message and preview
+              again, or reject to dismiss.
+            </p>
+          ) : null}
+          {dnaChatUpdatedKeys.length > 0 ? (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {dnaChatUpdatedKeys.map((key) => (
+                <span
+                  key={key}
+                  className="rounded-full bg-emerald-600/20 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-900 dark:text-emerald-200/95"
+                >
+                  {dnaUpdatedSectionLabel(key)}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
         <p className="mt-3 text-[10px] text-zinc-500 dark:text-zinc-500">
           Voice and hook-generation profiles are prepared in the background and will connect when
           those tools ship.
         </p>
-      </section>
-
-      <section className="mb-8 rounded-2xl border border-violet-500/25 bg-gradient-to-b from-violet-500/[0.08] to-transparent p-5 shadow-sm dark:from-violet-500/[0.05]">
-        <h2 className="text-base font-semibold text-on-surface">Update from a message</h2>
-        <p className="mt-1 text-xs leading-relaxed text-zinc-600 dark:text-zinc-400">
-          Describe what changed for this creator (pivot, new offer, tone shift). An AI updates only
-          the strategy sections that need it, then refreshes the profile above in the background.
-        </p>
-        <textarea
-          value={dnaChatInput}
-          onChange={(e) => setDnaChatInput(e.target.value)}
-          disabled={disabled || dnaChatBusy}
-          rows={3}
-          className="mt-3 w-full resize-y rounded-xl border border-outline-variant/15 bg-surface-container-low/90 px-3 py-2.5 text-sm text-on-surface placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500/40 disabled:opacity-50"
-          placeholder="e.g. She is moving away from toxic-boss angles and focusing on assertive leadership for women in tech."
-        />
-        <div className="mt-2 flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            disabled={!canDnaChat}
-            onClick={() => void handleDnaChatUpdate()}
-            className="inline-flex items-center gap-2 rounded-lg border border-violet-500/50 bg-violet-500/15 px-4 py-2 text-sm font-semibold text-violet-950 disabled:opacity-50 dark:text-violet-100"
-          >
-            {dnaChatBusy ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-            ) : null}
-            {dnaChatBusy ? "Applying…" : "Apply update"}
-          </button>
-          {dnaChatInput.trim().length > 0 && dnaChatInput.trim().length < 10 ? (
-            <span className="text-[11px] text-zinc-500">At least 10 characters.</span>
-          ) : null}
-        </div>
-        {dnaChatUpdatedKeys.length > 0 ? (
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {dnaChatUpdatedKeys.map((key) => {
-              const meta = SECTION_META[key as ContextSectionKey];
-              return (
-                <span
-                  key={key}
-                  className="rounded-full bg-violet-500/20 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-900 dark:text-violet-200/95"
-                >
-                  {meta?.title ?? key}
-                </span>
-              );
-            })}
-          </div>
-        ) : null}
       </section>
 
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">

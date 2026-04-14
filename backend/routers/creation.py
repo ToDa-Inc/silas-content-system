@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Any, Dict, List, Optional
@@ -18,7 +21,7 @@ from core.id_generator import generate_job_id
 from models.generation import GenerationSessionOut
 from routers.generation import _load_session, _now_iso, _row_to_out
 from services.format_classifier import canonicalize_stored_format_key
-from services.image_generation import build_background_image_prompt, generate_portrait_image_png
+from services.image_generation import build_background_image_prompt, generate_image_via_openrouter
 from services.job_queue import has_active_job
 from services.video_render import RENDERS_BUCKET, fail_video_render_job, run_video_render_job
 
@@ -143,8 +146,8 @@ def generate_session_background(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> dict:
     _ = slug
-    if not settings.openai_api_key:
-        raise HTTPException(status_code=503, detail="OPENAI_API_KEY not configured")
+    if not settings.openrouter_api_key:
+        raise HTTPException(status_code=503, detail="OPENROUTER_API_KEY not configured")
     row = _load_session(supabase, client_id, session_id)
     if not _session_eligible_for_create(row):
         raise HTTPException(
@@ -160,9 +163,9 @@ def generate_session_background(
     chosen = _chosen_angle(row)
     prompt = build_background_image_prompt(chosen)
     try:
-        png = generate_portrait_image_png(settings.openai_api_key, prompt)
+        png = generate_image_via_openrouter(settings.openrouter_api_key, prompt, aspect_ratio="2:3")
     except Exception as e:
-        logger.exception("OpenAI image generation failed")
+        logger.exception("OpenRouter image generation failed")
         raise HTTPException(status_code=502, detail=str(e)) from e
 
     path = f"{client_id}/bg_{session_id}.png"
@@ -337,6 +340,40 @@ def list_broll_clips(
     return list(res.data or [])
 
 
+async def _extract_broll_thumbnail(video_bytes: bytes) -> bytes | None:
+    """Extract a JPEG frame at ~1 s from video bytes using ffmpeg.
+
+    Best-effort — returns None if ffmpeg is unavailable or extraction fails.
+    """
+    vpath = ""
+    tpath = ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vf:
+            vf.write(video_bytes)
+            vpath = vf.name
+        tpath = vpath.replace(".mp4", "_thumb.jpg")
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-ss", "1", "-i", vpath,
+            "-vframes", "1", "-q:v", "3", tpath,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=30)
+        if proc.returncode == 0 and os.path.isfile(tpath):
+            with open(tpath, "rb") as f:
+                return f.read()
+    except Exception:
+        pass
+    finally:
+        for p in (vpath, tpath):
+            if p:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+    return None
+
+
 @router.post("/clients/{slug}/broll")
 async def upload_broll_clip(
     slug: str,
@@ -366,6 +403,22 @@ async def upload_broll_clip(
         raise HTTPException(status_code=503, detail=f"Storage upload failed: {e}") from e
 
     url = _public_object_url(settings.supabase_url, BROLL_BUCKET, path)
+
+    # Extract thumbnail — best-effort, never fails the upload
+    thumb_url: Optional[str] = None
+    thumb_bytes = await _extract_broll_thumbnail(data)
+    if thumb_bytes:
+        thumb_path = f"{client_id}/{clip_id}_thumb.jpg"
+        try:
+            supabase.storage.from_(BROLL_BUCKET).upload(
+                thumb_path,
+                thumb_bytes,
+                {"content-type": "image/jpeg", "upsert": "true"},
+            )
+            thumb_url = _public_object_url(settings.supabase_url, BROLL_BUCKET, thumb_path)
+        except Exception:
+            pass  # thumbnail is non-critical
+
     now = _now_iso()
     ins = (
         supabase.table("broll_clips")
@@ -374,6 +427,7 @@ async def upload_broll_clip(
                 "id": clip_id,
                 "client_id": client_id,
                 "file_url": url,
+                "thumbnail_url": thumb_url,
                 "label": (label or "").strip()[:200] or None,
                 "created_at": now,
             }

@@ -9,9 +9,19 @@ from core.config import Settings, get_settings
 from core.database import get_supabase, get_supabase_for_settings
 from core.deps import require_org_access, resolve_client_id
 from core.id_generator import generate_client_id
-from models.client import ClientCreate, ClientOut, ClientUpdate, DnaChatUpdateBody
+from models.client import (
+    ClientCreate,
+    ClientOut,
+    ClientUpdate,
+    DnaChatApplyBody,
+    DnaChatUpdateBody,
+)
 from services.client_dna_compile import force_recompile_client_dna_sync, maybe_recompile_client_dna
-from services.dna_chat_update import run_dna_chat_update, sections_text_from_context
+from services.dna_chat_update import (
+    coerce_analysis_brief_patch,
+    merge_analysis_brief_into_client_dna,
+    run_dna_profile_chat_update,
+)
 
 router = APIRouter(prefix="/api/v1/clients", tags=["clients"])
 logger = logging.getLogger(__name__)
@@ -86,17 +96,16 @@ def regenerate_client_dna(
     return out.data[0]
 
 
-@router.post("/{slug}/dna/chat-update")
-def dna_chat_update_from_instruction(
+@router.post("/{slug}/dna/chat-preview")
+def dna_chat_preview(
     slug: str,
     body: DnaChatUpdateBody,
-    background_tasks: BackgroundTasks,
     org_id: Annotated[str, Depends(require_org_access)],
     client_id: Annotated[str, Depends(resolve_client_id)],
     supabase: Annotated[Client, Depends(get_supabase)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> Dict[str, Any]:
-    """LLM applies surgical edits to strategy sections in client_context; DNA recompiles in background."""
+    """LLM proposes edits to client_dna.analysis_brief only; nothing persisted."""
     _ = org_id
     _ = slug
     if not settings.openrouter_api_key:
@@ -109,56 +118,63 @@ def dna_chat_update_from_instruction(
     if not res.data:
         raise HTTPException(status_code=404, detail="Client not found")
     row = dict(res.data[0])
-    existing_ctx = row.get("client_context") if isinstance(row.get("client_context"), dict) else {}
-
-    sections = sections_text_from_context(existing_ctx)
+    existing_dna = row.get("client_dna") if isinstance(row.get("client_dna"), dict) else {}
+    current_brief = str(existing_dna.get("analysis_brief") or "")
     try:
-        changed, summary = run_dna_chat_update(
+        changed, summary = run_dna_profile_chat_update(
             openrouter_key=settings.openrouter_api_key,
             model=settings.openrouter_model,
-            sections=sections,
+            current_brief=current_brief,
             instruction=body.message,
             client_language=str(row.get("language") or "de"),
         )
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
 
-    if not changed:
-        return {
-            "summary": summary,
-            "updated_sections": [],
-            "client": row,
-        }
+    before = {"analysis_brief": current_brief} if changed else {}
+    return {
+        "summary": summary,
+        "changed_sections": changed,
+        "before": before,
+        "updated_sections": list(changed.keys()),
+    }
+
+
+@router.post("/{slug}/dna/chat-apply")
+def dna_chat_apply(
+    slug: str,
+    body: DnaChatApplyBody,
+    org_id: Annotated[str, Depends(require_org_access)],
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    _settings: Annotated[Settings, Depends(get_settings)],
+) -> Dict[str, Any]:
+    """Persist previewed analysis_brief into client_dna only (client_context unchanged, no auto-recompile)."""
+    _ = org_id
+    _ = slug
+    new_brief = coerce_analysis_brief_patch(body.changed_sections)
+    if not new_brief:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No valid analysis brief to apply.",
+        )
+
+    res = supabase.table("clients").select("*").eq("id", client_id).limit(1).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Client not found")
+    row = dict(res.data[0])
+    existing_dna = row.get("client_dna") if isinstance(row.get("client_dna"), dict) else {}
 
     now = datetime.now(timezone.utc).isoformat()
-    new_ctx: Dict[str, Any] = dict(existing_ctx)
-    for key, new_text in changed.items():
-        prev = new_ctx.get(key)
-        if isinstance(prev, dict):
-            new_ctx[key] = {
-                **prev,
-                "text": new_text,
-                "source": "chat",
-                "file": None,
-                "updated_at": now,
-            }
-        else:
-            new_ctx[key] = {
-                "text": new_text,
-                "source": "chat",
-                "file": None,
-                "updated_at": now,
-            }
-
-    supabase.table("clients").update({"client_context": new_ctx}).eq("id", client_id).execute()
-    background_tasks.add_task(_background_recompile_client_dna, client_id)
+    new_dna = merge_analysis_brief_into_client_dna(existing_dna, new_brief, now_iso=now)
+    supabase.table("clients").update({"client_dna": new_dna}).eq("id", client_id).execute()
 
     out = supabase.table("clients").select("*").eq("id", client_id).limit(1).execute()
     final = dict(out.data[0]) if out.data else row
-    updated_keys: List[str] = list(changed.keys())
+    summary_out = (body.summary or "").strip() or "Analysis brief saved."
     return {
-        "summary": summary,
-        "updated_sections": updated_keys,
+        "summary": summary_out,
+        "updated_sections": ["analysis_brief"],
         "client": final,
     }
 

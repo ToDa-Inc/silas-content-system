@@ -58,6 +58,7 @@ class Settings(BaseSettings):
             return s if s else "apify~instagram-reel-scraper"
         return v
     openrouter_api_key: str = ""
+    freepik_api_key: str = ""
     openai_api_key: str = Field(
         default="",
         validation_alias=AliasChoices("OPENAI_API_KEY"),
