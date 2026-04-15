@@ -256,7 +256,7 @@ export async function fetchCompetitors(): Promise<{
     }
     const res = await fetch(`${base}/api/v1/clients/${clientSlug}/competitors`, {
       headers: { ...headers },
-      cache: "no-store",
+      next: { revalidate: 30 },
     });
     if (!res.ok) {
       return {
@@ -292,7 +292,7 @@ export async function fetchClient(): Promise<{
     }
     const res = await fetch(`${base}/api/v1/clients/${clientSlug}`, {
       headers: { ...headers },
-      cache: "no-store",
+      next: { revalidate: 60 },
     });
     if (res.status === 404) {
       return { ok: false, data: null, error: "Client not found" };
@@ -331,7 +331,7 @@ export async function fetchBaseline(): Promise<{
     }
     const res = await fetch(`${base}/api/v1/clients/${clientSlug}/baseline`, {
       headers: { ...headers },
-      cache: "no-store",
+      next: { revalidate: 60 },
     });
     if (res.status === 404) {
       return { ok: true, data: null };
@@ -369,10 +369,10 @@ export async function fetchOwnReels(): Promise<{
       };
     }
     const res = await fetch(
-      `${base}/api/v1/clients/${clientSlug}/reels?own_reels_only=true&include_analysis=true`,
+      `${base}/api/v1/clients/${clientSlug}/reels?own_reels_only=true&include_analysis=true&limit=50&sort_by=posted_at`,
       {
         headers: { ...headers },
-        cache: "no-store",
+        next: { revalidate: 30 },
       },
     );
     if (!res.ok) {
@@ -413,7 +413,7 @@ export async function fetchIntelligenceStats(): Promise<{
     }
     const res = await fetch(`${base}/api/v1/clients/${clientSlug}/stats`, {
       headers: { ...headers },
-      cache: "no-store",
+      next: { revalidate: 30 },
     });
     if (!res.ok) {
       return {
@@ -529,6 +529,8 @@ export async function fetchIntelligenceActivity(sinceIso?: string): Promise<{
 export async function fetchScrapedReels(
   outlierOnly: boolean,
   includeAnalysis = true,
+  limit = 50,
+  sortBy: "posted_at" | "views" | "outlier_ratio" = "posted_at",
 ): Promise<{
   ok: boolean;
   data: ScrapedReelRow[];
@@ -538,7 +540,9 @@ export async function fetchScrapedReels(
   const params = new URLSearchParams();
   if (outlierOnly) params.set("outlier_only", "true");
   if (includeAnalysis) params.set("include_analysis", "true");
-  const q = params.toString() ? `?${params.toString()}` : "";
+  params.set("limit", String(limit));
+  params.set("sort_by", sortBy);
+  const q = `?${params.toString()}`;
   try {
     const { headers, clientSlug } = await getCachedServerApiContext();
     if (!clientSlug) {
@@ -550,7 +554,7 @@ export async function fetchScrapedReels(
     }
     const res = await fetch(`${base}/api/v1/clients/${clientSlug}/reels${q}`, {
       headers: { ...headers },
-      cache: "no-store",
+      next: { revalidate: 30 },
     });
     if (!res.ok) {
       return {
@@ -566,5 +570,27 @@ export async function fetchScrapedReels(
       data: [],
       error: e instanceof Error ? e.message : "fetch failed",
     };
+  }
+}
+
+/** GET /api/v1/clients/{slug}/stats/outlier-count — cheap single COUNT query. */
+export async function fetchOutlierCount(): Promise<{
+  ok: boolean;
+  count: number;
+  error?: string;
+}> {
+  const base = getContentApiBase();
+  try {
+    const { headers, clientSlug } = await getCachedServerApiContext();
+    if (!clientSlug) return { ok: false, count: 0, error: "No client in your workspace." };
+    const res = await fetch(`${base}/api/v1/clients/${clientSlug}/stats/outlier-count`, {
+      headers: { ...headers },
+      next: { revalidate: 30 },
+    });
+    if (!res.ok) return { ok: false, count: 0, error: `${res.status}` };
+    const data = await res.json();
+    return { ok: true, count: data.count ?? 0 };
+  } catch (e) {
+    return { ok: false, count: 0, error: e instanceof Error ? e.message : "fetch failed" };
   }
 }

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import time
-from typing import Any, List
+from typing import Any, List, Tuple
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 def instagram_reel_scraper_input(
@@ -81,6 +84,10 @@ SEARCH_ACTOR = "DrF9mzPPEuVizVF4l"
 REEL_ACTOR = "apify~instagram-reel-scraper"
 # Sasky — topic/hashtag-style reel search → usernames (docs/VIRAL-DISCOVERY-SPEC.md)
 KEYWORD_REEL_ACTOR = "4QFjEpnGE1PNEnQF2"
+INSTAGRAM_SCRAPER = "apify~instagram-scraper"
+
+# Batch size for directUrls enrichment — keep small to avoid actor timeouts.
+_ENRICH_BATCH_SIZE = 20
 
 
 def run_keyword_reel_search(token: str, keyword: str, max_items: int = 50) -> list:
@@ -90,3 +97,32 @@ def run_keyword_reel_search(token: str, keyword: str, max_items: int = 50) -> li
         KEYWORD_REEL_ACTOR,
         {"keyword": keyword.strip(), "maxItems": max_items},
     )
+
+
+def enrich_reel_urls_direct(token: str, urls: List[str]) -> Tuple[List[dict], List[str]]:
+    """Fetch full reel data for Instagram reel/post URLs via apify~instagram-scraper.
+
+    Returns ``(items, errors)``. Failed batches append to ``errors``; partial success is preserved.
+    """
+    if not urls:
+        return [], []
+
+    all_items: List[dict] = []
+    errors: List[str] = []
+    for i in range(0, len(urls), _ENRICH_BATCH_SIZE):
+        chunk = urls[i : i + _ENRICH_BATCH_SIZE]
+        try:
+            items = run_actor(
+                token,
+                INSTAGRAM_SCRAPER,
+                {"directUrls": chunk, "resultsLimit": len(chunk)},
+            )
+            all_items.extend(items or [])
+        except Exception as e:
+            msg = f"enrich batch {i // _ENRICH_BATCH_SIZE + 1}: {type(e).__name__}: {e}"
+            logger.warning(msg, exc_info=True)
+            errors.append(msg[:500])
+        if i + _ENRICH_BATCH_SIZE < len(urls):
+            time.sleep(2)
+
+    return all_items, errors

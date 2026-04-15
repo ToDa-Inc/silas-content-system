@@ -7,6 +7,7 @@ from core.database import get_supabase
 from services.breakout_recompute import recompute_breakouts_all_clients
 from services.cleanup_renders import cleanup_old_renders
 from services.scrape_cycle import (
+    enqueue_keyword_reel_similarity_all_clients,
     enqueue_milestone_scrapes_all_clients,
     enqueue_stale_profile_scrapes_all_clients,
     enqueue_sync_all_jobs_all_clients,
@@ -83,3 +84,19 @@ def cron_recompute_breakouts(
     _require_cron_secret(settings, x_cron_secret)
     supabase = get_supabase()
     return recompute_breakouts_all_clients(supabase)
+
+
+@router.post("/keyword-reel-similarity", status_code=status.HTTP_200_OK)
+def cron_keyword_reel_similarity(
+    settings: Annotated[Settings, Depends(get_settings)],
+    x_cron_secret: Annotated[Optional[str], Header(alias="X-Cron-Secret")] = None,
+) -> Dict[str, Any]:
+    """Enqueue keyword_reel_similarity for each active client (Sasky + enrich + Gemini similarity)."""
+    _require_cron_secret(settings, x_cron_secret)
+    if not settings.apify_api_token or not settings.openrouter_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="APIFY_API_TOKEN and OPENROUTER_API_KEY required for keyword reel similarity",
+        )
+    supabase = get_supabase()
+    return enqueue_keyword_reel_similarity_all_clients(supabase)

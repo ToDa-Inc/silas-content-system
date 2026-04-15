@@ -42,7 +42,45 @@ def enrich_engagement_metrics(reel: dict) -> dict:
 
 
 def compute_niche_benchmarks(supabase: Client, client_id: str) -> Dict[str, Any]:
-    """Aggregates over tracked competitor reels plus niche_search discoveries (excludes client_baseline)."""
+    """Aggregates over tracked competitor reels plus niche_search discoveries (excludes client_baseline).
+
+    Fast path: calls the get_niche_benchmarks() SQL function (single round-trip, Postgres-side AVG).
+    Fallback: fetches rows and computes in Python (used if the SQL function isn't deployed yet).
+    Run backend/sql/phase4_performance_indexes.sql in Supabase to enable the fast path.
+    """
+    _empty: Dict[str, Any] = {
+        "reel_count": 0,
+        "niche_avg_views": None,
+        "niche_avg_likes": None,
+        "niche_avg_engagement_rate": None,
+        "niche_avg_comment_view_ratio": None,
+        "niche_avg_duration_seconds": None,
+    }
+
+    # --- Fast path: single SQL AVG() via RPC ---
+    try:
+        rpc_res = supabase.rpc("get_niche_benchmarks", {"p_client_id": client_id}).execute()
+        if rpc_res.data is not None:
+            data = rpc_res.data
+            # RPC returns a single JSON object
+            if isinstance(data, list):
+                data = data[0] if data else {}
+            if isinstance(data, dict) and "reel_count" in data:
+                reel_count = int(data.get("reel_count") or 0)
+                if reel_count == 0:
+                    return _empty
+                return {
+                    "reel_count": reel_count,
+                    "niche_avg_views": int(data["niche_avg_views"]) if data.get("niche_avg_views") is not None else None,
+                    "niche_avg_likes": int(data["niche_avg_likes"]) if data.get("niche_avg_likes") is not None else None,
+                    "niche_avg_engagement_rate": float(data["niche_avg_engagement_rate"]) if data.get("niche_avg_engagement_rate") is not None else None,
+                    "niche_avg_comment_view_ratio": float(data["niche_avg_comment_view_ratio"]) if data.get("niche_avg_comment_view_ratio") is not None else None,
+                    "niche_avg_duration_seconds": int(data["niche_avg_duration_seconds"]) if data.get("niche_avg_duration_seconds") is not None else None,
+                }
+    except Exception:
+        pass  # fall through to Python fallback
+
+    # --- Fallback: fetch rows, compute in Python ---
     try:
         res = (
             supabase.table("scraped_reels")
@@ -52,26 +90,12 @@ def compute_niche_benchmarks(supabase: Client, client_id: str) -> Dict[str, Any]
             .execute()
         )
     except Exception:
-        return {
-            "reel_count": 0,
-            "niche_avg_views": None,
-            "niche_avg_likes": None,
-            "niche_avg_engagement_rate": None,
-            "niche_avg_comment_view_ratio": None,
-            "niche_avg_duration_seconds": None,
-        }
+        return _empty
 
     rows: List[dict] = [dict(x) for x in (res.data or [])]
     n = len(rows)
     if n == 0:
-        return {
-            "reel_count": 0,
-            "niche_avg_views": None,
-            "niche_avg_likes": None,
-            "niche_avg_engagement_rate": None,
-            "niche_avg_comment_view_ratio": None,
-            "niche_avg_duration_seconds": None,
-        }
+        return _empty
 
     sum_v = sum(_int_metric_val(r.get("views")) for r in rows)
     sum_l = sum(_int_metric_val(r.get("likes")) for r in rows)

@@ -1,9 +1,8 @@
 import Link from "next/link";
 import {
   fetchCompetitors,
-  fetchScrapedReels,
+  fetchOutlierCount,
   getCachedServerApiContext,
-  type ScrapedReelRow,
 } from "@/lib/api";
 import { BreakoutsTeaserCard } from "./components/breakouts-teaser-card";
 import { CompetitorsTeaserCard } from "./components/competitors-teaser-card";
@@ -19,21 +18,17 @@ function formatClientLabel(slug: string): string {
     .join(" ");
 }
 
-function outlierCount(reels: ScrapedReelRow[]): number {
-  return reels.filter((r) => r.is_outlier === true && r.competitor_id).length;
-}
-
 export default async function IntelligencePage() {
   const { user, tenancy, clientSlug, orgSlug } = await getCachedServerApiContext();
 
-  const [compRes, reelsRes] = await Promise.all([
+  // fetchOutlierCount is a single COUNT query — replaces the previous full reels fetch
+  const [compRes, outlierRes] = await Promise.all([
     fetchCompetitors(),
-    fetchScrapedReels(false, true),
+    fetchOutlierCount(),
   ]);
 
   const competitors = compRes.ok ? compRes.data : [];
-  const allReels = reelsRes.ok && Array.isArray(reelsRes.data) ? reelsRes.data : [];
-  const nOutliers = reelsRes.ok ? outlierCount(allReels) : 0;
+  const nOutliers = outlierRes.ok ? outlierRes.count : 0;
 
   const clientLabel = formatClientLabel(clientSlug);
   const syncDisabled = !clientSlug.trim() || !orgSlug.trim();
@@ -45,10 +40,9 @@ export default async function IntelligencePage() {
         : !clientSlug.trim()
           ? "Pick a creator in the top bar or finish onboarding."
           : null;
-  const loadError = !compRes.ok || !reelsRes.ok;
+  const loadError = !compRes.ok;
   const loadErrorDetails = [
     compRes.ok ? null : compRes.error,
-    reelsRes.ok ? null : reelsRes.error,
   ]
     .filter((s): s is string => Boolean(s && s.trim()))
     .join(" · ");
@@ -126,7 +120,7 @@ export default async function IntelligencePage() {
 
       {clientSlug.trim() && orgSlug.trim() ? (
         <div className="mb-8 grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-3">
-          <BreakoutsTeaserCard count={reelsRes.ok ? nOutliers : "—"} />
+          <BreakoutsTeaserCard count={outlierRes.ok ? nOutliers : "—"} />
           <CompetitorsTeaserCard count={compRes.ok ? competitors.length : "—"} />
         </div>
       ) : null}

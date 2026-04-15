@@ -1,12 +1,14 @@
 import logging
 import threading
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from supabase import Client
 
+from core.cache import cache_delete, cache_get, cache_set
 from core.config import Settings, get_settings
 from core.database import get_supabase, get_supabase_for_settings
 from core.id_generator import generate_job_id
@@ -48,7 +50,10 @@ from services.job_queue import (
     fail_stale_running_jobs,
     has_active_job,
 )
-from services.scrape_cycle import find_stale_competitors
+from services.scrape_cycle import (
+    enqueue_keyword_reel_similarity_for_client,
+    find_stale_competitors,
+)
 from services.reel_metrics import (
     compute_niche_benchmarks,
     enrich_engagement_metrics,
@@ -812,17 +817,18 @@ def _proven_performer_reels(
 
 def _compute_client_stats(supabase: Client, client_id: str) -> Dict[str, Any]:
     handle = _client_instagram_handle(supabase, client_id)
-    fetch_cap = 120 if handle else 30
+    # Count own reels: use a direct COUNT query filtered by handle when available,
+    # avoiding the old 800-row in-memory fetch.
     if handle:
-        id_rows = (
+        count_res = (
             supabase.table("scraped_reels")
-            .select("id, account_username")
+            .select("id", count="exact")
             .eq("client_id", client_id)
             .is_("competitor_id", "null")
-            .limit(800)
+            .ilike("account_username", handle)
             .execute()
         )
-        total_own = len(_filter_scraped_rows_to_configured_handle(id_rows.data or [], handle))
+        total_own = int(count_res.count or 0)
     else:
         count_res = (
             supabase.table("scraped_reels")
@@ -832,17 +838,18 @@ def _compute_client_stats(supabase: Client, client_id: str) -> Dict[str, Any]:
             .execute()
         )
         total_own = int(count_res.count or 0)
-    res = (
+    # Fetch last 30 own reels for averages — filtered server-side by handle when available
+    base_q = (
         supabase.table("scraped_reels")
         .select("views, likes, posted_at, account_username")
         .eq("client_id", client_id)
         .is_("competitor_id", "null")
         .order("posted_at", desc=True, nullsfirst=False)
-        .limit(fetch_cap)
-        .execute()
     )
-    window_all: List[dict] = res.data or []
-    window: List[dict] = _filter_scraped_rows_to_configured_handle(window_all, handle)[:30]
+    if handle:
+        base_q = base_q.ilike("account_username", handle)
+    res = base_q.limit(30).execute()
+    window: List[dict] = res.data or []
     n = len(window)
     if n == 0:
         return {
@@ -922,14 +929,13 @@ def _attach_reel_analyses(supabase: Client, client_id: str, reels: list[dict]) -
         "id, reel_id, post_url, total_score, replicability_rating, analyzed_at, prompt_version"
     )
     rid_list = sorted({str(r["id"]) for r in reels if r.get("id")})
-    url_list = sorted(
-        {str(r["post_url"]).strip() for r in reels if r.get("post_url") and str(r.get("post_url")).strip()}
-    )
 
     def _load_rows(select_cols: str) -> List[dict]:
         seen: set[str] = set()
         out: List[dict] = []
         step = _ANALYSIS_IN_CHUNK
+        # Track which reel_ids got a match so we skip their post_url lookup
+        matched_reel_ids: set[str] = set()
         for i in range(0, len(rid_list), step):
             chunk = rid_list[i : i + step]
             ares = (
@@ -944,8 +950,23 @@ def _attach_reel_analyses(supabase: Client, client_id: str, reels: list[dict]) -
                 if sid and sid not in seen:
                     seen.add(sid)
                     out.append(row)
-        for i in range(0, len(url_list), step):
-            chunk = url_list[i : i + step]
+                    rid = row.get("reel_id")
+                    if rid:
+                        matched_reel_ids.add(str(rid))
+        # Only query by post_url for reels that weren't found by reel_id
+        # Build a reduced url_list excluding URLs whose reel_id already matched
+        reel_id_to_url = {
+            str(r["id"]): str(r.get("post_url") or "").strip()
+            for r in reels if r.get("id") and r.get("post_url")
+        }
+        urls_needing_lookup = [
+            url for rid_str, url in reel_id_to_url.items()
+            if rid_str not in matched_reel_ids and url
+        ]
+        # Deduplicate
+        urls_needing_lookup = sorted(set(urls_needing_lookup))
+        for i in range(0, len(urls_needing_lookup), step):
+            chunk = urls_needing_lookup[i : i + step]
             ares = (
                 supabase.table("reel_analyses")
                 .select(select_cols)
@@ -1177,12 +1198,14 @@ def list_competitors(
     slug: str,
     client_id: Annotated[str, Depends(resolve_client_id)],
     supabase: Annotated[Client, Depends(get_supabase)],
+    limit: int = Query(300, ge=1, le=1000, description="Max competitors to return."),
 ) -> list[dict]:
     res = (
         supabase.table("competitors")
         .select("*")
         .eq("client_id", client_id)
         .order("composite_score", desc=True)
+        .limit(limit)
         .execute()
     )
     return res.data or []
@@ -1626,6 +1649,27 @@ def get_intelligence_stats(
     return _compute_client_stats(supabase, client_id)
 
 
+@router.get("/clients/{slug}/stats/outlier-count")
+def get_outlier_count(
+    slug: str,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+) -> Dict[str, Any]:
+    """Cheap count of competitor reels marked as outliers. Used by Intelligence page teaser card."""
+    try:
+        res = (
+            supabase.table("scraped_reels")
+            .select("id", count="exact")
+            .eq("client_id", client_id)
+            .eq("is_outlier", True)
+            .not_.is_("competitor_id", "null")
+            .execute()
+        )
+        return {"count": int(res.count or 0)}
+    except Exception:
+        return {"count": 0}
+
+
 @router.get("/clients/{slug}/activity")
 def get_intelligence_activity(
     slug: str,
@@ -1638,9 +1682,71 @@ def get_intelligence_activity(
 ) -> Dict[str, Any]:
     """Weekly momentum: growth in days 7–14 after posted_at (snapshot-backed); plus own-reel highlights."""
     since_dt = _parse_since(since)
-    tv, tl, tc, growth_meta = _top_reels_by_growth(supabase, client_id, top_n=3, growth_days=7)
+
+    # --- Cache check (3-minute TTL per client) ---
+    _cache_key = f"activity:{client_id}"
+    cached = cache_get(_cache_key, ttl_seconds=180)
+    if cached is not None:
+        # Update the `since` echo to match the current request but return cached data
+        result = dict(cached)
+        result["since"] = since_dt.isoformat()
+        return result
+
     window_end = datetime.now(timezone.utc)
 
+    # --- Parallel execution of the three independent heavy calls ---
+    # _top_reels_by_growth, _trending_now_reels, _proven_performer_reels, and
+    # compute_niche_benchmarks have no data dependencies on each other.
+    # Run them concurrently via ThreadPoolExecutor.
+    tv: List[Dict[str, Any]] = []
+    tl: List[Dict[str, Any]] = []
+    tc: List[Dict[str, Any]] = []
+    growth_meta: Dict[str, Any] = {}
+    niche_benchmarks: Dict[str, Any] = {}
+    trend_reels: List[Dict[str, Any]] = []
+    trend_meta: Dict[str, Any] = {}
+    proven_reels: List[Dict[str, Any]] = []
+    proven_meta: Dict[str, Any] = {}
+
+    def _run_top_growth() -> Tuple[List, List, List, Dict]:
+        return _top_reels_by_growth(supabase, client_id, top_n=3, growth_days=7)
+
+    def _run_benchmarks() -> Dict:
+        return compute_niche_benchmarks(supabase, client_id)
+
+    def _run_trending() -> Tuple[List, Dict]:
+        return _trending_now_reels(supabase, client_id)
+
+    def _run_proven() -> Tuple[List, Dict]:
+        return _proven_performer_reels(supabase, client_id)
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        f_growth    = executor.submit(_run_top_growth)
+        f_benchmarks = executor.submit(_run_benchmarks)
+        f_trending  = executor.submit(_run_trending)
+        f_proven    = executor.submit(_run_proven)
+
+        try:
+            tv, tl, tc, growth_meta = f_growth.result()
+        except Exception:
+            growth_meta = {"scope": "growth_7d_post_age"}
+
+        try:
+            niche_benchmarks = f_benchmarks.result()
+        except Exception:
+            niche_benchmarks = {}
+
+        try:
+            trend_reels, trend_meta = f_trending.result()
+        except Exception:
+            trend_reels, trend_meta = [], {"scope": "trending_now", "error": "compute_failed"}
+
+        try:
+            proven_reels, proven_meta = f_proven.result()
+        except Exception:
+            proven_reels, proven_meta = [], {"scope": "proven_performers", "error": "compute_failed"}
+
+    # --- Own-reel growth (sequential — depends on nothing above, kept simple) ---
     growth: List[Dict[str, Any]] = []
     try:
         ig_handle = _client_instagram_handle(supabase, client_id)
@@ -1721,29 +1827,10 @@ def get_intelligence_activity(
         growth = []
 
     has_weekly = bool(tv or tl or tc)
-    niche_benchmarks: Dict[str, Any] = {}
-    try:
-        niche_benchmarks = compute_niche_benchmarks(supabase, client_id)
-    except Exception:
-        niche_benchmarks = {}
-
-    trend_reels: List[Dict[str, Any]] = []
-    trend_meta: Dict[str, Any] = {}
-    proven_reels: List[Dict[str, Any]] = []
-    proven_meta: Dict[str, Any] = {}
-    try:
-        trend_reels, trend_meta = _trending_now_reels(supabase, client_id)
-    except Exception:
-        trend_reels, trend_meta = [], {"scope": "trending_now", "error": "compute_failed"}
-    try:
-        proven_reels, proven_meta = _proven_performer_reels(supabase, client_id)
-    except Exception:
-        proven_reels, proven_meta = [], {"scope": "proven_performers", "error": "compute_failed"}
-
     has_lanes = bool(trend_reels or proven_reels)
     is_quiet = not has_weekly and len(growth) == 0 and not has_lanes
 
-    return {
+    result = {
         "since": since_dt.isoformat(),
         "new_breakout_reels": [],
         "niche_benchmarks": niche_benchmarks,
@@ -1766,6 +1853,10 @@ def get_intelligence_activity(
         "own_reel_growth": growth,
         "is_quiet": is_quiet,
     }
+
+    # --- Store in cache ---
+    cache_set(_cache_key, result)
+    return result
 
 
 @router.post("/clients/{slug}/search/topics")
@@ -1973,6 +2064,63 @@ def list_client_reel_analyses(
     return rows
 
 
+@router.post("/clients/{slug}/reels/niche-discovery/run")
+def run_niche_discovery_job(
+    slug: str,
+    org_id: Annotated[str, Depends(require_org_access)],
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Dict[str, Any]:
+    """Enqueue keyword_reel_similarity (Sasky + instagram-scraper + video similarity). Worker runs it."""
+    if not settings.apify_api_token or not settings.openrouter_api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Niche discovery requires APIFY_API_TOKEN and OPENROUTER_API_KEY",
+        )
+    fail_abandoned_queued_jobs(supabase, client_id=client_id, job_type="keyword_reel_similarity")
+    stats = enqueue_keyword_reel_similarity_for_client(
+        supabase, org_id=org_id, client_id=client_id
+    )
+    if stats.get("skipped"):
+        raise HTTPException(
+            status_code=409,
+            detail="A keyword_reel_similarity job is already queued or running for this client",
+        )
+    job_id = stats.get("job_id")
+    if not job_id:
+        raise HTTPException(status_code=500, detail="Failed to enqueue niche discovery job")
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "message": "Poll GET /api/v1/jobs/{job_id}; list results at GET …/reels/niche-discovery when complete.",
+    }
+
+
+@router.get("/clients/{slug}/reels/niche-discovery", response_model=list[ScrapedReelOut])
+def list_niche_discovery_reels(
+    slug: str,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    limit: int = Query(40, ge=1, le=100),
+) -> list[dict]:
+    """Reels found via keyword search + similarity scoring (source=keyword_similarity)."""
+    res = (
+        supabase.table("scraped_reels")
+        .select("*")
+        .eq("client_id", client_id)
+        .eq("source", "keyword_similarity")
+        .order("similarity_score", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    data = res.data or []
+    for row in data:
+        enrich_engagement_metrics(row)
+        normalize_scraped_reel_row_for_api(row)
+    return data
+
+
 @router.get("/clients/{slug}/reels", response_model=list[ScrapedReelOut])
 def list_reels(
     slug: str,
@@ -1987,16 +2135,25 @@ def list_reels(
         False,
         description="Attach Silas analysis summary (id, score, rating) when a reel_analyses row exists.",
     ),
+    limit: int = Query(
+        50,
+        ge=1,
+        le=500,
+        description="Max reels to return. Defaults to 50 (most recent by posted_at).",
+    ),
+    sort_by: str = Query(
+        "posted_at",
+        description="Sort field: posted_at (default), views, outlier_ratio.",
+    ),
 ) -> list[dict]:
     q = supabase.table("scraped_reels").select("*").eq("client_id", client_id)
     if own_reels_only:
         q = q.is_("competitor_id", "null")
     if outlier_only:
         q = q.eq("is_outlier", True)
-    if own_reels_only:
-        res = q.order("views", desc=True).execute()
-    else:
-        res = q.order("outlier_ratio", desc=True).execute()
+    # Sort order: posted_at desc by default so newest reels come first
+    _sort_col = sort_by if sort_by in ("posted_at", "views", "outlier_ratio") else "posted_at"
+    res = q.order(_sort_col, desc=True, nullsfirst=False).limit(limit).execute()
     data = res.data or []
     for row in data:
         enrich_engagement_metrics(row)

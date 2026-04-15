@@ -169,6 +169,7 @@ class ScrapedReelOut(BaseModel):
     posted_at: Optional[str] = None
     format: Optional[str] = None
     source: Optional[str] = None
+    similarity_score: Optional[int] = None
     first_seen_at: Optional[str] = None
     last_updated_at: Optional[str] = None
     created_at: Optional[str] = None

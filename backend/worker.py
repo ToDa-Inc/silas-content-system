@@ -21,6 +21,7 @@ from jobs.profile_scrape import run_profile_scrape
 from jobs.auto_analyze_scraped import run_auto_analyze_scraped
 from jobs.format_digest_recompute import run_format_digest_recompute
 from jobs.milestone_scrape import run_milestone_scrape
+from jobs.keyword_reel_similarity import run_keyword_reel_similarity
 from jobs.niche_reel_scrape import run_niche_reel_scrape
 from jobs.reel_analyze_url import run_reel_analyze_bulk, run_reel_analyze_url
 
@@ -88,6 +89,8 @@ def _process_job_sync(settings: Settings, job: Dict[str, Any]) -> None:
         run_milestone_scrape(settings, job)
     elif jt == "niche_reel_scrape":
         run_niche_reel_scrape(settings, job)
+    elif jt == "keyword_reel_similarity":
+        run_keyword_reel_similarity(settings, job)
     else:
         _fail_job(settings, job["id"], f"Unknown job_type: {jt}")
 

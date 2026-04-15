@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from supabase import Client
 
@@ -226,6 +226,55 @@ def enqueue_sync_all_jobs_all_clients(supabase: Client) -> Dict[str, Any]:
         "baseline_jobs_skipped": total_baseline_skipped,
         "profile_jobs_queued": total_profile_queued,
         "profile_jobs_skipped": total_profile_skipped,
+    }
+
+
+def enqueue_keyword_reel_similarity_for_client(
+    supabase: Client,
+    *,
+    org_id: str,
+    client_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Queue keyword_reel_similarity if none is already queued/running for this client."""
+    if has_active_job(supabase, client_id=client_id, job_type="keyword_reel_similarity"):
+        return {"queued": 0, "skipped": 1, "job_id": None}
+
+    job_id = generate_job_id()
+    supabase.table("background_jobs").insert(
+        {
+            "id": job_id,
+            "org_id": org_id,
+            "client_id": client_id,
+            "job_type": "keyword_reel_similarity",
+            "payload": payload or {},
+            "status": "queued",
+        }
+    ).execute()
+    return {"queued": 1, "skipped": 0, "job_id": job_id}
+
+
+def enqueue_keyword_reel_similarity_all_clients(supabase: Client) -> Dict[str, Any]:
+    """Queue keyword_reel_similarity for every active client (weekly cron)."""
+    clients = supabase.table("clients").select("id, org_id").eq("is_active", True).execute()
+    total_queued = 0
+    total_skipped = 0
+    clients_checked = 0
+
+    for c in clients.data or []:
+        clients_checked += 1
+        stats = enqueue_keyword_reel_similarity_for_client(
+            supabase,
+            org_id=c["org_id"],
+            client_id=c["id"],
+        )
+        total_queued += stats["queued"]
+        total_skipped += stats["skipped"]
+
+    return {
+        "clients_checked": clients_checked,
+        "jobs_queued": total_queued,
+        "jobs_skipped": total_skipped,
     }
 
 

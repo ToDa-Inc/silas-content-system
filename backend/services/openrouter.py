@@ -170,6 +170,85 @@ def analyze_reel_silas(
     return text, video_analyzed
 
 
+def analyze_reel_similarity(
+    openrouter_key: str,
+    model: str,
+    prompt: str,
+    *,
+    video_path: Path | None = None,
+    video_bytes_max: int = _MAX_VIDEO_BYTES,
+) -> tuple[dict, bool]:
+    """Send video (or caption fallback) to Gemini with a similarity prompt.
+
+    Returns (parsed_json_dict, video_analyzed). Prompt must ask for JSON only.
+    """
+    video_analyzed = False
+
+    if video_path is not None and video_path.is_file():
+        size = video_path.stat().st_size
+        if size > 0 and size <= video_bytes_max:
+            raw = video_path.read_bytes()
+            b64 = base64.b64encode(raw).decode("ascii")
+            messages: List[dict[str, Any]] = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:video/mp4;base64,{b64}"}},
+                    ],
+                }
+            ]
+            video_analyzed = True
+        else:
+            messages = [
+                {
+                    "role": "user",
+                    "content": prompt
+                    + "\n\nNOTE: No video available — base similarity on the caption and metadata only.",
+                }
+            ]
+    else:
+        messages = [
+            {
+                "role": "user",
+                "content": prompt
+                + "\n\nNOTE: No video available — base similarity on the caption and metadata only.",
+            }
+        ]
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": 512,
+        "temperature": 0.1,
+    }
+    with httpx.Client(timeout=180.0) as client:
+        r = client.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {openrouter_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://silas-content-system.local",
+                "X-Title": "Content Machine",
+            },
+            json=payload,
+        )
+        r.raise_for_status()
+        data = r.json()
+
+    if data.get("error"):
+        raise RuntimeError(data["error"].get("message", str(data["error"])))
+    choice = (data.get("choices") or [{}])[0]
+    content = (choice.get("message") or {}).get("content") or ""
+    if isinstance(content, list):
+        content = "".join(
+            p.get("text", "") if isinstance(p, dict) else str(p) for p in content
+        )
+    cleaned = re.sub(r"^```json\s*", "", content.strip())
+    cleaned = re.sub(r"```\s*$", "", cleaned).strip()
+    return json.loads(cleaned), video_analyzed
+
+
 def _chat_completion_raw_text(
     openrouter_key: str,
     model: str,

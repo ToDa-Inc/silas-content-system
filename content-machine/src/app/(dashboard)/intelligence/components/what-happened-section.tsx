@@ -2,6 +2,11 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+
+// Module-level cache: survives tab switches and re-mounts within the same browser session.
+// Cleared only when the user triggers a manual sync (activityRefreshKey increments).
+const _activityCache = new Map<string, { data: unknown; fetchedAt: number; refreshKey: number }>();
+const ACTIVITY_CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes — matches backend TTL
 import { clientApiHeaders, contentApiFetch, getContentApiBase } from "@/lib/api-client";
 import type {
   ActivityLanePayload,
@@ -397,6 +402,19 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
       setLoading(false);
       return;
     }
+    const cacheKey = `${orgSlug}:${clientSlug}`;
+    const cached = _activityCache.get(cacheKey);
+    const now = Date.now();
+    // Use cached data if: same refresh key (no manual sync triggered) AND within TTL
+    if (
+      cached &&
+      cached.refreshKey === activityRefreshKey &&
+      now - cached.fetchedAt < ACTIVITY_CACHE_TTL_MS
+    ) {
+      setData(cached.data as ActivityPayload);
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     async function load() {
       setLoading(true);
@@ -414,7 +432,10 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
           return;
         }
         const json = (await res.json()) as ActivityPayload;
-        if (!cancelled) setData(json);
+        if (!cancelled) {
+          _activityCache.set(cacheKey, { data: json, fetchedAt: Date.now(), refreshKey: activityRefreshKey });
+          setData(json);
+        }
       } catch (e) {
         if (!cancelled) setErr(e instanceof Error ? e.message : "Failed to load");
       } finally {

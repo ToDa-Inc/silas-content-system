@@ -27,7 +27,8 @@ export default async function IntelligenceReelsPage({ searchParams }: PageProps)
         : !clientSlug.trim()
           ? "Pick a creator in the header or finish onboarding."
           : null;
-  const [reelsRes, compRes] = await Promise.all([fetchScrapedReels(false, true), fetchCompetitors()]);
+  // Fetch 200 most recent reels sorted by posted_at — enough for all filters, avoids full table dump
+  const [reelsRes, compRes] = await Promise.all([fetchScrapedReels(false, true, 200, "posted_at"), fetchCompetitors()]);
 
   const reelsAll = reelsRes.ok ? reelsRes.data : [];
   const competitors = compRes.ok ? compRes.data : [];
