@@ -150,7 +150,7 @@ def run_video_render_job(settings: Settings, job_id: str) -> None:
 
     tmpdir = tempfile.mkdtemp(prefix="remotion_")
     props_path = os.path.join(tmpdir, "props.json")
-    out_mp4 = os.path.join(tmpdir, f"{session_id}.mp4")
+    out_mp4 = os.path.abspath(os.path.join(tmpdir, f"{session_id}.mp4"))
     try:
         with open(props_path, "w", encoding="utf-8") as f:
             json.dump(props, f, ensure_ascii=False)
@@ -160,14 +160,16 @@ def run_video_render_job(settings: Settings, job_id: str) -> None:
 
         # Use node + remotion-cli.js (not npx .bin/remotion): some installs copy the CLI into
         # node_modules/.bin with require('./dist/index'), which resolves against .bin/ and fails.
+        # Remotion 4 expects output as the third positional arg after composition id, not --output-path.
         cmd = [
             "node",
             str(cli_js),
             "render",
             str(entry),
             comp_id,
+            out_mp4,
             f"--props={props_arg}",
-            f"--output-path={out_mp4}",
+            "--overwrite",
         ]
         env = {**os.environ, "NODE_ENV": "production"}
         proc = subprocess.run(
@@ -183,7 +185,13 @@ def run_video_render_job(settings: Settings, job_id: str) -> None:
             fail_video_render_job(supabase, job_id, session_id, f"remotion failed ({proc.returncode}): {err}")
             return
         if not os.path.isfile(out_mp4):
-            fail_video_render_job(supabase, job_id, session_id, "remotion produced no output file")
+            hint = ((proc.stderr or "") + (proc.stdout or ""))[:2000]
+            fail_video_render_job(
+                supabase,
+                job_id,
+                session_id,
+                f"remotion produced no output file at {out_mp4}. CLI output: {hint or '(empty)'}",
+            )
             return
 
         storage_path = f"{client_id}/{session_id}.mp4"

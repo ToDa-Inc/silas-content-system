@@ -1,8 +1,12 @@
-# Triggers POST /api/v1/cron/keyword-reel-similarity (enqueue niche keyword + similarity job per active client).
+# Triggers keyword-reel-similarity cron (enqueue niche keyword + similarity job per active client).
 #
 # Required repo secrets (Settings → Secrets and variables → Actions):
-#   NICHE_DISCOVERY_CRON_URL — full URL, e.g. https://<host>/api/v1/cron/keyword-reel-similarity
-#   CRON_SECRET              — same value as CRON_SECRET on the API service (reuse from sync-all)
+#   CRON_SECRET — same value as CRON_SECRET on the API (and dashboard, if you use the proxy URL).
+#   NICHE_DISCOVERY_CRON_URL — pick ONE:
+#     • FastAPI: https://<api-host>/api/v1/cron/keyword-reel-similarity
+#     • Dashboard proxy (Next): https://<dashboard-host>/api/cron/niche-discovery
+#       (forwards to CONTENT_API_URL on the server; API must still implement the route.)
+#
 #
 # Schedules only run from the repository’s default branch.
 
