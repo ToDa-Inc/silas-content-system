@@ -4,14 +4,13 @@
 #   CRON_SECRET — required; same as CRON_SECRET on the service you POST to.
 #
 # URL — use ONE of:
-#   NICHE_DISCOVERY_CRON_URL — full POST URL, either:
-#     • https://<api-host>/api/v1/cron/keyword-reel-similarity
-#     • https://<dashboard-host>/api/cron/niche-discovery  (Next proxy → CONTENT_API_URL)
-#   OR leave NICHE_DISCOVERY_CRON_URL unset and set SYNC_ALL_URL (same as cron-sync-all):
-#     niche URL is derived as: ${SYNC_ALL_URL with trailing "sync-all" → "keyword-reel-similarity"}
+#   NICHE_DISCOVERY_CRON_URL — full POST URL, any of:
+#     • https://<api>/api/v1/cron/keyword-reel-similarity
+#     • https://<api>/api/v1/cron/niche-discovery  (alias on FastAPI)
+#     • https://<dashboard>/api/cron/niche-discovery  (Next → CONTENT_API_URL)
+#   OR leave NICHE_DISCOVERY_CRON_URL unset and set SYNC_ALL_URL — derives both API paths from sync-all.
 #
-# If the first URL returns 404, the job retries once using the URL derived from SYNC_ALL_URL
-# (fixes “NICHE points at Next / wrong path” when SYNC_ALL already hits the real API).
+# On 404, the job tries every distinct candidate URL (secret + derived paths) until one returns 200.
 #
 # Schedules only run from the repository’s default branch.
 
@@ -41,12 +40,13 @@ jobs:
 
           _sync_base="${SYNC_ALL_URL:-}"
           _sync_base="${_sync_base%/}"
-          _derived_niche="${_sync_base%/sync-all}/keyword-reel-similarity"
+          _derived_keyword="${_sync_base%/sync-all}/keyword-reel-similarity"
+          _derived_api_niche="${_sync_base%/sync-all}/niche-discovery"
 
           POST_URL="${NICHE_DISCOVERY_CRON_URL:-}"
           if [ -z "$POST_URL" ]; then
             if [ -n "${SYNC_ALL_URL:-}" ]; then
-              POST_URL="$_derived_niche"
+              POST_URL="$_derived_keyword"
               echo "::notice::NICHE_DISCOVERY_CRON_URL empty — using ${POST_URL}"
             else
               echo "::error::Set NICHE_DISCOVERY_CRON_URL, or set SYNC_ALL_URL so the niche path can be derived from sync-all."
@@ -57,7 +57,7 @@ jobs:
           case "$POST_URL" in
             *keyword-reel-similarity*|*niche-discovery*) ;;
             *)
-              echo "::error::NICHE_DISCOVERY_CRON_URL must include /api/v1/cron/keyword-reel-similarity or /api/cron/niche-discovery (not just the Railway host)."
+              echo "::error::NICHE_DISCOVERY_CRON_URL must include keyword-reel-similarity or niche-discovery (not just the Railway host)."
               exit 1
               ;;
           esac
@@ -70,25 +70,34 @@ jobs:
               -H "Content-Type: application/json"
           }
 
-          code="$(do_post "$POST_URL")"
-          cat "$body_file"
-          echo ""
-          echo "HTTP ${code}"
-
-          if [ "$code" = "404" ] && [ -n "${SYNC_ALL_URL:-}" ]; then
-            ALT="$_derived_niche"
-            if [ "$POST_URL" != "$ALT" ]; then
-              echo "::warning::Got 404 from first URL; retrying with URL derived from SYNC_ALL_URL"
-              code="$(do_post "$ALT")"
-              cat "$body_file"
-              echo ""
-              echo "HTTP ${code}"
-            fi
+          # Distinct URLs to try (404 = route missing on that path or stale deploy — try siblings).
+          declare -a candidates=()
+          candidates+=("$POST_URL")
+          if [[ "${SYNC_ALL_URL:-}" == *sync-all* ]]; then
+            candidates+=("$_derived_keyword")
+            candidates+=("$_derived_api_niche")
           fi
+
+          mapfile -t uniq < <(printf '%s\n' "${candidates[@]}" | awk 'NF && !seen[$0]++')
+
+          code="000"
+          n="${#uniq[@]}"
+          i=0
+          for url in "${uniq[@]}"; do
+            i=$((i + 1))
+            echo "::notice::Niche cron attempt ${i}/${n}"
+            code="$(do_post "$url")"
+            cat "$body_file"
+            echo ""
+            echo "HTTP ${code}"
+            if [ "$code" = "200" ]; then
+              break
+            fi
+          done
 
           rm -f "$body_file"
 
           if [ "$code" != "200" ]; then
-            echo "::error::Niche cron failed with HTTP ${code}. Deploy the FastAPI image that registers POST /api/v1/cron/keyword-reel-similarity, or use .../api/cron/niche-discovery on Next with CONTENT_API_URL set to that API."
+            echo "::error::All candidate URLs returned non-200 (last HTTP ${code}). Redeploy the FastAPI service from this repo so routes exist: POST /api/v1/cron/keyword-reel-similarity and POST /api/v1/cron/niche-discovery. Open /openapi.json on the API host and confirm those paths appear."
             exit 1
           fi

@@ -100,3 +100,12 @@ def cron_keyword_reel_similarity(
         )
     supabase = get_supabase()
     return enqueue_keyword_reel_similarity_all_clients(supabase)
+
+
+@router.post("/niche-discovery", status_code=status.HTTP_200_OK)
+def cron_niche_discovery_alias(
+    settings: Annotated[Settings, Depends(get_settings)],
+    x_cron_secret: Annotated[Optional[str], Header(alias="X-Cron-Secret")] = None,
+) -> Dict[str, Any]:
+    """Same as POST /keyword-reel-similarity — shorter path for cron / GitHub Actions URLs."""
+    return cron_keyword_reel_similarity(settings, x_cron_secret)
