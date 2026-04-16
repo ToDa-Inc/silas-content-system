@@ -1,12 +1,17 @@
 # Triggers keyword-reel-similarity cron (enqueue niche keyword + similarity job per active client).
 #
-# Required repo secrets (Settings → Secrets and variables → Actions):
-#   CRON_SECRET — same value as CRON_SECRET on the API (and dashboard, if you use the proxy URL).
-#   NICHE_DISCOVERY_CRON_URL — pick ONE:
-#     • FastAPI: https://<api-host>/api/v1/cron/keyword-reel-similarity
-#     • Dashboard proxy (Next): https://<dashboard-host>/api/cron/niche-discovery
-#       (forwards to CONTENT_API_URL on the server; API must still implement the route.)
+# Secrets (Settings → Secrets and variables → Actions):
+#   CRON_SECRET — required; same as CRON_SECRET on the service you POST to.
 #
+# URL — use ONE of:
+#   NICHE_DISCOVERY_CRON_URL — full POST URL, either:
+#     • https://<api-host>/api/v1/cron/keyword-reel-similarity
+#     • https://<dashboard-host>/api/cron/niche-discovery  (Next proxy → CONTENT_API_URL)
+#   OR leave NICHE_DISCOVERY_CRON_URL unset and set SYNC_ALL_URL (same as cron-sync-all):
+#     niche URL is derived as: ${SYNC_ALL_URL with trailing "sync-all" → "keyword-reel-similarity"}
+#
+# If the first URL returns 404, the job retries once using the URL derived from SYNC_ALL_URL
+# (fixes “NICHE points at Next / wrong path” when SYNC_ALL already hits the real API).
 #
 # Schedules only run from the repository’s default branch.
 
@@ -14,7 +19,6 @@ name: Cron niche discovery
 
 on:
   schedule:
-    # Weekly — offset from sync-all (05:00 UTC); adjust as you like
     - cron: "0 6 * * 2"
   workflow_dispatch:
 
@@ -26,12 +30,65 @@ jobs:
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           NICHE_DISCOVERY_CRON_URL: ${{ secrets.NICHE_DISCOVERY_CRON_URL }}
+          SYNC_ALL_URL: ${{ secrets.SYNC_ALL_URL }}
         run: |
-          if [ -z "$CRON_SECRET" ] || [ -z "$NICHE_DISCOVERY_CRON_URL" ]; then
-            echo "::error::Set Actions secrets CRON_SECRET and NICHE_DISCOVERY_CRON_URL"
+          set -euo pipefail
+
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::Set Actions secret CRON_SECRET"
             exit 1
           fi
-          curl -fsS --max-time 600 -X POST "$NICHE_DISCOVERY_CRON_URL" \
-            -H "X-Cron-Secret: $CRON_SECRET" \
-            -H "Content-Type: application/json" \
-            -w "\nHTTP %{http_code}\n"
+
+          _sync_base="${SYNC_ALL_URL:-}"
+          _sync_base="${_sync_base%/}"
+          _derived_niche="${_sync_base%/sync-all}/keyword-reel-similarity"
+
+          POST_URL="${NICHE_DISCOVERY_CRON_URL:-}"
+          if [ -z "$POST_URL" ]; then
+            if [ -n "${SYNC_ALL_URL:-}" ]; then
+              POST_URL="$_derived_niche"
+              echo "::notice::NICHE_DISCOVERY_CRON_URL empty — using ${POST_URL}"
+            else
+              echo "::error::Set NICHE_DISCOVERY_CRON_URL, or set SYNC_ALL_URL so the niche path can be derived from sync-all."
+              exit 1
+            fi
+          fi
+
+          case "$POST_URL" in
+            *keyword-reel-similarity*|*niche-discovery*) ;;
+            *)
+              echo "::error::NICHE_DISCOVERY_CRON_URL must include /api/v1/cron/keyword-reel-similarity or /api/cron/niche-discovery (not just the Railway host)."
+              exit 1
+              ;;
+          esac
+
+          body_file="$(mktemp)"
+          do_post() {
+            local url="$1"
+            curl -sS --max-time 600 -o "$body_file" -w "%{http_code}" -X POST "$url" \
+              -H "X-Cron-Secret: ${CRON_SECRET}" \
+              -H "Content-Type: application/json"
+          }
+
+          code="$(do_post "$POST_URL")"
+          cat "$body_file"
+          echo ""
+          echo "HTTP ${code}"
+
+          if [ "$code" = "404" ] && [ -n "${SYNC_ALL_URL:-}" ]; then
+            ALT="$_derived_niche"
+            if [ "$POST_URL" != "$ALT" ]; then
+              echo "::warning::Got 404 from first URL; retrying with URL derived from SYNC_ALL_URL"
+              code="$(do_post "$ALT")"
+              cat "$body_file"
+              echo ""
+              echo "HTTP ${code}"
+            fi
+          fi
+
+          rm -f "$body_file"
+
+          if [ "$code" != "200" ]; then
+            echo "::error::Niche cron failed with HTTP ${code}. Deploy the FastAPI image that registers POST /api/v1/cron/keyword-reel-similarity, or use .../api/cron/niche-discovery on Next with CONTENT_API_URL set to that API."
+            exit 1
+          fi
