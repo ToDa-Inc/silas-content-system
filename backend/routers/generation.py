@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Annotated, Any, Dict, List, Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from supabase import Client
 
@@ -28,6 +29,7 @@ from models.generation import (
     GenerationSessionOut,
     GenerationStartBody,
     GenerateThumbnailBody,
+    ComposeThumbnailBody,
 )
 from services.content_generation import (
     GENERATION_PROMPT_VERSION,
@@ -46,7 +48,10 @@ from services.content_generation import (
     run_script_adaptation_synthesis,
 )
 from services.format_classifier import canonicalize_stored_format_key
-from services.image_generation import generate_thumbnail_freepik_pillow
+from services.image_generation import (
+    compose_thumbnail_from_image,
+    generate_thumbnail_freepik_pillow,
+)
 from services.video_render import RENDERS_BUCKET
 from services.format_digest import (
     compute_format_digests,
@@ -887,5 +892,90 @@ def generation_generate_thumbnail(
         supabase.table("generation_sessions").update({"thumbnail_url": url}).eq("id", session_id).execute()
     except Exception:
         logger.warning("Could not persist thumbnail_url to generation_sessions — column may not exist yet")
+
+    return {"thumbnail_url": url}
+
+
+@router.post("/clients/{slug}/generate/sessions/{session_id}/compose-thumbnail")
+def generation_compose_thumbnail(
+    slug: str,
+    session_id: str,
+    body: ComposeThumbnailBody,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Dict[str, Any]:
+    """Compose a 9:16 reel cover from an existing client image + hook text.
+
+    Alternative to ``/generate-thumbnail`` (which uses Freepik for the background).
+    Reuses the same Pillow text overlay so visually it stays on-brand. The image
+    is fetched from Supabase Storage via its public URL.
+    """
+    _ = slug
+    row = _load_session(supabase, client_id, session_id)
+
+    img_res = (
+        supabase.table("client_images")
+        .select("id, file_url")
+        .eq("id", body.client_image_id.strip())
+        .eq("client_id", client_id)
+        .limit(1)
+        .execute()
+    )
+    if not img_res.data:
+        raise HTTPException(status_code=404, detail="Client image not found")
+    file_url = str(img_res.data[0].get("file_url") or "").strip()
+    if not file_url:
+        raise HTTPException(status_code=400, detail="Image has no file_url")
+
+    text = (body.hook_text or "").strip()
+    if not text:
+        hooks: List[Any] = row.get("hooks") or []
+        if hooks and isinstance(hooks[0], dict):
+            text = str(hooks[0].get("text") or "").strip()
+    if not text:
+        angles: List[Any] = row.get("angles") or []
+        idx = row.get("chosen_angle_index")
+        try:
+            chosen = angles[int(idx)] if idx is not None and 0 <= int(idx) < len(angles) else (angles[0] if angles else {})
+            if isinstance(chosen, dict):
+                text = str(chosen.get("title") or "").strip()
+        except (TypeError, ValueError, IndexError):
+            pass
+    if not text:
+        raise HTTPException(
+            status_code=400,
+            detail="Session has no hooks or angles — pass hook_text in the request body.",
+        )
+
+    try:
+        with httpx.Client(timeout=30) as client:
+            r = client.get(file_url)
+            r.raise_for_status()
+            src_bytes = r.content
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not fetch client image: {e}") from e
+
+    try:
+        png = compose_thumbnail_from_image(src_bytes, text, wash=body.wash)
+    except Exception as e:
+        logger.exception("Thumbnail composition failed")
+        raise HTTPException(status_code=502, detail=f"Thumbnail composition failed: {e}") from e
+
+    path = f"{client_id}/thumb_{session_id}.png"
+    try:
+        supabase.storage.from_(RENDERS_BUCKET).upload(
+            path,
+            png,
+            {"content-type": "image/png", "upsert": "true"},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Storage upload failed: {e}") from e
+
+    url = _public_render_url(settings.supabase_url, RENDERS_BUCKET, path)
+    try:
+        supabase.table("generation_sessions").update({"thumbnail_url": url}).eq("id", session_id).execute()
+    except Exception:
+        logger.warning("Could not persist thumbnail_url to generation_sessions")
 
     return {"thumbnail_url": url}

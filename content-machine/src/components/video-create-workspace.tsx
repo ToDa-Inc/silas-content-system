@@ -21,15 +21,19 @@ import { useToast } from "@/components/ui/toast-provider";
 import {
   brollDelete,
   brollList,
+  clientImagesList,
   creationGenerateBackground,
   creationRenderVideo,
+  creationSetBackgroundImage,
   creationSetBroll,
   fetchBackgroundJob,
+  generationComposeThumbnail,
   generationGenerateThumbnail,
   generationGetSession,
   generationRegenerate,
   patchCreateSession,
   type BrollClipRow,
+  type ClientImageRow,
   type GenerationSession,
   type TextBlock,
 } from "@/lib/api-client";
@@ -229,6 +233,81 @@ function BrollLibrarySection({
   );
 }
 
+function ClientImagesPicker({
+  images,
+  selectedImageId,
+  busy,
+  onPick,
+  emptyHint = "No client images yet.",
+}: {
+  images: ClientImageRow[];
+  selectedImageId: string;
+  busy: boolean;
+  onPick: (id: string) => void;
+  emptyHint?: string;
+}) {
+  return (
+    <div>
+      <div className="mb-3 flex items-center justify-between">
+        <p className="text-xs font-semibold text-app-fg">
+          Client images{" "}
+          <span className="font-normal text-app-fg-muted">
+            ({images.length})
+          </span>
+        </p>
+        <Link
+          href="/media?tab=images"
+          className="text-[11px] font-semibold text-sky-500 hover:underline dark:text-sky-400"
+        >
+          Manage in Media →
+        </Link>
+      </div>
+
+      {images.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-app-divider/60 py-8 text-center">
+          <ImageIcon className="mx-auto mb-2 h-6 w-6 text-app-fg-subtle opacity-30" />
+          <p className="mb-3 text-xs text-app-fg-subtle">{emptyHint}</p>
+          <Link
+            href="/media?tab=images"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25"
+          >
+            <Plus className="h-3 w-3" />
+            Upload image
+          </Link>
+        </div>
+      ) : (
+        <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5">
+          {images.map((img) => {
+            const isActive = selectedImageId === img.id;
+            return (
+              <button
+                key={img.id}
+                type="button"
+                disabled={busy}
+                onClick={() => onPick(img.id)}
+                className={`group flex flex-col gap-1 overflow-hidden rounded-xl border p-1.5 text-left transition-colors ${
+                  isActive
+                    ? "border-amber-500/45 bg-amber-500/10"
+                    : "border-app-divider hover:border-white/20"
+                } disabled:opacity-50`}
+                title={img.label || "Use this image"}
+              >
+                <div className="overflow-hidden rounded-lg bg-black/10" style={{ aspectRatio: "9/16" }}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={img.file_url} alt="" className="h-full w-full object-cover" />
+                </div>
+                <span className="line-clamp-1 px-1 text-[10px] text-app-fg-muted">
+                  {isActive ? "Active" : img.label || "Use"}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StepHeader({
   n,
   label,
@@ -255,21 +334,35 @@ function StepHeader({
   );
 }
 
+type CoverMode = "ai" | "image";
+
 function ReelCoverSection({
   hooks,
+  images,
   thumbnailUrl,
   thumbnailBusy,
   coverText,
+  selectedImageId,
+  mode,
+  onModeChange,
   onCoverTextChange,
-  onGenerate,
+  onSelectImage,
+  onGenerateAi,
+  onComposeFromImage,
   step,
 }: {
   hooks: Array<{ text?: string }>;
+  images: ClientImageRow[];
   thumbnailUrl: string | null;
   thumbnailBusy: boolean;
   coverText: string;
+  selectedImageId: string;
+  mode: CoverMode;
+  onModeChange: (m: CoverMode) => void;
   onCoverTextChange: (s: string) => void;
-  onGenerate: () => void;
+  onSelectImage: (id: string) => void;
+  onGenerateAi: () => void;
+  onComposeFromImage: () => void;
   step: number;
 }) {
   return (
@@ -277,6 +370,28 @@ function ReelCoverSection({
       <StepHeader n={step} label="Reel cover" done={Boolean(thumbnailUrl)}>
         <span className="text-[10px] text-app-fg-subtle">Instagram cover · 9:16</span>
       </StepHeader>
+
+      {/* Source toggle: AI image vs. existing client image */}
+      <div className="mb-4 inline-flex rounded-xl border border-app-divider bg-app-chip-bg/40 p-1">
+        <button
+          type="button"
+          onClick={() => onModeChange("ai")}
+          className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-colors ${
+            mode === "ai" ? "bg-white/10 text-app-fg shadow-sm" : "text-app-fg-muted hover:text-app-fg"
+          }`}
+        >
+          <Sparkles className="h-3 w-3" /> AI image
+        </button>
+        <button
+          type="button"
+          onClick={() => onModeChange("image")}
+          className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-colors ${
+            mode === "image" ? "bg-white/10 text-app-fg shadow-sm" : "text-app-fg-muted hover:text-app-fg"
+          }`}
+        >
+          <ImageIcon className="h-3 w-3" /> Client image
+        </button>
+      </div>
 
       <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
         <div className="mx-auto shrink-0 sm:mx-0">
@@ -286,7 +401,7 @@ function ReelCoverSection({
               style={{ aspectRatio: "9/16" }}
             >
               <Loader2 className="h-6 w-6 animate-spin text-app-fg-subtle" />
-              <p className="text-[10px] text-app-fg-muted">~30–60s</p>
+              <p className="text-[10px] text-app-fg-muted">{mode === "ai" ? "~30–60s" : "few seconds"}</p>
             </div>
           ) : thumbnailUrl ? (
             <a href={thumbnailUrl} target="_blank" rel="noreferrer" title="Open full size">
@@ -314,7 +429,9 @@ function ReelCoverSection({
 
         <div className="flex min-w-0 flex-1 flex-col gap-3">
           <p className="text-xs leading-relaxed text-app-fg-muted">
-            Static cover image shown on Instagram before someone taps play. 9:16 with a hook burned in.
+            {mode === "ai"
+              ? "AI generates a 9:16 background with the hook burned in."
+              : "Pick a client photo and we overlay the hook in the same editorial style."}
           </p>
 
           {hooks.length > 0 && (
@@ -359,18 +476,35 @@ function ReelCoverSection({
             />
           </div>
 
+          {mode === "image" && (
+            <ClientImagesPicker
+              images={images}
+              selectedImageId={selectedImageId}
+              busy={thumbnailBusy}
+              onPick={onSelectImage}
+              emptyHint="No client images yet — upload some PNG/JPG photos in Media."
+            />
+          )}
+
           <button
             type="button"
-            disabled={thumbnailBusy}
-            onClick={onGenerate}
+            disabled={thumbnailBusy || (mode === "image" && !selectedImageId)}
+            onClick={mode === "ai" ? onGenerateAi : onComposeFromImage}
             className="inline-flex items-center gap-2 self-start rounded-xl bg-amber-500/15 px-4 py-2 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-50"
+            title={mode === "image" && !selectedImageId ? "Pick an image first" : undefined}
           >
             {thumbnailBusy ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
+            ) : mode === "ai" ? (
               <Sparkles className="h-3.5 w-3.5" />
+            ) : (
+              <ImageIcon className="h-3.5 w-3.5" />
             )}
-            {thumbnailBusy ? "Generating…" : thumbnailUrl ? "Regenerate cover" : "Generate cover"}
+            {thumbnailBusy
+              ? mode === "ai" ? "Generating…" : "Composing…"
+              : thumbnailUrl
+              ? "Regenerate cover"
+              : mode === "ai" ? "Generate cover" : "Compose cover"}
           </button>
 
           {thumbnailUrl && !thumbnailBusy && (
@@ -515,7 +649,9 @@ export function VideoCreateWorkspace({
   const [bootstrapDone, setBootstrapDone] = useState(false);
   const [session, setSession] = useState<GenerationSession | null>(null);
   const [clips, setClips] = useState<BrollClipRow[]>([]);
+  const [images, setImages] = useState<ClientImageRow[]>([]);
   const [selectedClipId, setSelectedClipId] = useState("");
+  const [selectedImageId, setSelectedImageId] = useState("");
   const [textDraft, setTextDraft] = useState<TextBlock[]>([]);
   const [scriptDraft, setScriptDraft] = useState("");
   const [loading, setLoading] = useState(false);
@@ -525,6 +661,8 @@ export function VideoCreateWorkspace({
   const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
   const [thumbnailBusy, setThumbnailBusy] = useState(false);
   const [coverText, setCoverText] = useState("");
+  const [coverMode, setCoverMode] = useState<CoverMode>("ai");
+  const [coverImageId, setCoverImageId] = useState("");
   const [regenBusy, setRegenBusy] = useState(false);
 
   // Hold the latest parent callback in a ref so it never invalidates effects/callbacks.
@@ -539,6 +677,7 @@ export function VideoCreateWorkspace({
     setTextDraft(Array.isArray(s.text_blocks) ? s.text_blocks.map((b) => ({ ...b })) : []);
     setScriptDraft(s.script ?? "");
     setSelectedClipId(s.broll_clip_id ?? "");
+    setSelectedImageId(s.client_image_id ?? "");
     if (s.thumbnail_url) setThumbnailUrl(s.thumbnail_url);
     onSessionUpdatedRef.current?.(s);
   }, []);
@@ -550,9 +689,10 @@ export function VideoCreateWorkspace({
     if (!cs || !os || !sessionId) return;
     setBootstrapDone(false);
     void (async () => {
-      const [sRes, bRes] = await Promise.all([
+      const [sRes, bRes, iRes] = await Promise.all([
         generationGetSession(cs, os, sessionId),
         brollList(cs, os),
+        clientImagesList(cs, os),
       ]);
       if (cancelled) return;
       if (!sRes.ok) {
@@ -562,6 +702,7 @@ export function VideoCreateWorkspace({
         setCoverText("");
       }
       if (bRes.ok) setClips(bRes.data);
+      if (iRes.ok) setImages(iRes.data);
       setBootstrapDone(true);
     })();
     return () => {
@@ -783,6 +924,47 @@ export function VideoCreateWorkspace({
     }
   }, [clientSlug, orgSlug, session, coverText, show]);
 
+  const onComposeCoverFromImage = useCallback(async () => {
+    const cs = clientSlug.trim();
+    const os = orgSlug.trim();
+    if (!session || !cs || !os || !coverImageId) return;
+    const text = coverText.trim() || undefined;
+    setThumbnailBusy(true);
+    try {
+      const res = await generationComposeThumbnail(cs, os, session.id, coverImageId, text);
+      if (!res.ok) {
+        show(res.error, "error");
+        return;
+      }
+      setThumbnailUrl(res.data.thumbnail_url);
+      show("Cover composed.", "success");
+    } finally {
+      setThumbnailBusy(false);
+    }
+  }, [clientSlug, orgSlug, session, coverImageId, coverText, show]);
+
+  const onSetBackgroundImage = useCallback(
+    async (imageId: string) => {
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!session || !cs || !os || !imageId.trim()) return;
+      setLoading(true);
+      try {
+        const res = await creationSetBackgroundImage(cs, os, session.id, imageId.trim());
+        if (!res.ok) {
+          show(res.error, "error");
+          return;
+        }
+        applySession(res.data);
+        setSelectedImageId(imageId);
+        show("Image set as background.", "success");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [applySession, clientSlug, orgSlug, session, show],
+  );
+
   const copyText = useCallback(
     async (label: string, text: string) => {
       try {
@@ -867,11 +1049,17 @@ export function VideoCreateWorkspace({
 
         <ReelCoverSection
           hooks={hooks}
+          images={images}
           thumbnailUrl={thumbnailUrl}
           thumbnailBusy={thumbnailBusy}
           coverText={coverText}
+          selectedImageId={coverImageId}
+          mode={coverMode}
+          onModeChange={setCoverMode}
           onCoverTextChange={setCoverText}
-          onGenerate={onGenerateThumbnail}
+          onSelectImage={setCoverImageId}
+          onGenerateAi={onGenerateThumbnail}
+          onComposeFromImage={onComposeCoverFromImage}
           step={2}
         />
 
@@ -1082,6 +1270,22 @@ export function VideoCreateWorkspace({
             </div>
 
             <div className="border-t border-app-divider/50 pt-5">
+              <p className="mb-1 text-xs font-semibold text-app-fg">Or: client image</p>
+              <p className="mb-4 text-xs leading-relaxed text-app-fg-muted">
+                Use an existing photo (e.g. of yourself) as a static background. Same render flow,
+                no AI generation cost.
+              </p>
+              <ClientImagesPicker
+                images={images}
+                selectedImageId={
+                  session.background_type === "client_image" ? selectedImageId : ""
+                }
+                busy={loading}
+                onPick={(id) => void onSetBackgroundImage(id)}
+              />
+            </div>
+
+            <div className="border-t border-app-divider/50 pt-5">
               <p className="mb-1 text-xs font-semibold text-app-fg">Or: library footage</p>
               <p className="mb-4 text-xs leading-relaxed text-app-fg-muted">
                 Footage loops; video length follows your script timing in render.
@@ -1177,11 +1381,17 @@ export function VideoCreateWorkspace({
       {/* ── Step 4: Reel cover ── */}
       <ReelCoverSection
         hooks={hooks}
+        images={images}
         thumbnailUrl={thumbnailUrl}
         thumbnailBusy={thumbnailBusy}
         coverText={coverText}
+        selectedImageId={coverImageId}
+        mode={coverMode}
+        onModeChange={setCoverMode}
         onCoverTextChange={setCoverText}
-        onGenerate={onGenerateThumbnail}
+        onSelectImage={setCoverImageId}
+        onGenerateAi={onGenerateThumbnail}
+        onComposeFromImage={onComposeCoverFromImage}
         step={4}
       />
 

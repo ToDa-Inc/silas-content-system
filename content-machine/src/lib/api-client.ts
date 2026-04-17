@@ -318,6 +318,7 @@ export type GenerationSession = {
   text_blocks?: TextBlock[] | null;
   background_type?: string | null;
   broll_clip_id?: string | null;
+  client_image_id?: string | null;
   background_url?: string | null;
   rendered_video_url?: string | null;
   thumbnail_url?: string | null;
@@ -931,6 +932,127 @@ export async function generationSetStatus(
       return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
     }
     return { ok: true, data: json as GenerationSession };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+// ── Client image library (cover + video background, alternative to AI) ──────────
+
+export type ClientImageRow = {
+  id: string;
+  client_id?: string;
+  file_url: string;
+  label?: string | null;
+  width?: number | null;
+  height?: number | null;
+  created_at?: string | null;
+};
+
+export async function clientImagesList(
+  clientSlug: string,
+  orgSlug: string,
+): Promise<{ ok: true; data: ClientImageRow[] } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/images`,
+      { headers },
+    );
+    const json = (await res.json().catch(() => [])) as unknown;
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`),
+      };
+    }
+    return { ok: true, data: Array.isArray(json) ? (json as ClientImageRow[]) : [] };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function clientImagesDelete(
+  clientSlug: string,
+  orgSlug: string,
+  imageId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/images/${encodeURIComponent(imageId)}`,
+      { method: "DELETE", headers },
+    );
+    if (!res.ok) {
+      const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      return { ok: false, error: formatFastApiError(json, `Failed (${res.status})`) };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function creationSetBackgroundImage(
+  clientSlug: string,
+  orgSlug: string,
+  sessionId: string,
+  clientImageId: string,
+): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/create/sessions/${encodeURIComponent(sessionId)}/set-background-image`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ client_image_id: clientImageId }),
+      },
+    );
+    const json = (await res.json().catch(() => ({}))) as GenerationSession & { detail?: unknown };
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
+    }
+    return { ok: true, data: json as GenerationSession };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function generationComposeThumbnail(
+  clientSlug: string,
+  orgSlug: string,
+  sessionId: string,
+  clientImageId: string,
+  hookText?: string,
+  wash: boolean = true,
+): Promise<{ ok: true; data: { thumbnail_url: string } } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/generate/sessions/${encodeURIComponent(sessionId)}/compose-thumbnail`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_image_id: clientImageId,
+          hook_text: hookText ?? null,
+          wash,
+        }),
+      },
+    );
+    const json = (await res.json().catch(() => ({}))) as { thumbnail_url?: string; detail?: unknown };
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
+    }
+    if (!json.thumbnail_url) {
+      return { ok: false, error: "No thumbnail URL returned" };
+    }
+    return { ok: true, data: { thumbnail_url: json.thumbnail_url } };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
   }

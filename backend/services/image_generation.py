@@ -191,6 +191,54 @@ def generate_thumbnail_freepik_pillow(
     bg.save(out, format="PNG", optimize=True)
     return out.getvalue()
 
+def compose_thumbnail_from_image(
+    image_bytes: bytes,
+    text: str,
+    *,
+    target_w: int = 1080,
+    target_h: int = 1920,
+    wash: bool = True,
+) -> bytes:
+    """Compose a 9:16 reel cover from a user-supplied image + text overlay.
+
+    Same editorial style as `generate_thumbnail_freepik_pillow` but skips the
+    Freepik step: the caller already provides the background bytes (e.g. a
+    photo of the creator from the client image library).
+
+    Pass ``wash=False`` to keep original colours (skip desaturate + white wash);
+    in that case the image is only resized/cropped to the target ratio before
+    the headline is rendered on top.
+    """
+    if not _PILLOW_AVAILABLE:
+        raise RuntimeError("Pillow is not installed. Run: pip install Pillow")
+
+    bg = Image.open(io.BytesIO(image_bytes))
+    if wash:
+        bg = _wash_image(bg, target_w, target_h)
+    else:
+        bg = _resize_cover(bg, target_w, target_h)
+    bg = _overlay_text(bg, text)
+
+    out = io.BytesIO()
+    bg.save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+
+def _resize_cover(img: "Image.Image", w: int, h: int) -> "Image.Image":
+    """Resize + center-crop to (w, h) keeping original colours."""
+    img = img.convert("RGB")
+    src_r = img.width / img.height
+    tgt_r = w / h
+    if src_r > tgt_r:
+        new_h, new_w = h, int(h * src_r)
+    else:
+        new_w, new_h = w, int(w / src_r)
+    img = img.resize((new_w, new_h), Image.LANCZOS)
+    left = (new_w - w) // 2
+    top = (new_h - h) // 2
+    return img.crop((left, top, left + w, top + h))
+
+
 OPENROUTER_IMAGE_URL = "https://openrouter.ai/api/v1/chat/completions"
 IMAGE_MODEL = "openai/gpt-5-image"
 

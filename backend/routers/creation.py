@@ -85,6 +85,13 @@ class SetBrollBody(BaseModel):
     broll_clip_id: str = Field(..., min_length=1, max_length=64)
 
 
+class SetBackgroundImageBody(BaseModel):
+    """Pick a static client image as background. Same effect as `generate-background`
+    (sets a still 9:16 image) but uses an existing photo from the client library."""
+
+    client_image_id: str = Field(..., min_length=1, max_length=64)
+
+
 class PatchCreateSessionBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -215,6 +222,7 @@ def generate_session_background(
             "background_type": "generated_image",
             "background_url": url,
             "broll_clip_id": None,
+            "client_image_id": None,
             "updated_at": now,
         }
     ).eq("id", session_id).execute()
@@ -278,6 +286,66 @@ def set_session_broll(
             "background_type": "broll",
             "background_url": file_url,
             "broll_clip_id": cid,
+            "client_image_id": None,
+            "updated_at": now,
+        }
+    ).eq("id", session_id).execute()
+    return _row_to_out(_load_session(supabase, client_id, session_id))
+
+
+@router.post(
+    "/clients/{slug}/create/sessions/{session_id}/set-background-image",
+    response_model=GenerationSessionOut,
+)
+def set_session_background_image(
+    slug: str,
+    session_id: str,
+    body: SetBackgroundImageBody,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+) -> dict:
+    """Set the video background to a still image from the client library.
+
+    For text_overlay / carousel sessions: the chosen image becomes the static
+    background and the render pipeline overlays text on it (same as a generated
+    image, only the source differs).
+    """
+    _ = slug
+    row = _load_session(supabase, client_id, session_id)
+    if not _session_eligible_for_create(row):
+        raise HTTPException(
+            status_code=400,
+            detail="Session must be content_ready or approved with a visual format (text_overlay, b_roll_reel, carousel)",
+        )
+    fk_eff = _effective_create_format_key(row)
+    if fk_eff not in ("text_overlay", "carousel"):
+        raise HTTPException(
+            status_code=400,
+            detail="set-background-image applies to text_overlay/carousel only",
+        )
+
+    image_id = body.client_image_id.strip()
+    cres = (
+        supabase.table("client_images")
+        .select("id, file_url")
+        .eq("id", image_id)
+        .eq("client_id", client_id)
+        .limit(1)
+        .execute()
+    )
+    if not cres.data:
+        raise HTTPException(status_code=404, detail="Client image not found")
+    file_url = str(cres.data[0].get("file_url") or "").strip()
+    if not file_url:
+        raise HTTPException(status_code=400, detail="Image has no file_url")
+
+    now = _now_iso()
+    supabase.table("generation_sessions").update(
+        {
+            "background_type": "client_image",
+            "background_url": file_url,
+            "broll_clip_id": None,
+            "client_image_id": image_id,
             "updated_at": now,
         }
     ).eq("id", session_id).execute()

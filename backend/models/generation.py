@@ -79,6 +79,15 @@ class GenerateThumbnailBody(BaseModel):
     hook_text: Optional[str] = Field(None, max_length=500)
 
 
+class ComposeThumbnailBody(BaseModel):
+    """Compose a cover from an existing client image instead of AI-generated background."""
+    client_image_id: str = Field(..., min_length=1, max_length=64)
+    hook_text: Optional[str] = Field(None, max_length=500)
+    # Whether to apply the editorial wash (desaturate + white blend) before drawing text.
+    # Default True keeps the same look as the AI cover; pass False to keep original colours.
+    wash: bool = True
+
+
 class GenerationSessionOut(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -102,6 +111,7 @@ class GenerationSessionOut(BaseModel):
     text_blocks: Optional[List[Dict[str, Any]]] = None
     background_type: Optional[str] = None
     broll_clip_id: Optional[str] = None
+    client_image_id: Optional[str] = None
     background_url: Optional[str] = None
     rendered_video_url: Optional[str] = None
     render_status: Optional[str] = None

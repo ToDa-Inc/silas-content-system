@@ -15,9 +15,12 @@ import {
   brollDelete,
   brollList,
   clientApiContext,
+  clientImagesDelete,
+  clientImagesList,
   contentApiFetch,
   creationListSessions,
   type BrollClipRow,
+  type ClientImageRow,
   type GenerationSession,
 } from "@/lib/api-client";
 import { getContentApiBase } from "@/lib/env";
@@ -44,7 +47,7 @@ function sessionTitle(s: GenerationSession): string {
   return s.id.slice(0, 8);
 }
 
-type Tab = "renders" | "covers" | "broll";
+type Tab = "renders" | "covers" | "broll" | "images";
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
@@ -70,8 +73,11 @@ export default function MediaPage() {
 
   const [sessions, setSessions] = useState<GenerationSession[]>([]);
   const [clips, setClips] = useState<BrollClipRow[]>([]);
+  const [images, setImages] = useState<ClientImageRow[]>([]);
   const [uploadBusy, setUploadBusy] = useState(false);
+  const [imageUploadBusy, setImageUploadBusy] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
   // ── Bootstrap ────────────────────────────────────────────────────────────
 
@@ -85,13 +91,15 @@ export default function MediaPage() {
       setClientSlug(cs);
       setOrgSlug(os);
       if (cs && os) {
-        const [sRes, bRes] = await Promise.all([
+        const [sRes, bRes, iRes] = await Promise.all([
           creationListSessions(cs, os, 200),
           brollList(cs, os),
+          clientImagesList(cs, os),
         ]);
         if (cancelled) return;
         if (sRes.ok) setSessions(sRes.data);
         if (bRes.ok) setClips(bRes.data);
+        if (iRes.ok) setImages(iRes.data);
       }
       setBootstrapDone(true);
     })();
@@ -139,6 +147,58 @@ export default function MediaPage() {
     }
   }, [clientSlug, orgSlug, show]);
 
+  const onUploadImage = useCallback(async (file: File | null) => {
+    if (!file) return;
+    const cs = clientSlug.trim();
+    const os = orgSlug.trim();
+    if (!cs || !os) return;
+    const accepted = /\.(png|jpe?g|webp)$/i.test(file.name);
+    if (!accepted) {
+      show("Only PNG, JPG or WEBP images are supported.", "error");
+      return;
+    }
+    if (file.size > 12 * 1024 * 1024) {
+      show("Image too large (max 12 MB).", "error");
+      return;
+    }
+    setImageUploadBusy(true);
+    try {
+      const base = getContentApiBase();
+      const { headers } = await clientApiContext({ orgSlug: os });
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await contentApiFetch(
+        `${base}/api/v1/clients/${encodeURIComponent(cs)}/images`,
+        { method: "POST", headers, body: fd },
+      );
+      const json = (await res.json().catch(() => ({}))) as { detail?: unknown };
+      if (!res.ok) {
+        show(typeof json.detail === "string" ? json.detail : `Upload failed (${res.status})`, "error");
+        return;
+      }
+      show("Image uploaded.", "success");
+      const iRes = await clientImagesList(cs, os);
+      if (iRes.ok) setImages(iRes.data);
+      if (imageInputRef.current) imageInputRef.current.value = "";
+    } finally {
+      setImageUploadBusy(false);
+    }
+  }, [clientSlug, orgSlug, show]);
+
+  const onDeleteImage = useCallback(async (imageId: string) => {
+    const cs = clientSlug.trim();
+    const os = orgSlug.trim();
+    if (!cs || !os) return;
+    setDeletingId(imageId);
+    try {
+      const res = await clientImagesDelete(cs, os, imageId);
+      if (!res.ok) { show(res.error, "error"); return; }
+      setImages((prev) => prev.filter((i) => i.id !== imageId));
+    } finally {
+      setDeletingId(null);
+    }
+  }, [clientSlug, orgSlug, show]);
+
   const onDeleteClip = useCallback(async (clipId: string) => {
     const cs = clientSlug.trim();
     const os = orgSlug.trim();
@@ -169,6 +229,7 @@ export default function MediaPage() {
     { id: "renders", label: "Renders", count: renders.length },
     { id: "covers", label: "Covers", count: covers.length },
     { id: "broll", label: "B-roll", count: clips.length },
+    { id: "images", label: "Images", count: images.length },
   ];
 
   return (
@@ -190,6 +251,20 @@ export default function MediaPage() {
               className="hidden"
               disabled={uploadBusy}
               onChange={(e) => void onUpload(e.target.files?.[0] ?? null)}
+            />
+          </label>
+        )}
+        {tab === "images" && (
+          <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-amber-500/15 px-4 py-2 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-50">
+            {imageUploadBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+            {imageUploadBusy ? "Uploading…" : "Upload image"}
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+              className="hidden"
+              disabled={imageUploadBusy}
+              onChange={(e) => void onUploadImage(e.target.files?.[0] ?? null)}
             />
           </label>
         )}
@@ -311,6 +386,60 @@ export default function MediaPage() {
                   </a>
                 </div>
               ))}
+            </div>
+          )
+      )}
+
+      {/* ── Images tab ──────────────────────────────────────────────────── */}
+      {tab === "images" && (
+        images.length === 0
+          ? <EmptyState icon={ImageIcon} label="No images yet — upload a PNG, JPG or WEBP." />
+          : (
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+              {images.map((img) => {
+                const isDeleting = deletingId === img.id;
+                return (
+                  <div key={img.id} className="glass flex flex-col gap-2 rounded-2xl p-3">
+                    {/* portrait preview */}
+                    <div className="overflow-hidden rounded-xl border border-app-divider bg-black/5" style={{ aspectRatio: "9/16" }}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={img.file_url}
+                        alt={img.label ?? ""}
+                        className="h-full w-full object-cover"
+                      />
+                    </div>
+                    <p className="line-clamp-1 text-[11px] font-medium text-app-fg">
+                      {img.label ?? `Image ${img.id.slice(0, 6)}`}
+                    </p>
+                    <p className="text-[10px] text-app-fg-subtle">{formatDate(img.created_at)}</p>
+                    <div className="flex gap-1.5">
+                      <a
+                        href={img.file_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        download
+                        className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg border border-app-divider py-1.5 text-[11px] font-semibold text-app-fg hover:bg-white/5"
+                      >
+                        <Download className="h-3 w-3" />
+                        Download
+                      </a>
+                      <button
+                        type="button"
+                        disabled={isDeleting}
+                        onClick={() => void onDeleteImage(img.id)}
+                        title="Delete image"
+                        className="inline-flex items-center justify-center rounded-lg border border-app-divider px-2 py-1.5 text-[11px] text-red-500 hover:bg-red-500/10 disabled:opacity-40"
+                      >
+                        {isDeleting
+                          ? <Loader2 className="h-3 w-3 animate-spin" />
+                          : <Trash2 className="h-3 w-3" />
+                        }
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )
       )}
