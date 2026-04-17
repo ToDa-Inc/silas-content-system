@@ -437,23 +437,23 @@ def run_angle_generation(
 
 
 def _normalize_hooks(raw: Any) -> List[Dict[str, Any]]:
+    """5 flat alternative hooks. `tier` field is no longer required (kept optional for
+    backwards-compat with old sessions still in DB), but new sessions return a flat list."""
     if not isinstance(raw, list):
         return []
     out: List[Dict[str, Any]] = []
+    seen: set[str] = set()
     for h in raw:
         if not isinstance(h, dict):
             continue
-        tier = h.get("tier")
         text = str(h.get("text") or "").strip()
-        if not text:
+        if not text or text in seen:
             continue
-        try:
-            t_int = int(tier)
-        except (TypeError, ValueError):
-            t_int = 2
-        t_int = max(1, min(3, t_int))
-        out.append({"tier": t_int, "text": text})
-    return out[:24]
+        seen.add(text)
+        out.append({"text": text})
+        if len(out) >= 5:
+            break
+    return out
 
 
 def _normalize_hashtags(raw: Any) -> List[str]:
@@ -518,11 +518,10 @@ def run_content_package(
     fb = f"\n\nFEEDBACK_FROM_HUMAN:\n{feedback.strip()[:4000]}\n" if feedback and feedback.strip() else ""
     json_shape = (
         "{\n"
-        '  "hooks": [{"tier": 1|2|3, "text": string}],\n'
+        '  "hooks": [{"text": string}],\n'
         '  "script": string,\n'
         '  "caption_body": string,\n'
-        '  "hashtags": [string],\n'
-        '  "story_variants": [string, string, string]'
+        '  "hashtags": [string]'
     )
     if _wants_text_blocks(source_format_key):
         json_shape += ',\n  "text_blocks": [{"text": string, "isCTA": boolean}]'
@@ -565,7 +564,9 @@ def run_content_package(
         f"{json_shape}\n"
         "Rules:\n"
         f"{tb_rules}"
-        "- hooks: 10–18 items. Tier 1 = direct relatable question; 2 = insight/tension; 3 = concrete script/list hook.\n"
+        "- hooks: exactly 5 alternative hooks for the same video. Mix styles freely "
+        "(direct question, insight/tension, concrete say-out-loud line). Each hook is the FIRST line "
+        "spoken/shown in the reel and must work on its own. No tiers, no labels.\n"
         "- script: Use the optimal format and duration implied by PATTERNS_JSON.format_insights "
         "(and NICHE_BENCHMARKS if present). If format_insights suggests talking-head ~30s, write ~30s; "
         "if text-overlay, write overlay copy. Default to ~45 second talking head only if format_insights is empty. "
@@ -583,8 +584,7 @@ def run_content_package(
         "(6) CTA — clear action (e.g. comment keyword for webinar/training) aligned with OFFER_DOCUMENTATION. "
         "Tone: direct, emotionally precise, psychologically sharp; slight provocation where it fits; "
         "1–3 emojis max if natural. Final check: would this stop a scroll and make the ICP feel understood?\n"
-        "- hashtags: at most 5 entries, niche-relevant; align with NICHE_BENCHMARKS and PATTERNS_JSON when available.\n"
-        "- story_variants: 3 short on-screen text lines for IG Story teasers.\n\n"
+        "- hashtags: at most 5 entries, niche-relevant; align with NICHE_BENCHMARKS and PATTERNS_JSON when available.\n\n"
         "HARD RULES FOR SCRIPT INSIGHTS (non-negotiable):\n"
         "1. Every insight MUST include at least one sentence the viewer can say out loud "
         "in a real situation tomorrow. Not an explanation of a technique — the actual words. "
@@ -623,7 +623,7 @@ def run_content_package(
         "script": script,
         "caption_body": cap,
         "hashtags": _normalize_hashtags(data.get("hashtags")),
-        "story_variants": _normalize_stories(data.get("story_variants"))[:3],
+        "story_variants": [],
     }
     if _wants_text_blocks(source_format_key):
         out["text_blocks"] = _normalize_text_blocks(data.get("text_blocks"))
@@ -655,7 +655,9 @@ def run_regenerate(
         "hooks": "none",
         "script": "script",
         "caption": "caption",
-        "story": "stories",
+        # legacy "story" scope kept for backwards-compat with old API callers; no-op now.
+        "story": "none",
+        "text_blocks": "none",
     }
     german_polish = polish_for_scope.get(scope, "full")
     previous = {
@@ -684,11 +686,16 @@ def run_regenerate(
         "hooks": ("hooks",),
         "script": ("script",),
         "caption": ("caption_body", "hashtags"),
-        "story": ("story_variants",),
+        "text_blocks": ("text_blocks",),
+        # legacy "story" scope kept for backwards-compat; touches nothing in new sessions.
+        "story": (),
     }
     keys = scope_keys.get(scope)
-    if not keys:
+    if keys is None:
         return full
+    if not keys:
+        # explicit no-op (e.g. legacy "story" scope on a session that no longer has stories)
+        return previous
     out = dict(previous)
     for k in keys:
         out[k] = full[k]
@@ -824,6 +831,54 @@ def run_format_recommendation(
         if isinstance(x, dict):
             out.append(x)
     return out
+
+
+ALLOWED_AUTO_IDEA_FORMATS = frozenset({"text_overlay", "talking_head", "carousel"})
+
+
+def run_auto_video_idea(
+    settings: Settings,
+    *,
+    client_row: Dict[str, Any],
+    format_summaries: List[Dict[str, Any]],
+    competitor_hints: str,
+) -> Dict[str, str]:
+    """LLM: one concrete video idea + suggested format (text_overlay | talking_head | carousel)."""
+    lang = _lang_instruction(str(client_row.get("language") or "de"))
+    allowed = [s for s in format_summaries if isinstance(s, dict)]
+    user = (
+        f"{lang}\n\n"
+        "TASK: Propose exactly ONE concrete Instagram Reels (or short-form) video idea for this client.\n"
+        "- Ground it in CLIENT_CONTEXT and COMPETITOR_SNIPPETS (themes, hooks, what resonates).\n"
+        "- The idea must be specific: topic, angle, and why it fits the ICP — not generic advice.\n"
+        "- Pick exactly one OUTPUT_FORMAT from: text_overlay, talking_head, carousel.\n"
+        "  • text_overlay: punchy on-screen text over footage or stills\n"
+        "  • talking_head: face-to-camera delivery (script-led)\n"
+        "  • carousel: multi-beat / swipe storytelling (still produce a reel-style script plan)\n\n"
+        "Output JSON only:\n"
+        '{"idea": string (2–6 sentences), "suggested_format_key": string, "reasoning": string}\n\n'
+        f"FORMAT_DIGEST_SUMMARIES_JSON (metrics by style — use only as weak prior):\n"
+        f"{json.dumps(allowed, ensure_ascii=False)[:60_000]}\n\n"
+        f"COMPETITOR_SNIPPETS:\n{competitor_hints[:24_000]}\n\n"
+        f"CLIENT_CONTEXT:\n{_pack_client_row_for_llm(client_row)[:80_000]}\n"
+    )
+    data = chat_json_completion(
+        settings.openrouter_api_key,
+        settings.openrouter_model,
+        system=_SYSTEM_JSON,
+        user=user,
+        max_tokens=4096,
+        temperature=0.45,
+    )
+    idea = str(data.get("idea") or "").strip()
+    raw_key = str(data.get("suggested_format_key") or "").strip()
+    reasoning = str(data.get("reasoning") or "").strip()
+    ck = canonicalize_stored_format_key(raw_key) or raw_key
+    if ck not in ALLOWED_AUTO_IDEA_FORMATS:
+        ck = "text_overlay"
+    if len(idea) < 20:
+        raise ValueError("Model returned an empty or too-short idea; retry.")
+    return {"idea": idea, "suggested_format_key": ck, "reasoning": reasoning}
 
 
 def get_chosen_angle(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:

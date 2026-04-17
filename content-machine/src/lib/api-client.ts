@@ -310,7 +310,7 @@ export type GenerationSession = {
   synthesized_patterns?: Record<string, unknown> | null;
   angles?: Array<Record<string, unknown>> | null;
   chosen_angle_index?: number | null;
-  hooks?: Array<{ tier: number; text: string }> | null;
+  hooks?: Array<{ text: string; tier?: number }> | null;
   script?: string | null;
   caption_body?: string | null;
   hashtags?: string[] | null;
@@ -411,6 +411,46 @@ export async function recommendFormatForIdea(
       return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
     }
     return { ok: true, data: Array.isArray(json.recommendations) ? json.recommendations : [] };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export type AutoVideoIdea = {
+  idea: string;
+  suggested_format_key: string;
+  reasoning: string;
+};
+
+export async function generateAutoVideoIdea(
+  clientSlug: string,
+  orgSlug: string,
+): Promise<{ ok: true; data: AutoVideoIdea } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/generate/auto-video-idea`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+      },
+    );
+    const json = (await res.json().catch(() => ({}))) as Partial<AutoVideoIdea> & { detail?: unknown };
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
+    }
+    if (!json.idea || !json.suggested_format_key) {
+      return { ok: false, error: "Empty response from auto-video-idea" };
+    }
+    return {
+      ok: true,
+      data: {
+        idea: String(json.idea),
+        suggested_format_key: String(json.suggested_format_key),
+        reasoning: String(json.reasoning ?? ""),
+      },
+    };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
   }
@@ -526,7 +566,10 @@ export async function generationRegenerate(
   clientSlug: string,
   orgSlug: string,
   sessionId: string,
-  body: { scope: "hooks" | "script" | "caption" | "story" | "all"; feedback?: string },
+  body: {
+    scope: "hooks" | "script" | "caption" | "story" | "text_blocks" | "all";
+    feedback?: string;
+  },
 ): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
   const base = getContentApiBase();
   const headers = await clientApiHeaders({ orgSlug });
@@ -660,7 +703,12 @@ export async function patchCreateSession(
   clientSlug: string,
   orgSlug: string,
   sessionId: string,
-  body: { text_blocks: TextBlock[] },
+  body: {
+    text_blocks?: TextBlock[];
+    script?: string;
+    caption_body?: string;
+    hashtags?: string[];
+  },
 ): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
   const base = getContentApiBase();
   const headers = await clientApiHeaders({ orgSlug });

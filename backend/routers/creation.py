@@ -89,6 +89,10 @@ class PatchCreateSessionBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     text_blocks: Optional[List[Dict[str, Any]]] = None
+    # talking_head sessions edit script / caption from the unified create screen.
+    script: Optional[str] = Field(default=None, max_length=20_000)
+    caption_body: Optional[str] = Field(default=None, max_length=20_000)
+    hashtags: Optional[List[str]] = None
 
 
 @router.get("/clients/{slug}/create/sessions", response_model=list[GenerationSessionOut])
@@ -120,20 +124,46 @@ def patch_create_session(
     client_id: Annotated[str, Depends(resolve_client_id)],
     supabase: Annotated[Client, Depends(get_supabase)],
 ) -> dict:
+    """Edit fields the user can tweak from the unified create screen.
+
+    - `text_blocks`: only allowed for visual formats (text_overlay, b_roll_reel, carousel).
+    - `script` / `caption_body` / `hashtags`: allowed for any content_ready/approved session
+      (talking_head edits its script here; visual formats can also tweak caption).
+    """
     _ = slug
     row = _load_session(supabase, client_id, session_id)
-    if not _session_eligible_for_create(row):
+    status = str(row.get("status") or "")
+    if status not in CREATE_ELIGIBLE_STATUSES:
         raise HTTPException(
             status_code=400,
-            detail="Session must be content_ready or approved with a visual format (text_overlay, b_roll_reel, carousel)",
+            detail="Session must be content_ready or approved",
         )
-    if body.text_blocks is None:
+
+    patch: Dict[str, Any] = {}
+    if body.text_blocks is not None:
+        if not _session_eligible_for_create(row):
+            raise HTTPException(
+                status_code=400,
+                detail="text_blocks only apply to visual formats (text_overlay, b_roll_reel, carousel)",
+            )
+        patch["text_blocks"] = _normalize_patch_text_blocks(body.text_blocks)
+    if body.script is not None:
+        patch["script"] = body.script.strip()
+    if body.caption_body is not None:
+        patch["caption_body"] = body.caption_body.strip()
+    if body.hashtags is not None:
+        cleaned: List[str] = []
+        for tag in body.hashtags[:10]:
+            t = str(tag).strip()
+            if not t:
+                continue
+            cleaned.append(t if t.startswith("#") else f"#{t.lstrip('#')}")
+        patch["hashtags"] = cleaned
+
+    if not patch:
         raise HTTPException(status_code=400, detail="No fields to update")
-    tb = _normalize_patch_text_blocks(body.text_blocks)
-    now = _now_iso()
-    supabase.table("generation_sessions").update({"text_blocks": tb, "updated_at": now}).eq(
-        "id", session_id
-    ).execute()
+    patch["updated_at"] = _now_iso()
+    supabase.table("generation_sessions").update(patch).eq("id", session_id).execute()
     return _row_to_out(_load_session(supabase, client_id, session_id))
 
 

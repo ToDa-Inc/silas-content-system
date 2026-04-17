@@ -51,12 +51,22 @@ class GenerationRecommendFormatBody(BaseModel):
     idea: str = Field(..., min_length=3, max_length=4000)
 
 
+class AutoVideoIdeaOut(BaseModel):
+    """POST …/generate/auto-video-idea — LLM-proposed topic + format."""
+
+    idea: str
+    suggested_format_key: str
+    reasoning: str
+
+
 class GenerationChooseAngleBody(BaseModel):
     angle_index: int = Field(..., ge=0, le=9)
 
 
 class GenerationRegenerateBody(BaseModel):
-    scope: Literal["hooks", "script", "caption", "story", "all"] = "all"
+    # "story" is kept for backwards-compat with old API callers; new sessions don't have story_variants.
+    # "text_blocks" is the new per-section regen scope used by the unified create screen.
+    scope: Literal["hooks", "script", "caption", "story", "text_blocks", "all"] = "all"
     feedback: Optional[str] = Field(None, max_length=4000)
 
 
@@ -96,6 +106,7 @@ class GenerationSessionOut(BaseModel):
     rendered_video_url: Optional[str] = None
     render_status: Optional[str] = None
     render_error: Optional[str] = None
+    thumbnail_url: Optional[str] = None
     status: str
     feedback: Optional[str] = None
     prompt_version: Optional[str] = None

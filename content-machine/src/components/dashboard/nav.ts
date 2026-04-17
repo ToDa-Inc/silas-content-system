@@ -2,7 +2,6 @@ import type { LucideIcon } from "lucide-react";
 import {
   BarChart3,
   Calendar,
-  Clapperboard,
   Database,
   FolderOpen,
   LayoutDashboard,
@@ -19,8 +18,7 @@ export type NavItem = {
 export const mainNav: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/intelligence", label: "Intelligence", icon: BarChart3 },
-  { href: "/generate", label: "Generate", icon: Sparkles },
-  { href: "/create", label: "Create", icon: Clapperboard },
+  { href: "/generate", label: "Create video", icon: Sparkles },
   { href: "/media", label: "Media", icon: FolderOpen },
   { href: "/scheduling", label: "Scheduling", icon: Calendar },
   { href: "/context", label: "Context", icon: Database },

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -10,7 +11,12 @@ from typing import Any, Dict, List, Optional
 from core.config import Settings
 from core.database import get_supabase_for_settings
 from core.id_generator import generate_reel_id
-from services.apify import instagram_reel_scraper_input, run_actor
+from services.apify import (
+    INSTAGRAM_SCRAPER,
+    instagram_profile_posts_input,
+    instagram_reel_scraper_input,
+    run_actor,
+)
 from services.apify_posted_at import apify_instagram_item_posted_at_iso
 from services.instagram_post_url import canonical_instagram_post_url
 from services.reel_snapshots import insert_snapshots_for_scrape_job
@@ -18,6 +24,8 @@ from services.apify_reel_fields import saves_and_shares_from_item, video_duratio
 from services.reel_thumbnail_url import reel_thumbnail_url_from_apify_item
 from services.first_day_stats import update_milestones_for_competitor
 from services.format_digest_jobs import enqueue_auto_analyze_scraped, enqueue_format_digest_recompute
+
+logger = logging.getLogger(__name__)
 
 # When `clients.outlier_ratio_threshold` is null, use this (also the recommended DB default).
 DEFAULT_OUTLIER_RATIO_THRESHOLD = 5.0
@@ -38,7 +46,9 @@ def _post_url(item: dict) -> Optional[str]:
         return str(u).strip()
     sc = item.get("shortCode")
     if sc:
-        return f"https://www.instagram.com/reel/{sc}/"
+        t = str(item.get("type") or "")
+        path = "p" if t in ("Sidecar", "GraphSidecar") else "reel"
+        return f"https://www.instagram.com/{path}/{sc}/"
     return None
 
 
@@ -56,6 +66,19 @@ def _reel_items(items: list) -> List[dict]:
             continue
         views = int(x.get("videoViewCount") or x.get("playsCount") or 0)
         if views <= 0:
+            continue
+        out.append(x)
+    return out
+
+
+def _carousel_items(items: list) -> List[dict]:
+    """Instagram multi-image posts (no reel view count)."""
+    out: List[dict] = []
+    for x in items:
+        if str(x.get("type") or "") not in ("Sidecar", "GraphSidecar"):
+            continue
+        likes = int(x.get("likesCount") or 0)
+        if likes <= 0:
             continue
         out.append(x)
     return out
@@ -126,6 +149,21 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
         ),
     )
     videos = _reel_items(items)
+
+    carousel_posts: List[dict] = []
+    try:
+        raw_posts = run_actor(
+            settings.apify_api_token,
+            INSTAGRAM_SCRAPER,
+            instagram_profile_posts_input([username], min(20, results_limit)),
+        )
+        carousel_posts = _carousel_items(raw_posts or [])
+    except Exception:
+        logger.warning(
+            "Instagram post scrape (carousels) failed for @%s — reels only",
+            username,
+            exc_info=True,
+        )
 
     # ── Recalculate competitor averages from this fresh batch ──
     all_views = [int(v.get("videoViewCount") or v.get("playsCount") or 0) for v in videos]
@@ -200,6 +238,56 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
         }
         batch.append(row)
 
+    for item in carousel_posts:
+        url = _post_url(item)
+        if not url:
+            continue
+        likes = int(item.get("likesCount") or 0)
+        comments = int(item.get("commentsCount") or 0)
+        saves, shares = saves_and_shares_from_item(item)
+        caption = _caption_text(item)
+        rv = _ratio_decimal(0, account_avg_views)
+        rl = _ratio_decimal(likes, account_avg_likes)
+        rc = _ratio_decimal(comments, account_avg_comments)
+        is_out_v = False
+        is_out_l = rl is not None and float(rl) >= threshold
+        is_out_c = rc is not None and float(rc) >= threshold
+        is_any = is_out_l or is_out_c
+        ratio_vals = [float(x) for x in (rl, rc) if x is not None]
+        max_r = max(ratio_vals) if ratio_vals else None
+        legacy_ratio_str = f"{max_r:.2f}" if max_r is not None else None
+        thumb = reel_thumbnail_url_from_apify_item(item)
+        hook = (caption.split("\n")[0][:500] if caption else "") or None
+        row = {
+            "post_url": canonical_instagram_post_url(url),
+            "thumbnail_url": str(thumb) if thumb else None,
+            "account_username": username,
+            "account_avg_views": account_avg_views,
+            "account_avg_likes": account_avg_likes,
+            "account_avg_comments": account_avg_comments,
+            "views": 0,
+            "likes": likes,
+            "comments": comments,
+            "saves": saves,
+            "shares": shares,
+            "outlier_views_ratio": _ratio_str(rv),
+            "outlier_likes_ratio": _ratio_str(rl),
+            "outlier_comments_ratio": _ratio_str(rc),
+            "is_outlier_views": is_out_v,
+            "is_outlier_likes": is_out_l,
+            "is_outlier_comments": is_out_c,
+            "outlier_ratio": legacy_ratio_str,
+            "is_outlier": is_any,
+            "hook_text": hook,
+            "caption": caption or None,
+            "hashtags": _hashtags(item, caption),
+            "posted_at": apify_instagram_item_posted_at_iso(item),
+            "format": "carousel",
+            "source": "profile",
+            "video_duration": None,
+        }
+        batch.append(row)
+
     done_at = datetime.now(timezone.utc)
     if batch:
         existing_res = (
@@ -265,6 +353,7 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
                 "username": username,
                 "apify_items": len(items),
                 "reels_processed": len(batch),
+                "carousel_posts_found": len(carousel_posts),
             },
         }
     ).eq("id", job_id).execute()

@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 CANONICAL_FORMATS = (
     "talking_head",
     "text_overlay",
+    "carousel",
     "skit",
     "voiceover",
     "b_roll_reel",
@@ -31,6 +32,7 @@ def canonicalize_stored_format_key(raw: Optional[str]) -> str:
 _ALIASES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"talking\s*head|talk\s*head|face\s*to\s*camera|direct\s*to\s*camera", re.I), "talking_head"),
     (re.compile(r"text\s*overlay|text\s*on\s*screen|caption\s*style|subtitle", re.I), "text_overlay"),
+    (re.compile(r"carousel|multi[\s-]*image|swipeable|slide\s*deck|photo\s*dump", re.I), "carousel"),
     (re.compile(r"\bskit\b|sketch|role\s*play|acting|scene", re.I), "skit"),
     (re.compile(r"voice\s*over|voiceover|vo\b|narrat", re.I), "voiceover"),
     (re.compile(r"b[\s-]*roll|broll|stock\s*footage|footage\s*montage", re.I), "b_roll_reel"),

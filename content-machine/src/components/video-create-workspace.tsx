@@ -1,0 +1,1258 @@
+"use client";
+
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  Download,
+  Film,
+  Image as ImageIcon,
+  Loader2,
+  Plus,
+  RefreshCw,
+  Sparkles,
+  Trash2,
+  Video,
+} from "lucide-react";
+import { useToast } from "@/components/ui/toast-provider";
+import {
+  brollDelete,
+  brollList,
+  creationGenerateBackground,
+  creationRenderVideo,
+  creationSetBroll,
+  fetchBackgroundJob,
+  generationGenerateThumbnail,
+  generationGetSession,
+  generationRegenerate,
+  patchCreateSession,
+  type BrollClipRow,
+  type GenerationSession,
+  type TextBlock,
+} from "@/lib/api-client";
+
+const POLL_MS = 4000;
+const MAX_POLLS = 90;
+
+function canonicalFormatKey(k: string | null | undefined): string | null {
+  if (!k?.trim()) return null;
+  if (k === "b_roll") return "b_roll_reel";
+  return k;
+}
+
+/**
+ * Inline regenerate control (replaces the old global "Refine" panel).
+ * Lives next to the section it regenerates and posts back to the same `/regenerate` endpoint
+ * with a per-section `scope`. Optional one-line feedback is forwarded to the LLM.
+ */
+function RegenInline({
+  scope,
+  busy,
+  onRegen,
+  placeholder = "How should this change? (optional)",
+}: {
+  scope: "hooks" | "script" | "caption" | "text_blocks";
+  busy: boolean;
+  onRegen: (scope: "hooks" | "script" | "caption" | "text_blocks", feedback: string) => Promise<void>;
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [feedback, setFeedback] = useState("");
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => setOpen(true)}
+        className="inline-flex items-center gap-1 rounded-lg border border-app-divider px-2 py-1 text-[11px] font-semibold text-app-fg-muted hover:text-app-fg disabled:opacity-40"
+      >
+        <RefreshCw className="h-3 w-3" /> Regenerate
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex flex-1 items-center gap-1.5 sm:max-w-md">
+      <input
+        type="text"
+        autoFocus
+        value={feedback}
+        onChange={(e) => setFeedback(e.target.value)}
+        placeholder={placeholder}
+        className="glass-inset min-w-0 flex-1 rounded-lg px-2.5 py-1.5 text-[11px] text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-1 focus:ring-amber-500/35"
+      />
+      <button
+        type="button"
+        disabled={busy}
+        onClick={async () => {
+          await onRegen(scope, feedback.trim());
+          setFeedback("");
+          setOpen(false);
+        }}
+        className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-amber-500/15 px-2.5 py-1.5 text-[11px] font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-40"
+      >
+        {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+        Run
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          setOpen(false);
+          setFeedback("");
+        }}
+        className="rounded-lg p-1 text-app-fg-subtle hover:text-app-fg"
+        aria-label="Cancel"
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
+
+function BrollLibrarySection({
+  clips,
+  loading,
+  deletingClipId,
+  selectedClipId,
+  sessionBrollClipId,
+  showClipBanner,
+  clipBannerUrl,
+  onPick,
+  onDelete,
+}: {
+  clips: BrollClipRow[];
+  loading: boolean;
+  deletingClipId: string | null;
+  selectedClipId: string;
+  sessionBrollClipId?: string | null;
+  showClipBanner: boolean;
+  clipBannerUrl?: string | null;
+  onPick: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <div>
+      {showClipBanner && clipBannerUrl ? (
+        <div className="mb-4 flex items-center gap-3 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.07] px-4 py-3">
+          <Film className="h-4 w-4 shrink-0 text-emerald-500" />
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">B-roll set</p>
+            <p className="truncate text-[11px] text-app-fg-muted">{clipBannerUrl}</p>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mb-3 flex items-center justify-between">
+        <p className="text-xs font-semibold text-app-fg">
+          B-roll library{" "}
+          <span className="font-normal text-app-fg-muted">
+            ({clips.length} clip{clips.length !== 1 ? "s" : ""})
+          </span>
+        </p>
+        <Link
+          href="/media?tab=broll"
+          className="text-[11px] font-semibold text-sky-500 hover:underline dark:text-sky-400"
+        >
+          Manage in Media →
+        </Link>
+      </div>
+
+      {clips.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-app-divider/60 py-8 text-center">
+          <Film className="mx-auto mb-2 h-6 w-6 text-app-fg-subtle opacity-30" />
+          <p className="mb-3 text-xs text-app-fg-subtle">No clips yet.</p>
+          <Link
+            href="/media?tab=broll"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25"
+          >
+            <Plus className="h-3 w-3" />
+            Upload B-roll
+          </Link>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {clips.map((c) => {
+            const isActive = selectedClipId === c.id || sessionBrollClipId === c.id;
+            return (
+              <div
+                key={c.id}
+                className={`group relative flex flex-col gap-1.5 rounded-xl border p-3 transition-colors ${
+                  isActive
+                    ? "border-amber-500/45 bg-amber-500/10"
+                    : "border-app-divider hover:border-white/20"
+                }`}
+              >
+                <div className="flex aspect-video items-center justify-center overflow-hidden rounded-lg bg-black/30">
+                  {c.thumbnail_url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={c.thumbnail_url} alt="" className="h-full w-full object-cover" />
+                  ) : (
+                    <Film className="h-5 w-5 text-app-fg-subtle opacity-40" />
+                  )}
+                </div>
+                <p className="line-clamp-1 text-[11px] font-medium text-app-fg">
+                  {c.label || `Clip ${c.id.slice(0, 6)}`}
+                </p>
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    disabled={loading || isActive}
+                    onClick={() => void onPick(c.id)}
+                    className="flex-1 rounded-lg bg-amber-500/15 py-1 text-[10px] font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-40"
+                  >
+                    {isActive ? "Active" : "Use clip"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={deletingClipId === c.id}
+                    onClick={() => void onDelete(c.id)}
+                    className="rounded-lg p-1 text-app-fg-subtle hover:bg-red-500/10 hover:text-red-400"
+                    aria-label="Delete clip"
+                  >
+                    {deletingClipId === c.id ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StepHeader({
+  n,
+  label,
+  done,
+  children,
+}: {
+  n: number;
+  label: string;
+  done: boolean;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="mb-4 flex items-center gap-3">
+      <div
+        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+          done ? "bg-emerald-500/20 text-emerald-400" : "bg-amber-500/20 text-amber-600 dark:text-amber-400"
+        }`}
+      >
+        {done ? <CheckCircle2 className="h-4 w-4" /> : n}
+      </div>
+      <h2 className="flex-1 text-sm font-semibold text-app-fg">{label}</h2>
+      {children}
+    </div>
+  );
+}
+
+function ReelCoverSection({
+  hooks,
+  thumbnailUrl,
+  thumbnailBusy,
+  coverText,
+  onCoverTextChange,
+  onGenerate,
+  step,
+}: {
+  hooks: Array<{ text?: string }>;
+  thumbnailUrl: string | null;
+  thumbnailBusy: boolean;
+  coverText: string;
+  onCoverTextChange: (s: string) => void;
+  onGenerate: () => void;
+  step: number;
+}) {
+  return (
+    <div className="glass rounded-2xl border border-app-divider/80 p-5 md:p-6">
+      <StepHeader n={step} label="Reel cover" done={Boolean(thumbnailUrl)}>
+        <span className="text-[10px] text-app-fg-subtle">Instagram cover · 9:16</span>
+      </StepHeader>
+
+      <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
+        <div className="mx-auto shrink-0 sm:mx-0">
+          {thumbnailBusy ? (
+            <div
+              className="flex w-[140px] flex-col items-center justify-center gap-2 rounded-xl border border-app-divider bg-app-chip-bg/40"
+              style={{ aspectRatio: "9/16" }}
+            >
+              <Loader2 className="h-6 w-6 animate-spin text-app-fg-subtle" />
+              <p className="text-[10px] text-app-fg-muted">~30–60s</p>
+            </div>
+          ) : thumbnailUrl ? (
+            <a href={thumbnailUrl} target="_blank" rel="noreferrer" title="Open full size">
+              <div className="w-[140px] overflow-hidden rounded-xl border border-app-divider shadow-md">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={thumbnailUrl}
+                  alt="Reel cover"
+                  width={140}
+                  className="block w-full object-cover"
+                  style={{ aspectRatio: "9/16" }}
+                />
+              </div>
+            </a>
+          ) : (
+            <div
+              className="flex w-[140px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-app-divider/70 bg-app-chip-bg/20"
+              style={{ aspectRatio: "9/16" }}
+            >
+              <ImageIcon className="h-6 w-6 text-app-fg-subtle opacity-30" />
+              <p className="px-3 text-center text-[10px] text-app-fg-subtle">No cover yet</p>
+            </div>
+          )}
+        </div>
+
+        <div className="flex min-w-0 flex-1 flex-col gap-3">
+          <p className="text-xs leading-relaxed text-app-fg-muted">
+            Static cover image shown on Instagram before someone taps play. 9:16 with a hook burned in.
+          </p>
+
+          {hooks.length > 0 && (
+            <div>
+              <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">
+                Pick a hook as headline
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {hooks.map((h, i) => {
+                  const txt = h?.text ?? "";
+                  if (!txt) return null;
+                  const active = coverText === txt;
+                  return (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => onCoverTextChange(active ? "" : txt)}
+                      className={`rounded-lg border px-2 py-1.5 text-left text-[11px] leading-snug transition-colors ${
+                        active
+                          ? "border-amber-500/45 bg-amber-500/10 text-app-fg"
+                          : "border-app-divider text-app-fg-muted hover:border-white/20 hover:text-app-fg"
+                      }`}
+                    >
+                      {txt.length > 72 ? txt.slice(0, 72) + "…" : txt}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div>
+            <p className="mb-1 text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">
+              Or type a custom headline
+            </p>
+            <textarea
+              value={coverText}
+              onChange={(e) => onCoverTextChange(e.target.value)}
+              placeholder="Short, punchy headline for the cover…"
+              rows={2}
+              className="glass-inset w-full resize-none rounded-xl px-3 py-2 text-sm text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+            />
+          </div>
+
+          <button
+            type="button"
+            disabled={thumbnailBusy}
+            onClick={onGenerate}
+            className="inline-flex items-center gap-2 self-start rounded-xl bg-amber-500/15 px-4 py-2 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-50"
+          >
+            {thumbnailBusy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="h-3.5 w-3.5" />
+            )}
+            {thumbnailBusy ? "Generating…" : thumbnailUrl ? "Regenerate cover" : "Generate cover"}
+          </button>
+
+          {thumbnailUrl && !thumbnailBusy && (
+            <a
+              href={thumbnailUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 self-start text-xs font-semibold text-sky-500 hover:underline dark:text-sky-400"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Open full size · right-click to save
+            </a>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CaptionSection({
+  caption,
+  hashtags,
+  onCopy,
+  regenInline,
+}: {
+  caption: string;
+  hashtags: string[];
+  onCopy: () => void;
+  regenInline: React.ReactNode;
+}) {
+  return (
+    <div className="glass rounded-2xl border border-app-divider/80 p-5 md:p-6">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <h2 className="flex-1 text-sm font-semibold text-app-fg">Caption + hashtags</h2>
+        {regenInline}
+        <button
+          type="button"
+          onClick={onCopy}
+          className="inline-flex items-center gap-1 rounded-lg bg-app-icon-btn-bg px-2.5 py-1 text-[11px] font-bold text-app-icon-btn-fg"
+        >
+          <Copy className="h-3 w-3" /> Copy
+        </button>
+      </div>
+      {caption ? (
+        <p className="whitespace-pre-wrap text-sm leading-relaxed text-app-fg">{caption}</p>
+      ) : (
+        <p className="text-xs text-app-fg-subtle">No caption yet.</p>
+      )}
+      {hashtags.length > 0 && (
+        <p className="mt-3 text-xs text-app-fg-muted">{hashtags.join(" ")}</p>
+      )}
+    </div>
+  );
+}
+
+function AiContextSection({
+  hooks,
+  scriptForTalkingHead,
+  regenHooks,
+  busy,
+}: {
+  hooks: Array<{ text?: string }>;
+  scriptForTalkingHead?: string | null;
+  regenHooks: (feedback: string) => Promise<void>;
+  busy: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!hooks.length && !scriptForTalkingHead) return null;
+
+  return (
+    <div className="glass rounded-2xl border border-app-divider/60 p-4 md:p-5">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between gap-2 text-left text-xs font-semibold text-app-fg-muted hover:text-app-fg"
+      >
+        <span>What the AI is working with</span>
+        {open ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+      </button>
+
+      {open && (
+        <div className="mt-4 space-y-4">
+          {hooks.length > 0 && (
+            <div>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-app-fg-subtle">
+                  Alternative hooks ({hooks.length})
+                </p>
+                <RegenInline
+                  scope="hooks"
+                  busy={busy}
+                  onRegen={async (_s, fb) => regenHooks(fb)}
+                  placeholder="More direct, shorter, …"
+                />
+              </div>
+              <ul className="space-y-1.5">
+                {hooks.map((h, i) => (
+                  <li
+                    key={i}
+                    className="rounded-lg border border-app-divider/50 bg-app-chip-bg/30 px-3 py-2 text-xs leading-relaxed text-app-fg"
+                  >
+                    {h?.text || "—"}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export type VideoCreateWorkspaceProps = {
+  clientSlug: string;
+  orgSlug: string;
+  sessionId: string;
+  /** Allows the parent to react to state changes (e.g. show a toast or refresh sessions). */
+  onSessionUpdated?: (s: GenerationSession) => void;
+};
+
+/**
+ * Self-contained video pipeline for one session.
+ *
+ * Two flows depending on `source_format_key`:
+ *
+ *  - `text_overlay` / `carousel` / `b_roll_reel` (visual formats):
+ *      Step 1 Text blocks → Step 2 Background → Step 3 Render → Step 4 Cover → Step 5 Output
+ *  - `talking_head` (and other content-only formats):
+ *      Editable Script + Cover + Caption (no render pipeline; the user films themself).
+ *
+ * Per-section regenerate buttons replace the old global "Refine" panel. The collapsible
+ * "What the AI is working with" section at the bottom shows the 5 alternative hooks.
+ */
+export function VideoCreateWorkspace({
+  clientSlug,
+  orgSlug,
+  sessionId,
+  onSessionUpdated,
+}: VideoCreateWorkspaceProps) {
+  const { show } = useToast();
+  const [bootstrapDone, setBootstrapDone] = useState(false);
+  const [session, setSession] = useState<GenerationSession | null>(null);
+  const [clips, setClips] = useState<BrollClipRow[]>([]);
+  const [selectedClipId, setSelectedClipId] = useState("");
+  const [textDraft, setTextDraft] = useState<TextBlock[]>([]);
+  const [scriptDraft, setScriptDraft] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [bgBusy, setBgBusy] = useState(false);
+  const [renderBusy, setRenderBusy] = useState(false);
+  const [deletingClipId, setDeletingClipId] = useState<string | null>(null);
+  const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
+  const [thumbnailBusy, setThumbnailBusy] = useState(false);
+  const [coverText, setCoverText] = useState("");
+  const [regenBusy, setRegenBusy] = useState(false);
+
+  // Hold the latest parent callback in a ref so it never invalidates effects/callbacks.
+  // (Parents typically pass an inline `onSessionUpdated`, which would otherwise loop.)
+  const onSessionUpdatedRef = useRef(onSessionUpdated);
+  useEffect(() => {
+    onSessionUpdatedRef.current = onSessionUpdated;
+  }, [onSessionUpdated]);
+
+  const applySession = useCallback((s: GenerationSession) => {
+    setSession(s);
+    setTextDraft(Array.isArray(s.text_blocks) ? s.text_blocks.map((b) => ({ ...b })) : []);
+    setScriptDraft(s.script ?? "");
+    setSelectedClipId(s.broll_clip_id ?? "");
+    if (s.thumbnail_url) setThumbnailUrl(s.thumbnail_url);
+    onSessionUpdatedRef.current?.(s);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const cs = clientSlug.trim();
+    const os = orgSlug.trim();
+    if (!cs || !os || !sessionId) return;
+    setBootstrapDone(false);
+    void (async () => {
+      const [sRes, bRes] = await Promise.all([
+        generationGetSession(cs, os, sessionId),
+        brollList(cs, os),
+      ]);
+      if (cancelled) return;
+      if (!sRes.ok) {
+        show(sRes.error, "error");
+      } else {
+        applySession(sRes.data);
+        setCoverText("");
+      }
+      if (bRes.ok) setClips(bRes.data);
+      setBootstrapDone(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // `applySession` and `show` are stable; depend only on inputs that should refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientSlug, orgSlug, sessionId]);
+
+  const fk = useMemo(() => {
+    const raw = session?.source_format_key ?? null;
+    return canonicalFormatKey(raw) ?? raw ?? (session?.source_type === "url_adapt" ? "text_overlay" : null);
+  }, [session]);
+  const isTextOverlay = fk === "text_overlay" || fk === "carousel";
+  const isBroll = fk === "b_roll_reel";
+  const isTalkingHead = fk === "talking_head";
+
+  const savedBlocks = session?.text_blocks ?? [];
+  const hasUnsavedBlocks = useMemo(() => {
+    if (textDraft.length !== savedBlocks.length) return true;
+    return textDraft.some((b, i) => b.text !== savedBlocks[i]?.text || b.isCTA !== savedBlocks[i]?.isCTA);
+  }, [textDraft, savedBlocks]);
+  const hasUnsavedScript = (session?.script ?? "") !== scriptDraft;
+  const step1Done = !hasUnsavedBlocks && textDraft.length > 0;
+  const step2Done = Boolean(session?.background_url);
+  const step3Done = session?.render_status === "done" || session?.render_status === "cleaned";
+  const isRendering = session?.render_status === "rendering";
+
+  const saveTextBlocks = useCallback(async () => {
+    const cs = clientSlug.trim();
+    const os = orgSlug.trim();
+    if (!session || !cs || !os) return;
+    setLoading(true);
+    try {
+      const res = await patchCreateSession(cs, os, session.id, {
+        text_blocks: textDraft.filter((b) => b.text.trim()),
+      });
+      if (!res.ok) {
+        show(res.error, "error");
+        return;
+      }
+      applySession(res.data);
+      show("Text blocks saved.", "success");
+    } finally {
+      setLoading(false);
+    }
+  }, [applySession, clientSlug, orgSlug, session, show, textDraft]);
+
+  const saveScript = useCallback(async () => {
+    const cs = clientSlug.trim();
+    const os = orgSlug.trim();
+    if (!session || !cs || !os) return;
+    setLoading(true);
+    try {
+      const res = await patchCreateSession(cs, os, session.id, { script: scriptDraft });
+      if (!res.ok) {
+        show(res.error, "error");
+        return;
+      }
+      applySession(res.data);
+      show("Script saved.", "success");
+    } finally {
+      setLoading(false);
+    }
+  }, [applySession, clientSlug, orgSlug, session, scriptDraft, show]);
+
+  const onRegenSection = useCallback(
+    async (scope: "hooks" | "script" | "caption" | "text_blocks", feedback: string) => {
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!session || !cs || !os) return;
+      setRegenBusy(true);
+      try {
+        const res = await generationRegenerate(cs, os, session.id, {
+          scope,
+          feedback: feedback || undefined,
+        });
+        if (!res.ok) {
+          show(res.error, "error");
+          return;
+        }
+        applySession(res.data);
+        show("Regenerated.", "success");
+      } finally {
+        setRegenBusy(false);
+      }
+    },
+    [applySession, clientSlug, orgSlug, session, show],
+  );
+
+  const onGenerateBg = useCallback(async () => {
+    const cs = clientSlug.trim();
+    const os = orgSlug.trim();
+    if (!session || !cs || !os) return;
+    setBgBusy(true);
+    try {
+      const res = await creationGenerateBackground(cs, os, session.id);
+      if (!res.ok) {
+        show(res.error, "error");
+        return;
+      }
+      applySession(res.data);
+      show("Background generated.", "success");
+    } finally {
+      setBgBusy(false);
+    }
+  }, [applySession, clientSlug, orgSlug, session, show]);
+
+  const onSetBroll = useCallback(
+    async (clipId: string) => {
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!session || !cs || !os || !clipId.trim()) return;
+      setLoading(true);
+      try {
+        const res = await creationSetBroll(cs, os, session.id, clipId.trim());
+        if (!res.ok) {
+          show(res.error, "error");
+          return;
+        }
+        applySession(res.data);
+        setSelectedClipId(clipId);
+        show("B-roll set.", "success");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [applySession, clientSlug, orgSlug, session, show],
+  );
+
+  const onDeleteClip = useCallback(
+    async (clipId: string) => {
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!cs || !os) return;
+      setDeletingClipId(clipId);
+      try {
+        const res = await brollDelete(cs, os, clipId);
+        if (!res.ok) {
+          show(res.error, "error");
+          return;
+        }
+        setClips((prev) => prev.filter((c) => c.id !== clipId));
+        if (selectedClipId === clipId) setSelectedClipId("");
+        show("Clip deleted.", "success");
+      } finally {
+        setDeletingClipId(null);
+      }
+    },
+    [clientSlug, orgSlug, selectedClipId, show],
+  );
+
+  const pollRenderJob = useCallback(
+    async (jobId: string, sId: string) => {
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!cs || !os) return;
+      for (let i = 0; i < MAX_POLLS; i++) {
+        await new Promise((r) => setTimeout(r, POLL_MS));
+        const jr = await fetchBackgroundJob(os, jobId);
+        if (!jr.ok) {
+          show(jr.error, "error");
+          return;
+        }
+        if (jr.data.status === "failed") {
+          show(jr.data.error_message || "Render failed.", "error");
+          const s = await generationGetSession(cs, os, sId);
+          if (s.ok) applySession(s.data);
+          return;
+        }
+        if (jr.data.status === "completed") {
+          const s = await generationGetSession(cs, os, sId);
+          if (s.ok) {
+            applySession(s.data);
+            show("Video ready — download below.", "success");
+          }
+          return;
+        }
+      }
+      show("Render is taking longer than expected. Refresh later.", "error");
+    },
+    [applySession, clientSlug, orgSlug, show],
+  );
+
+  const onRender = useCallback(async () => {
+    const cs = clientSlug.trim();
+    const os = orgSlug.trim();
+    if (!session || !cs || !os) return;
+    setRenderBusy(true);
+    try {
+      const res = await creationRenderVideo(cs, os, session.id);
+      if (!res.ok) {
+        show(res.error, "error");
+        return;
+      }
+      setSession((prev) => (prev ? { ...prev, render_status: "rendering", render_error: null } : prev));
+      show("Render started — usually 1–3 minutes.", "success");
+      void pollRenderJob(res.job_id, session.id);
+    } finally {
+      setRenderBusy(false);
+    }
+  }, [clientSlug, orgSlug, session, show, pollRenderJob]);
+
+  const onGenerateThumbnail = useCallback(async () => {
+    const cs = clientSlug.trim();
+    const os = orgSlug.trim();
+    if (!session || !cs || !os) return;
+    const text = coverText.trim() || undefined;
+    setThumbnailBusy(true);
+    try {
+      const res = await generationGenerateThumbnail(cs, os, session.id, text);
+      if (!res.ok) {
+        show(res.error, "error");
+        return;
+      }
+      setThumbnailUrl(res.data.thumbnail_url);
+    } finally {
+      setThumbnailBusy(false);
+    }
+  }, [clientSlug, orgSlug, session, coverText, show]);
+
+  const copyText = useCallback(
+    async (label: string, text: string) => {
+      try {
+        await navigator.clipboard.writeText(text);
+        show(`Copied ${label}.`, "success");
+      } catch {
+        show("Copy failed.", "error");
+      }
+    },
+    [show],
+  );
+
+  if (!bootstrapDone) {
+    return (
+      <div className="flex min-h-[20vh] items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-app-fg-subtle" />
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <div className="rounded-xl border border-app-divider px-5 py-8 text-center text-sm text-app-fg-muted">
+        Could not load this session for the video pipeline.
+      </div>
+    );
+  }
+
+  const hooks = (Array.isArray(session.hooks) ? session.hooks : []) as Array<{ text?: string }>;
+  const captionFull = `${session.caption_body ?? ""}${
+    Array.isArray(session.hashtags) && session.hashtags.length ? `\n\n${session.hashtags.join(" ")}` : ""
+  }`.trim();
+
+  // ─────────────────────────────── talking_head minimal flow ───────────────────────────────
+  if (isTalkingHead) {
+    return (
+      <div className="space-y-4">
+        <div className="glass rounded-2xl border border-app-divider/80 p-5 md:p-6">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <Video className="h-4 w-4 text-amber-500" />
+            <h2 className="flex-1 text-sm font-semibold text-app-fg">Script</h2>
+            <RegenInline
+              scope="script"
+              busy={regenBusy}
+              onRegen={async (s, fb) => onRegenSection(s, fb)}
+              placeholder="Tighter, more direct, add a story…"
+            />
+            <button
+              type="button"
+              onClick={() => void copyText("script", scriptDraft)}
+              className="inline-flex items-center gap-1 rounded-lg bg-app-icon-btn-bg px-2.5 py-1 text-[11px] font-bold text-app-icon-btn-fg"
+            >
+              <Copy className="h-3 w-3" /> Copy
+            </button>
+          </div>
+          <p className="mb-3 text-xs leading-relaxed text-app-fg-muted">
+            Talking-head format — film yourself reading this script. Edit freely; markdown headings
+            (##&nbsp;Hook, ##&nbsp;Insight 1, …) help you remember structure on camera.
+          </p>
+          <textarea
+            value={scriptDraft}
+            onChange={(e) => setScriptDraft(e.target.value)}
+            rows={Math.min(28, Math.max(10, scriptDraft.split("\n").length + 1))}
+            className="glass-inset w-full resize-y rounded-xl px-3 py-3 font-mono text-[13px] leading-relaxed text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+            placeholder="## Hook&#10;Did you know…&#10;&#10;## Situation&#10;…"
+          />
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              type="button"
+              disabled={loading || !hasUnsavedScript}
+              onClick={() => void saveScript()}
+              className="inline-flex items-center gap-2 rounded-xl bg-amber-500/15 px-4 py-2 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-40"
+            >
+              {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+              {loading ? "Saving…" : "Save script"}
+            </button>
+            {!hasUnsavedScript && scriptDraft.trim() && (
+              <span className="text-[11px] text-emerald-600 dark:text-emerald-400">Saved ✓</span>
+            )}
+          </div>
+        </div>
+
+        <ReelCoverSection
+          hooks={hooks}
+          thumbnailUrl={thumbnailUrl}
+          thumbnailBusy={thumbnailBusy}
+          coverText={coverText}
+          onCoverTextChange={setCoverText}
+          onGenerate={onGenerateThumbnail}
+          step={2}
+        />
+
+        <CaptionSection
+          caption={session.caption_body ?? ""}
+          hashtags={session.hashtags ?? []}
+          onCopy={() => void copyText("caption + hashtags", captionFull)}
+          regenInline={
+            <RegenInline
+              scope="caption"
+              busy={regenBusy}
+              onRegen={async (s, fb) => onRegenSection(s, fb)}
+              placeholder="Different angle, shorter, …"
+            />
+          }
+        />
+
+        <AiContextSection
+          hooks={hooks}
+          regenHooks={(fb) => onRegenSection("hooks", fb)}
+          busy={regenBusy}
+        />
+      </div>
+    );
+  }
+
+  // ────────────────── visual formats: text_overlay / carousel / b_roll_reel ──────────────────
+  if (!isTextOverlay && !isBroll) {
+    return (
+      <div className="glass rounded-2xl border border-app-divider/80 p-5 md:p-6">
+        <div className="flex items-start gap-3">
+          <Video className="h-5 w-5 shrink-0 text-amber-500" />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-app-fg">Unsupported format</p>
+            <p className="mt-1 text-xs leading-relaxed text-app-fg-muted">
+              Format <span className="font-semibold text-app-fg-secondary">{(fk ?? "—").replace(/_/g, " ")}</span>
+              {" "}has no AI render pipeline. Copy hooks, script and caption from the bottom panel.
+            </p>
+          </div>
+        </div>
+        <div className="mt-4">
+          <AiContextSection
+            hooks={hooks}
+            regenHooks={(fb) => onRegenSection("hooks", fb)}
+            busy={regenBusy}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* ── Step 1: On-screen text ── */}
+      <div className="glass rounded-2xl border border-app-divider/80 p-5 md:p-6">
+        <StepHeader n={1} label="On-screen text" done={step1Done}>
+          <RegenInline
+            scope="text_blocks"
+            busy={regenBusy}
+            onRegen={async (s, fb) => onRegenSection(s, fb)}
+            placeholder="More direct, add emoji, shorter…"
+          />
+        </StepHeader>
+
+        <div className="mb-3">
+          <div className="mb-2 flex items-center justify-between">
+            <p className="text-xs font-semibold text-app-fg">
+              On-screen text blocks
+              <span className="ml-1.5 font-normal text-app-fg-muted">
+                ({textDraft.length}/6 · 6–7 words max)
+              </span>
+            </p>
+            <button
+              type="button"
+              onClick={() => setTextDraft((prev) => [...prev, { text: "", isCTA: false }])}
+              disabled={textDraft.length >= 6}
+              className="inline-flex items-center gap-1 rounded-lg border border-app-divider px-2 py-1 text-[11px] font-semibold text-app-fg-muted hover:text-app-fg disabled:opacity-40"
+            >
+              <Plus className="h-3 w-3" /> Add block
+            </button>
+          </div>
+          <div className="space-y-2">
+            {textDraft.map((b, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <input
+                  value={b.text}
+                  onChange={(e) => {
+                    const next = [...textDraft];
+                    next[i] = { ...next[i], text: e.target.value };
+                    setTextDraft(next);
+                  }}
+                  placeholder={b.isCTA ? "👇 Schreib 'Keyword' für …" : "❌ Short punchy line…"}
+                  className="glass-inset min-w-0 flex-1 rounded-xl px-3 py-2 text-sm text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+                />
+                <label
+                  className="flex cursor-pointer select-none items-center gap-1 rounded-lg border border-app-divider px-2 py-2 text-[10px] font-semibold text-app-fg-muted hover:border-amber-500/30"
+                  title="Mark as CTA block"
+                >
+                  <input
+                    type="checkbox"
+                    checked={b.isCTA ?? false}
+                    onChange={(e) => {
+                      const next = [...textDraft];
+                      next[i] = { ...next[i], isCTA: e.target.checked };
+                      setTextDraft(next);
+                    }}
+                    className="h-3 w-3 accent-amber-500"
+                  />
+                  CTA
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setTextDraft((prev) => prev.filter((_, j) => j !== i))}
+                  className="rounded-lg p-2 text-app-fg-subtle hover:bg-red-500/10 hover:text-red-400"
+                  aria-label="Remove block"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+            {textDraft.length === 0 && (
+              <p className="rounded-xl border border-dashed border-app-divider/60 py-4 text-center text-xs text-app-fg-subtle">
+                No text blocks yet — click Add block above, or hit Regenerate.
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            disabled={loading || !hasUnsavedBlocks}
+            onClick={() => void saveTextBlocks()}
+            className="inline-flex items-center gap-2 rounded-xl bg-amber-500/15 px-4 py-2 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-40"
+          >
+            {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+            {loading ? "Saving…" : "Save text blocks"}
+          </button>
+          {!hasUnsavedBlocks && textDraft.length > 0 && (
+            <span className="text-[11px] text-emerald-600 dark:text-emerald-400">Saved ✓</span>
+          )}
+        </div>
+      </div>
+
+      {/* ── Step 2: Background ── */}
+      <div className="glass rounded-2xl border border-app-divider/80 p-5 md:p-6">
+        <StepHeader n={2} label="Background" done={step2Done} />
+
+        {isTextOverlay && (
+          <div className="space-y-5">
+            <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
+              <div className="mx-auto shrink-0 sm:mx-0">
+                {bgBusy ? (
+                  <div className="flex aspect-[2/3] w-[140px] flex-col items-center justify-center gap-2 rounded-xl border border-app-divider bg-app-chip-bg/40">
+                    <Loader2 className="h-6 w-6 animate-spin text-app-fg-subtle" />
+                    <p className="text-[10px] text-app-fg-muted">~30–60s</p>
+                  </div>
+                ) : session.background_url ? (
+                  <a href={session.background_url} target="_blank" rel="noreferrer" title="Open full size">
+                    <div className="w-[140px] overflow-hidden rounded-xl border border-app-divider shadow-md">
+                      {session.background_type === "broll" ? (
+                        <video
+                          src={session.background_url}
+                          muted
+                          loop
+                          autoPlay
+                          playsInline
+                          className="block aspect-[2/3] w-full object-cover"
+                          style={{ aspectRatio: "2/3" }}
+                        />
+                      ) : (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={session.background_url}
+                          alt="Background"
+                          width={140}
+                          className="block aspect-[2/3] w-full object-cover"
+                          style={{ aspectRatio: "2/3" }}
+                        />
+                      )}
+                    </div>
+                  </a>
+                ) : (
+                  <div className="flex aspect-[2/3] w-[140px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-app-divider/70 bg-app-chip-bg/20">
+                    <ImageIcon className="h-6 w-6 text-app-fg-subtle opacity-30" />
+                    <p className="px-3 text-center text-[10px] text-app-fg-subtle">No background</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-3">
+                <p className="text-xs font-semibold text-app-fg">AI still (2:3)</p>
+                <p className="text-xs leading-relaxed text-app-fg-muted">
+                  Generates an atmospheric scene matched to the chosen angle. Uses{" "}
+                  <span className="font-semibold text-app-fg-secondary">gpt-5-image</span> via OpenRouter.
+                  Regenerating replaces a library clip if one is active.
+                </p>
+                <button
+                  type="button"
+                  disabled={bgBusy}
+                  onClick={() => void onGenerateBg()}
+                  className="inline-flex items-center gap-2 self-start rounded-xl bg-amber-500/15 px-4 py-2 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-50"
+                >
+                  {bgBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                  {bgBusy ? "Generating…" : session.background_url ? "Regenerate" : "Generate image"}
+                </button>
+              </div>
+            </div>
+
+            <div className="border-t border-app-divider/50 pt-5">
+              <p className="mb-1 text-xs font-semibold text-app-fg">Or: library footage</p>
+              <p className="mb-4 text-xs leading-relaxed text-app-fg-muted">
+                Footage loops; video length follows your script timing in render.
+              </p>
+              <BrollLibrarySection
+                clips={clips}
+                loading={loading}
+                deletingClipId={deletingClipId}
+                selectedClipId={selectedClipId}
+                sessionBrollClipId={session.broll_clip_id}
+                showClipBanner={session.background_type === "broll" && Boolean(session.background_url)}
+                clipBannerUrl={session.background_url}
+                onPick={(id) => void onSetBroll(id)}
+                onDelete={(id) => void onDeleteClip(id)}
+              />
+            </div>
+          </div>
+        )}
+
+        {isBroll && (
+          <BrollLibrarySection
+            clips={clips}
+            loading={loading}
+            deletingClipId={deletingClipId}
+            selectedClipId={selectedClipId}
+            sessionBrollClipId={session.broll_clip_id}
+            showClipBanner={Boolean(session.background_url)}
+            clipBannerUrl={session.background_url}
+            onPick={(id) => void onSetBroll(id)}
+            onDelete={(id) => void onDeleteClip(id)}
+          />
+        )}
+      </div>
+
+      {/* ── Step 3: Render ── */}
+      <div className="glass rounded-2xl border border-app-divider/80 p-5 md:p-6">
+        <StepHeader n={3} label="Render" done={step3Done} />
+
+        {!step2Done && !step3Done ? (
+          <p className="text-xs text-app-fg-muted">Set a background in Step 2 first.</p>
+        ) : isRendering ? (
+          <div className="flex items-center gap-3 rounded-xl border border-amber-500/25 bg-amber-500/[0.07] px-4 py-3">
+            <Loader2 className="h-5 w-5 shrink-0 animate-spin text-amber-500" />
+            <div>
+              <p className="text-sm font-semibold text-app-fg">Rendering…</p>
+              <p className="text-xs text-app-fg-muted">Usually 1–3 minutes. You can leave this page.</p>
+            </div>
+          </div>
+        ) : session.render_status === "failed" ? (
+          <div className="space-y-3">
+            <div className="rounded-xl border border-red-500/25 bg-red-500/[0.07] px-4 py-3">
+              <p className="text-sm font-semibold text-red-400">Render failed</p>
+              {session.render_error && <p className="mt-1 text-xs text-app-fg-muted">{session.render_error}</p>}
+            </div>
+            <button
+              type="button"
+              disabled={renderBusy}
+              onClick={() => void onRender()}
+              className="inline-flex items-center gap-2 rounded-xl border border-app-divider px-4 py-2 text-xs font-bold text-app-fg hover:bg-white/5 disabled:opacity-50"
+            >
+              <RefreshCw className="h-3.5 w-3.5" /> Retry render
+            </button>
+          </div>
+        ) : step3Done ? (
+          <div className="flex items-center gap-3">
+            <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-400" />
+            <p className="text-sm text-app-fg">Render complete — see output below.</p>
+            <button
+              type="button"
+              disabled={renderBusy}
+              onClick={() => void onRender()}
+              className="ml-auto rounded-lg border border-app-divider px-3 py-1.5 text-xs font-semibold text-app-fg-muted hover:text-app-fg disabled:opacity-50"
+            >
+              Re-render
+            </button>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <button
+              type="button"
+              disabled={renderBusy || !step2Done}
+              onClick={() => void onRender()}
+              className="inline-flex items-center gap-2 rounded-xl bg-violet-500/20 px-5 py-2.5 text-sm font-bold text-violet-200 hover:bg-violet-500/30 disabled:opacity-50"
+            >
+              {renderBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Video className="h-4 w-4" />}
+              {renderBusy ? "Starting…" : "Render video"}
+            </button>
+            <p className="text-xs text-app-fg-muted">Remotion · 1080×1920 · ~1–3 min</p>
+          </div>
+        )}
+      </div>
+
+      {/* ── Step 4: Reel cover ── */}
+      <ReelCoverSection
+        hooks={hooks}
+        thumbnailUrl={thumbnailUrl}
+        thumbnailBusy={thumbnailBusy}
+        coverText={coverText}
+        onCoverTextChange={setCoverText}
+        onGenerate={onGenerateThumbnail}
+        step={4}
+      />
+
+      {/* ── Step 5: Output (video + caption + hashtags) ── */}
+      {(step3Done || session.rendered_video_url) && (
+        <div className="glass rounded-2xl border border-app-divider/80 p-5 md:p-6">
+          <StepHeader n={5} label="Output" done={Boolean(session.rendered_video_url)} />
+
+          {session.rendered_video_url ? (
+            <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
+              <div className="w-full shrink-0 sm:max-w-[240px]">
+                <video
+                  src={session.rendered_video_url}
+                  controls
+                  playsInline
+                  className="w-full rounded-xl border border-app-divider"
+                  style={{ aspectRatio: "9/16" }}
+                />
+              </div>
+              <div className="flex flex-col gap-4">
+                <div>
+                  <p className="text-sm font-semibold text-app-fg">Your video is ready.</p>
+                  <p className="mt-1 text-xs leading-relaxed text-app-fg-muted">
+                    Download the MP4 and open it in Instagram. Add a trending sound before publishing — audio
+                    boosts reach significantly.
+                  </p>
+                </div>
+                <a
+                  href={session.rendered_video_url}
+                  download="reel.mp4"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-2 self-start rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-bold text-zinc-950 shadow-md shadow-emerald-900/25 hover:opacity-90"
+                >
+                  <Download className="h-4 w-4" />
+                  Download MP4
+                </a>
+                <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.07] px-3 py-2.5">
+                  <p className="text-xs font-semibold text-amber-700 dark:text-amber-300">Before publishing</p>
+                  <p className="mt-0.5 text-xs leading-relaxed text-app-fg-muted">
+                    Open as a draft in Instagram → Add sound → pick a trending audio in your niche → publish.
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <p className="text-xs text-app-fg-muted">Video was rendered and cleaned up after 30 days.</p>
+          )}
+        </div>
+      )}
+
+      {/* ── Caption + hashtags (always after Cover; copy with a button) ── */}
+      <CaptionSection
+        caption={session.caption_body ?? ""}
+        hashtags={session.hashtags ?? []}
+        onCopy={() => void copyText("caption + hashtags", captionFull)}
+        regenInline={
+          <RegenInline
+            scope="caption"
+            busy={regenBusy}
+            onRegen={async (s, fb) => onRegenSection(s, fb)}
+            placeholder="Different angle, shorter, …"
+          />
+        }
+      />
+
+      <AiContextSection
+        hooks={hooks}
+        regenHooks={(fb) => onRegenSection("hooks", fb)}
+        busy={regenBusy}
+      />
+    </div>
+  );
+}

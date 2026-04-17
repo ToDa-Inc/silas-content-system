@@ -11,6 +11,15 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+def instagram_profile_posts_input(usernames: List[str], results_limit: int) -> dict[str, Any]:
+    """Input for ``apify~instagram-scraper`` — recent posts (includes carousel / Sidecar)."""
+    return {
+        "username": usernames,
+        "resultsLimit": results_limit,
+        "resultsType": "posts",
+    }
+
+
 def instagram_reel_scraper_input(
     usernames: List[str],
     results_limit: int,

@@ -20,6 +20,7 @@ from jobs.reel_analyze_url import (
     instagram_reel_url_is_valid,
 )
 from models.generation import (
+    AutoVideoIdeaOut,
     GenerationChooseAngleBody,
     GenerationFeedbackBody,
     GenerationRecommendFormatBody,
@@ -30,11 +31,13 @@ from models.generation import (
 )
 from services.content_generation import (
     GENERATION_PROMPT_VERSION,
+    ALLOWED_AUTO_IDEA_FORMATS,
     compact_analysis_for_prompt,
     angles_from_session_row,
     fetch_reel_analyses_for_generation,
     get_chosen_angle,
     run_adaptation_synthesis,
+    run_auto_video_idea,
     run_angle_generation,
     run_content_package,
     run_format_recommendation,
@@ -165,6 +168,47 @@ def _load_analysis_with_meta(
     return r
 
 
+def _fetch_competitor_hints(supabase: Client, client_id: str, limit: int = 22) -> str:
+    try:
+        res = (
+            supabase.table("scraped_reels")
+            .select("hook_text, caption, account_username, format")
+            .eq("client_id", client_id)
+            .not_.is_("competitor_id", "null")
+            .order("posted_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+    except Exception:
+        logger.warning("competitor hints fetch failed", exc_info=True)
+        return ""
+    lines: List[str] = []
+    for r in res.data or []:
+        if not isinstance(r, dict):
+            continue
+        hook = str(r.get("hook_text") or "").strip()
+        cap = str(r.get("caption") or "").strip()[:500]
+        user = str(r.get("account_username") or "").strip()
+        fmt = str(r.get("format") or "").strip()
+        bit = hook or cap[:200]
+        if not bit:
+            continue
+        lines.append(f"@{user} [{fmt}] {bit}")
+    return "\n".join(lines) if lines else ""
+
+
+def _digest_summaries_for_auto_idea(summaries: List[dict]) -> List[dict]:
+    out: List[dict] = []
+    for s in summaries:
+        if not isinstance(s, dict):
+            continue
+        raw = str(s.get("format_key") or "").strip()
+        fk = canonicalize_stored_format_key(raw) or raw
+        if fk in ALLOWED_AUTO_IDEA_FORMATS:
+            out.append(s)
+    return out
+
+
 def _load_client_for_generation(supabase: Client, client_id: str) -> Dict[str, Any]:
     res = (
         supabase.table("clients")
@@ -230,6 +274,36 @@ def recommend_format(
         logger.exception("recommend_format failed")
         raise HTTPException(status_code=502, detail=str(e)) from e
     return {"recommendations": recs}
+
+
+@router.post("/clients/{slug}/generate/auto-video-idea", response_model=AutoVideoIdeaOut)
+def auto_video_idea(
+    slug: str,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> AutoVideoIdeaOut:
+    _ = slug
+    if not settings.openrouter_api_key:
+        raise HTTPException(status_code=503, detail="OPENROUTER_API_KEY not configured")
+    client_row = _load_client_for_generation(supabase, client_id)
+    ensure_format_digests_fresh(settings, supabase, client_id, client_row=client_row)
+    summaries = list_format_digest_summaries(supabase, client_id)
+    filtered = _digest_summaries_for_auto_idea(summaries)
+    hints = _fetch_competitor_hints(supabase, client_id)
+    try:
+        out = run_auto_video_idea(
+            settings,
+            client_row=client_row,
+            format_summaries=filtered,
+            competitor_hints=hints or "(no competitor snippets yet — rely on client context)",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("auto_video_idea failed")
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    return AutoVideoIdeaOut(**out)
 
 
 @router.post("/clients/{slug}/generate/start", response_model=GenerationSessionOut)
@@ -643,6 +717,9 @@ def generation_approve(
     client_id: Annotated[str, Depends(resolve_client_id)],
     supabase: Annotated[Client, Depends(get_supabase)],
 ) -> dict:
+    """DEPRECATED: the unified create screen no longer needs an explicit approve gate
+    (rendering a video implicitly approves it). Endpoint kept for backwards-compat with
+    legacy sessions / API consumers."""
     _ = slug
     _ = _load_session(supabase, client_id, session_id)
     now = _now_iso()
@@ -664,6 +741,8 @@ def generation_reject(
     client_id: Annotated[str, Depends(resolve_client_id)],
     supabase: Annotated[Client, Depends(get_supabase)],
 ) -> dict:
+    """DEPRECATED: the unified create screen replaces "reject" with "delete session".
+    Endpoint kept for backwards-compat with legacy sessions / API consumers."""
     _ = slug
     _ = _load_session(supabase, client_id, session_id)
     now = _now_iso()
