@@ -15,8 +15,8 @@
 
 CREATE TABLE IF NOT EXISTS public.cron_schedules (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  client_id       uuid NOT NULL REFERENCES public.clients(id) ON DELETE CASCADE,
-  org_id          uuid,  -- denormalized for fast job enqueue, no FK (clients owns it)
+  client_id       text NOT NULL REFERENCES public.clients(id) ON DELETE CASCADE,
+  org_id          text,  -- denormalized for fast job enqueue, no FK (clients owns it)
   cron_name       text NOT NULL,
   cadence_hours   int  NOT NULL DEFAULT 24 CHECK (cadence_hours BETWEEN 1 AND 720),
   next_run_at     timestamptz NOT NULL,

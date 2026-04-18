@@ -737,100 +737,98 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
   return (
     <>
       <div className="mb-4 flex flex-col gap-3">
-        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
-          <div className="flex flex-wrap items-end gap-3">
-            <AppSelect
-              label="Creator"
-              value={creatorFilter}
-              onChange={setCreatorFilter}
-              options={[
-                { value: "", label: "All creators" },
-                ...creatorOptions.map((u) => ({ value: u, label: `@${u}` })),
-              ]}
+        {trackedJobId ? (
+          <IntelligenceProgressBar
+            label={progressLabel}
+            percent={barPct}
+            status={
+              lastJob?.status === "running" ||
+              lastJob?.status === "queued" ||
+              lastJob?.status === "completed" ||
+              lastJob?.status === "failed"
+                ? lastJob.status
+                : null
+            }
+            staleHint={staleRunning}
+            onDismissStale={() => {
+              setTrackedJobId(null);
+              setTrackedJobType(null);
+              setBulkExpectedTotal(null);
+              setLastJob(null);
+              setBulkMsg(null);
+            }}
+          />
+        ) : null}
+
+        {/* Single horizontal toolbar — every control is locked to h-9 so they
+            sit on one baseline. Analyze button uses ml-auto to anchor right
+            without needing a separate flex column. */}
+        <div className="flex flex-wrap items-center gap-2">
+          <AppSelect
+            ariaLabel="Filter by creator"
+            triggerClassName="h-9 min-w-[160px] py-0"
+            value={creatorFilter}
+            onChange={setCreatorFilter}
+            options={[
+              { value: "", label: "All creators" },
+              ...creatorOptions.map((u) => ({ value: u, label: `@${u}` })),
+            ]}
+          />
+          <AppSelect
+            ariaLabel="Filter by analysis state"
+            triggerClassName="h-9 min-w-[160px] py-0"
+            value={analysisFilter}
+            onChange={(v) => setAnalysisFilter(v as AnalysisFilter)}
+            options={[
+              { value: "all", label: "All reels" },
+              { value: "analyzed", label: "Analyzed only" },
+              { value: "pending", label: "Not analyzed" },
+            ]}
+          />
+          <div className="glass-inset relative flex h-9 min-w-[220px] items-center rounded-lg border border-zinc-200/80 bg-white/80 text-sm text-zinc-900 shadow-sm transition-colors focus-within:border-zinc-300/90 focus-within:ring-2 focus-within:ring-amber-500/30 dark:border-white/10 dark:bg-zinc-900/80 dark:text-app-fg dark:focus-within:ring-amber-400/25">
+            <Search
+              className="ml-2.5 h-3.5 w-3.5 shrink-0 text-zinc-400 dark:text-app-fg-faint"
+              aria-hidden
             />
-            <AppSelect
-              label="Analysis"
-              value={analysisFilter}
-              onChange={(v) => setAnalysisFilter(v as AnalysisFilter)}
-              options={[
-                { value: "all", label: "All reels" },
-                { value: "analyzed", label: "Analyzed only" },
-                { value: "pending", label: "Not analyzed" },
-              ]}
+            <input
+              type="search"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Search account, hook, caption…"
+              className="h-full w-full bg-transparent px-2 text-sm placeholder:text-zinc-400 focus:outline-none dark:placeholder:text-app-fg-faint"
+              aria-label="Search reels by account, hook, or caption"
             />
-            <div className="flex flex-col">
-              <span className="mb-1 block text-[10px] font-medium uppercase tracking-wider text-zinc-500 dark:text-app-fg-subtle">
-                Search
-              </span>
-              <div className="glass-inset relative inline-flex min-w-[220px] items-center rounded-lg border border-zinc-200/80 bg-white/80 text-sm text-zinc-900 shadow-sm transition-colors focus-within:border-zinc-300/90 focus-within:ring-2 focus-within:ring-amber-500/30 dark:border-white/10 dark:bg-zinc-900/80 dark:text-app-fg dark:focus-within:ring-amber-400/25">
-                <Search
-                  className="ml-2.5 h-3.5 w-3.5 shrink-0 text-zinc-400 dark:text-app-fg-faint"
-                  aria-hidden
-                />
-                <input
-                  type="search"
-                  value={searchInput}
-                  onChange={(e) => setSearchInput(e.target.value)}
-                  placeholder="@account, hook, or caption"
-                  className="w-full bg-transparent px-2 py-2 text-sm placeholder:text-zinc-400 focus:outline-none dark:placeholder:text-app-fg-faint"
-                  aria-label="Search reels by account, hook, or caption"
-                />
-                {searchInput ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSearchInput("");
-                      setSearchQuery("");
-                    }}
-                    className="mr-1 inline-flex h-6 w-6 items-center justify-center rounded text-zinc-400 hover:bg-zinc-200/70 hover:text-zinc-700 dark:text-app-fg-faint dark:hover:bg-white/10 dark:hover:text-app-fg-muted"
-                    aria-label="Clear search"
-                  >
-                    <X className="h-3.5 w-3.5" aria-hidden />
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          </div>
-          <div className="flex min-w-0 max-w-full flex-[1_1_280px] flex-col gap-2">
-            {trackedJobId ? (
-              <IntelligenceProgressBar
-                label={progressLabel}
-                percent={barPct}
-                status={
-                  lastJob?.status === "running" ||
-                  lastJob?.status === "queued" ||
-                  lastJob?.status === "completed" ||
-                  lastJob?.status === "failed"
-                    ? lastJob.status
-                    : null
-                }
-                staleHint={staleRunning}
-                onDismissStale={() => {
-                  setTrackedJobId(null);
-                  setTrackedJobType(null);
-                  setBulkExpectedTotal(null);
-                  setLastJob(null);
-                  setBulkMsg(null);
+            {searchInput ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchInput("");
+                  setSearchQuery("");
                 }}
-              />
-            ) : null}
-            <button
-              type="button"
-              disabled={disableReelAnalysis || selectedPostUrls.length === 0}
-              onClick={() => void runBulkAnalyze()}
-              className="inline-flex w-fit items-center gap-1.5 rounded-lg border border-amber-500/50 bg-amber-500/15 px-3 py-2 text-xs font-semibold text-amber-800 transition-colors hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-40 dark:text-amber-200"
-            >
-              <Sparkles className="h-3.5 w-3.5 shrink-0" aria-hidden />
-              Analyze selected
-              {selectedPostUrls.length > 0 ? ` (${selectedPostUrls.length})` : ""}
-            </button>
-            {selectedPostUrls.length > BULK_MAX_URLS ? (
-              <span className="text-[10px] text-amber-800/90 dark:text-amber-200/80">
-                Only the first {BULK_MAX_URLS} will run per batch (API limit).
-              </span>
+                className="mr-1 inline-flex h-6 w-6 items-center justify-center rounded text-zinc-400 hover:bg-zinc-200/70 hover:text-zinc-700 dark:text-app-fg-faint dark:hover:bg-white/10 dark:hover:text-app-fg-muted"
+                aria-label="Clear search"
+              >
+                <X className="h-3.5 w-3.5" aria-hidden />
+              </button>
             ) : null}
           </div>
+          <button
+            type="button"
+            disabled={disableReelAnalysis || selectedPostUrls.length === 0}
+            onClick={() => void runBulkAnalyze()}
+            className="ml-auto inline-flex h-9 items-center gap-1.5 rounded-lg border border-amber-500/50 bg-amber-500/15 px-3 text-xs font-semibold text-amber-800 transition-colors hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-40 dark:text-amber-200"
+          >
+            <Sparkles className="h-3.5 w-3.5 shrink-0" aria-hidden />
+            Analyze selected
+            {selectedPostUrls.length > 0 ? ` (${selectedPostUrls.length})` : ""}
+          </button>
         </div>
+
+        {selectedPostUrls.length > BULK_MAX_URLS ? (
+          <span className="text-[10px] text-amber-800/90 dark:text-amber-200/80">
+            Only the first {BULK_MAX_URLS} will run per batch (API limit).
+          </span>
+        ) : null}
         {bulkMsg ? (
           <p className="text-xs text-zinc-600 dark:text-app-fg-muted" role="status">
             {bulkMsg}
@@ -917,7 +915,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
               <th className="py-3 pr-2 font-medium">Account</th>
               <SortHeader
                 label="Score"
-                hint="Silas score 0–100. Reels without a score haven't been analyzed yet — use Analyze to run one. Niche reels show a match instead of a score."
+                hint="Silas score 0–100. Reels without a score haven't been analyzed yet — use Analyze to run one. Niche-match reels are scored on keyword similarity instead (see Signal)."
                 active={sortKey === "total_score"}
                 dir={sortDir}
                 onClick={() => handleSort("total_score")}
@@ -1026,8 +1024,8 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                       <span>@{row.account_username}</span>
                       {row.source === "keyword_similarity" ? (
                         <Tooltip content="Found via your niche keywords, not from a tracked competitor.">
-                          <span className="w-fit rounded bg-purple-500/15 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-purple-700 dark:text-purple-400">
-                            Niche match
+                          <span className="w-fit text-[10px] font-normal text-purple-600 dark:text-purple-400">
+                            niche
                           </span>
                         </Tooltip>
                       ) : null}
@@ -1035,12 +1033,11 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                   </td>
                   <td className="py-2.5 pr-2 align-middle">
                     {a && nicheMatch ? (
-                      <div className="flex flex-col gap-0.5">
-                        <Tooltip content="Niche-keyword analysis (no Silas score). Open it for the full match breakdown.">
-                          <span className="w-fit rounded bg-purple-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-purple-700 dark:text-purple-400">
-                            Niche match
-                          </span>
-                        </Tooltip>
+                      // Niche match: don't repeat the "niche" tag (Account column
+                      // already shows it) and don't fake a Silas score. The Signal
+                      // column carries the actual % match — here we just expose
+                      // the analysis so users can drill in.
+                      <Tooltip content="Niche-keyword analysis. Open it for the full match breakdown.">
                         <button
                           type="button"
                           onClick={() => setDetailReelId(row.id)}
@@ -1048,7 +1045,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                         >
                           View analysis
                         </button>
-                      </div>
+                      </Tooltip>
                     ) : a ? (
                       <div className="flex flex-col gap-0.5">
                         <span className="whitespace-nowrap text-[10px] font-semibold text-emerald-700 dark:text-emerald-300/95">

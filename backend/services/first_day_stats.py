@@ -20,8 +20,10 @@ logger = logging.getLogger(__name__)
 
 MILESTONES_HOURS = (24, 48, 72)
 # A snapshot must fall within [milestone, milestone + tolerance] to count.
-# With 2h milestone mini-cron the worst case is ~2h delay, so 4h gives margin.
-MILESTONE_TOLERANCE_HOURS = 4
+# Daily refresh cadence means the gap between consecutive snapshots is ~24h,
+# so tolerance must be >= 24h or we miss milestones by clock-timing luck.
+# 26h = one full daily cycle + 2h cron-drift buffer.
+MILESTONE_TOLERANCE_HOURS = 26
 MIN_REELS_FOR_AVERAGE = 3
 
 
