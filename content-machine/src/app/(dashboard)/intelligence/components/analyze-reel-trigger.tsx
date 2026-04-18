@@ -12,13 +12,13 @@ type Props = {
   disabledHint?: string | null;
 };
 
-/** Toolbar icon — opens analyze-by-URL modal (Apify + Gemini). */
+/** Toolbar icon — opens analyze-by-URL modal. */
 export function AnalyzeReelTrigger({ clientSlug, orgSlug, disabled, disabledHint }: Props) {
   const [open, setOpen] = useState(false);
 
   const title =
     disabledHint?.trim() ||
-    "Analyze one public reel by URL: downloads video, runs Silas scoring (5 criteria) — about one minute.";
+    "Analyze one public reel by URL — fetches the video and returns a Silas score in about a minute.";
 
   return (
     <>

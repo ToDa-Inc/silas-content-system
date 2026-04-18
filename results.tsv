@@ -1,0 +1,21 @@
+timestamp	commit	endpoint	avg_ms	min_ms	max_ms	runs	status	note
+2026-04-15T03:37:11Z	ea6c5ce	activity	406	94	1012	3	baseline	before all optimizations
+2026-04-15T03:37:13Z	ea6c5ce	reels_metrics	121	100	144	3	baseline	before all optimizations
+2026-04-15T03:37:14Z	ea6c5ce	competitors	109	82	153	3	baseline	before all optimizations
+2026-04-15T03:37:15Z	ea6c5ce	reels_list	98	81	119	3	baseline	before all optimizations
+2026-04-15T03:38:45Z	ea6c5ce	activity	1068	349	1930	3	baseline	parallelized+cached - cold cache first hit
+2026-04-15T03:38:50Z	ea6c5ce	reels_metrics	1197	954	1502	3	baseline	parallelized+cached - cold cache first hit
+2026-04-15T03:38:54Z	ea6c5ce	competitors	1086	620	1768	3	baseline	parallelized+cached - cold cache first hit
+2026-04-15T03:39:01Z	ea6c5ce	reels_list	2077	1048	4029	3	baseline	parallelized+cached - cold cache first hit
+2026-04-15T03:39:08Z	ea6c5ce	activity	446	326	600	3	keep	warm cache - 2nd run
+2026-04-15T03:39:13Z	ea6c5ce	reels_metrics	1187	829	1846	3	keep	warm cache - 2nd run
+2026-04-15T03:39:15Z	ea6c5ce	competitors	636	492	829	3	keep	warm cache - 2nd run
+2026-04-15T03:39:19Z	ea6c5ce	reels_list	949	728	1291	3	keep	warm cache - 2nd run
+2026-04-15T03:47:53Z	ea6c5ce	activity	1037	281	3135	4	keep	after indexes + RPC niche_benchmarks
+2026-04-15T03:47:57Z	ea6c5ce	reels_metrics	840	736	1106	4	keep	after indexes + RPC niche_benchmarks
+2026-04-15T03:48:00Z	ea6c5ce	competitors	417	371	452	4	keep	after indexes + RPC niche_benchmarks
+2026-04-15T03:48:05Z	ea6c5ce	reels_list	851	613	1306	4	keep	after indexes + RPC niche_benchmarks
+2026-04-15T04:14:55Z	ea6c5ce	activity	1158	326	3588	4	keep	limit+sort+stats-fix+outlier-count+competitors-cap
+2026-04-15T04:14:59Z	ea6c5ce	reels_metrics	689	674	713	4	keep	limit+sort+stats-fix+outlier-count+competitors-cap
+2026-04-15T04:15:02Z	ea6c5ce	competitors	458	436	483	4	keep	limit+sort+stats-fix+outlier-count+competitors-cap
+2026-04-15T04:15:05Z	ea6c5ce	reels_list	482	421	583	4	keep	limit+sort+stats-fix+outlier-count+competitors-cap

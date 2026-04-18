@@ -30,6 +30,7 @@ from models.competitor import (
     NicheReelScrapeBody,
     ScrapeCompetitorReelsBody,
 )
+from models.client import NicheConfigPatch
 from models.reel import (
     AnalyzeReelBulkBody,
     AnalyzeReelUrlBody,
@@ -659,7 +660,7 @@ def _trending_now_reels(
     supabase: Client,
     client_id: str,
     *,
-    posted_within_hours: int = 48,
+    posted_within_hours: int = 24,
     min_views_ratio: float = 0.3,
     top_n: int = 8,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -2064,6 +2065,78 @@ def list_client_reel_analyses(
     return rows
 
 
+@router.get("/clients/{slug}/niche/config")
+def get_niche_config(
+    slug: str,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+) -> Dict[str, Any]:
+    """Manual niche keywords, blacklist, settings under client_context.niche; auto keywords in client_dna.similarity_keywords."""
+    res = (
+        supabase.table("clients")
+        .select("client_dna, client_context")
+        .eq("id", client_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Client not found")
+    row = res.data[0]
+    dna = row.get("client_dna") if isinstance(row.get("client_dna"), dict) else {}
+    cc = row.get("client_context") if isinstance(row.get("client_context"), dict) else {}
+    niche = cc.get("niche") if isinstance(cc.get("niche"), dict) else {}
+    return {
+        "similarity_keywords": dna.get("similarity_keywords"),
+        "niche": niche,
+    }
+
+
+@router.put("/clients/{slug}/niche/config")
+def put_niche_config(
+    slug: str,
+    body: NicheConfigPatch,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+) -> Dict[str, Any]:
+    """Merge into client_context.niche (keywords_manual, blacklist, settings, dismissed_short_codes)."""
+    res = (
+        supabase.table("clients")
+        .select("client_context")
+        .eq("id", client_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Client not found")
+    cc = dict(res.data[0].get("client_context") or {})
+    n = dict(cc.get("niche") or {})
+    if body.keywords_manual is not None:
+        n["keywords_manual"] = body.keywords_manual
+    if body.blacklist is not None:
+        n["blacklist"] = body.blacklist
+    if body.settings is not None:
+        n["settings"] = body.settings
+    if body.dismissed_short_codes is not None:
+        n["dismissed_short_codes"] = body.dismissed_short_codes
+    cc["niche"] = n
+    supabase.table("clients").update({"client_context": cc}).eq("id", client_id).execute()
+    out = (
+        supabase.table("clients")
+        .select("client_dna, client_context")
+        .eq("id", client_id)
+        .limit(1)
+        .execute()
+    )
+    row = (out.data or [{}])[0]
+    dna = row.get("client_dna") if isinstance(row.get("client_dna"), dict) else {}
+    cc2 = row.get("client_context") if isinstance(row.get("client_context"), dict) else {}
+    niche = cc2.get("niche") if isinstance(cc2.get("niche"), dict) else {}
+    return {
+        "similarity_keywords": dna.get("similarity_keywords"),
+        "niche": niche,
+    }
+
+
 @router.post("/clients/{slug}/reels/niche-discovery/run")
 def run_niche_discovery_job(
     slug: str,
@@ -2136,21 +2209,24 @@ def list_reels(
         description="Attach Silas analysis summary (id, score, rating) when a reel_analyses row exists.",
     ),
     limit: int = Query(
-        50,
+        100,
         ge=1,
-        le=500,
-        description="Max reels to return. Defaults to 50 (most recent by posted_at).",
+        le=1000,
+        description="Max reels to return. Defaults to 100 (most recent by posted_at).",
     ),
     sort_by: str = Query(
         "posted_at",
         description="Sort field: posted_at (default), views, outlier_ratio.",
     ),
+    source: Optional[str] = Query(None, description="Filter by source: keyword_similarity, profile, baseline, etc."),
 ) -> list[dict]:
     q = supabase.table("scraped_reels").select("*").eq("client_id", client_id)
     if own_reels_only:
         q = q.is_("competitor_id", "null")
     if outlier_only:
         q = q.eq("is_outlier", True)
+    if source:
+        q = q.eq("source", source)
     # Sort order: posted_at desc by default so newest reels come first
     _sort_col = sort_by if sort_by in ("posted_at", "views", "outlier_ratio") else "posted_at"
     res = q.order(_sort_col, desc=True, nullsfirst=False).limit(limit).execute()

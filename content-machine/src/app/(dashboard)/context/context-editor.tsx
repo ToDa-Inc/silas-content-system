@@ -758,8 +758,8 @@ export function ContextEditor({
             </div>
           ) : (
             <p className="mt-2 text-xs text-zinc-500">
-              Nothing here yet. Save your context, or tap Refresh — your server needs OpenRouter
-              configured to compile the profile.
+              Nothing here yet. Save your context, or tap Refresh to compile the profile — if it stays empty,
+              contact support to verify AI is enabled for your workspace.
             </p>
           )}
         </div>

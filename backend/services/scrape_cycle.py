@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from supabase import Client
 
 from core.id_generator import generate_job_id
-from services.job_queue import has_active_job
+from services.job_queue import fail_stale_running_jobs, has_active_job
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -190,12 +190,18 @@ def enqueue_sync_all_jobs_for_client(
         ).execute()
         profile_queued += 1
 
+    kw_stats = enqueue_keyword_reel_similarity_for_client(
+        supabase, org_id=org_id, client_id=client_id
+    )
+
     return {
         "baseline_queued": baseline_queued,
         "baseline_skipped": baseline_skipped,
         "profile_queued": profile_queued,
         "profile_skipped": profile_skipped,
         "competitors_considered": len(cres.data or []),
+        "niche_discovery_queued": kw_stats.get("queued", 0),
+        "niche_discovery_skipped": kw_stats.get("skipped", 0),
     }
 
 
@@ -206,6 +212,8 @@ def enqueue_sync_all_jobs_all_clients(supabase: Client) -> Dict[str, Any]:
     total_baseline_skipped = 0
     total_profile_queued = 0
     total_profile_skipped = 0
+    total_niche_queued = 0
+    total_niche_skipped = 0
     clients_checked = 0
 
     for c in clients.data or []:
@@ -219,6 +227,8 @@ def enqueue_sync_all_jobs_all_clients(supabase: Client) -> Dict[str, Any]:
         total_baseline_skipped += stats["baseline_skipped"]
         total_profile_queued += stats["profile_queued"]
         total_profile_skipped += stats["profile_skipped"]
+        total_niche_queued += stats.get("niche_discovery_queued", 0)
+        total_niche_skipped += stats.get("niche_discovery_skipped", 0)
 
     return {
         "clients_checked": clients_checked,
@@ -226,6 +236,8 @@ def enqueue_sync_all_jobs_all_clients(supabase: Client) -> Dict[str, Any]:
         "baseline_jobs_skipped": total_baseline_skipped,
         "profile_jobs_queued": total_profile_queued,
         "profile_jobs_skipped": total_profile_skipped,
+        "niche_discovery_jobs_queued": total_niche_queued,
+        "niche_discovery_jobs_skipped": total_niche_skipped,
     }
 
 
@@ -237,6 +249,9 @@ def enqueue_keyword_reel_similarity_for_client(
     payload: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Queue keyword_reel_similarity if none is already queued/running for this client."""
+    fail_stale_running_jobs(
+        supabase, client_id=client_id, job_type="keyword_reel_similarity", max_age_minutes=120
+    )
     if has_active_job(supabase, client_id=client_id, job_type="keyword_reel_similarity"):
         return {"queued": 0, "skipped": 1, "job_id": None}
 

@@ -121,6 +121,15 @@ export function ReelAnalysisDetailModal({ open, onClose, reelId, clientSlug, org
   const scores = json?.scores;
   const videoFlag = data?.video_analyzed ?? json?.video_analyzed;
   const sum = json?.structured_summary;
+  const ks = json?.keyword_similarity ?? null;
+  // Niche-keyword analyses don't run Silas scoring. The DB row leaves every score
+  // field null/0 and the real output lives under `keyword_similarity`. Detect it
+  // so we don't show a meaningless "0/50 · Weak" headline for these rows.
+  const isNicheAnalysis =
+    !!ks &&
+    (data?.source === "keyword_similarity" ||
+      (data?.total_score == null || data?.total_score === 0)) &&
+    (data?.prompt_version == null || !data.prompt_version.startsWith("silas_v2"));
 
   const wtRaw = json?.weighted_total;
   const wtParsed =
@@ -178,7 +187,7 @@ export function ReelAnalysisDetailModal({ open, onClose, reelId, clientSlug, org
         <div className="mb-4 flex items-start justify-between gap-2">
           <div>
             <h2 id="reel-analysis-title" className="text-sm font-semibold text-zinc-900 dark:text-app-fg">
-              Silas analysis
+              {isNicheAnalysis ? "Niche match" : "Silas analysis"}
             </h2>
             {data?.owner_username ? (
               <p className="mt-1 text-[11px] text-zinc-600 dark:text-app-fg-subtle">
@@ -207,25 +216,76 @@ export function ReelAnalysisDetailModal({ open, onClose, reelId, clientSlug, org
           </p>
         ) : data ? (
           <div className="space-y-3 text-xs text-zinc-800 dark:text-app-fg-secondary">
-            <div className="flex flex-wrap items-baseline gap-2">
-              <span className="text-2xl font-bold text-zinc-900 dark:text-app-fg">
-                {disp?.scoreText ?? "—"}
-                <span className="text-sm font-normal text-zinc-500 dark:text-app-fg-muted">
-                  {disp?.maxSuffix ?? ""}
+            {isNicheAnalysis && ks ? (
+              <>
+                <div className="flex flex-wrap items-baseline gap-2">
+                  {ks.similarity_score != null ? (
+                    <span className="text-2xl font-bold text-zinc-900 dark:text-app-fg">
+                      {ks.similarity_score}
+                      <span className="text-sm font-normal text-zinc-500 dark:text-app-fg-muted">
+                        % match
+                      </span>
+                    </span>
+                  ) : null}
+                  {ks.verdict ? (
+                    <span className="rounded-full bg-purple-500/15 px-2 py-0.5 text-[11px] font-medium capitalize text-purple-800 dark:text-purple-300">
+                      {ks.verdict.replace(/_/g, " ")}
+                    </span>
+                  ) : null}
+                  {videoFlag === false ? (
+                    <span className="text-[10px] text-zinc-500 dark:text-app-fg-faint">
+                      Caption-only (video unavailable or too large)
+                    </span>
+                  ) : null}
+                </div>
+                {ks.matched_keywords?.length ? (
+                  <Section title="Matched keywords">
+                    <div className="flex flex-wrap gap-1">
+                      {ks.matched_keywords.map((kw) => (
+                        <span
+                          key={kw}
+                          className="rounded-full bg-purple-500/15 px-2 py-0.5 text-[10px] font-medium text-purple-800 dark:text-purple-300"
+                        >
+                          {kw}
+                        </span>
+                      ))}
+                    </div>
+                  </Section>
+                ) : null}
+                {ks.what_the_video_is_about ? (
+                  <Section title="What this reel is about">{inlineMd(ks.what_the_video_is_about)}</Section>
+                ) : null}
+                {ks.what_matches ? (
+                  <Section title="What matches your niche">{inlineMd(ks.what_matches)}</Section>
+                ) : null}
+                {ks.what_differs ? (
+                  <Section title="What's different">{inlineMd(ks.what_differs)}</Section>
+                ) : null}
+                {ks.adaptation_angle ? (
+                  <Section title="How to adapt this">{inlineMd(ks.adaptation_angle)}</Section>
+                ) : null}
+              </>
+            ) : (
+              <div className="flex flex-wrap items-baseline gap-2">
+                <span className="text-2xl font-bold text-zinc-900 dark:text-app-fg">
+                  {disp?.scoreText ?? "—"}
+                  <span className="text-sm font-normal text-zinc-500 dark:text-app-fg-muted">
+                    {disp?.maxSuffix ?? ""}
+                  </span>
                 </span>
-              </span>
-              {disp?.ratingText ? (
-                <span className="rounded-full bg-zinc-200/90 px-2 py-0.5 text-[11px] font-medium text-zinc-800 dark:bg-white/15 dark:text-app-fg">
-                  {disp.ratingText}
-                </span>
-              ) : null}
-              {videoFlag === false ? (
-                <span className="text-[10px] text-zinc-500 dark:text-app-fg-faint">
-                  Caption-only (video unavailable or too large)
-                </span>
-              ) : null}
-            </div>
-            {scores ? (
+                {disp?.ratingText ? (
+                  <span className="rounded-full bg-zinc-200/90 px-2 py-0.5 text-[11px] font-medium text-zinc-800 dark:bg-white/15 dark:text-app-fg">
+                    {disp.ratingText}
+                  </span>
+                ) : null}
+                {videoFlag === false ? (
+                  <span className="text-[10px] text-zinc-500 dark:text-app-fg-faint">
+                    Caption-only (video unavailable or too large)
+                  </span>
+                ) : null}
+              </div>
+            )}
+            {!isNicheAnalysis && scores ? (
               <ul className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
                 {(
                   [
@@ -249,7 +309,7 @@ export function ReelAnalysisDetailModal({ open, onClose, reelId, clientSlug, org
               </ul>
             ) : null}
 
-            {hasStructured ? (
+            {!isNicheAnalysis && hasStructured ? (
               <div className="space-y-2">
                 {why ? <Section title="Summary">{inlineMd(why)}</Section> : null}
                 {emotional ? <Section title="Relatability signal">{inlineMd(emotional)}</Section> : null}
@@ -301,10 +361,16 @@ export function ReelAnalysisDetailModal({ open, onClose, reelId, clientSlug, org
                 ) : null}
               </div>
             ) : null}
-            <p className="text-[10px] text-zinc-500 dark:text-app-fg-faint">
-              {data.prompt_version ? `${data.prompt_version}` : null}
-              {data.model_used ? ` · ${data.model_used}` : null}
-            </p>
+            {data.analyzed_at ? (
+              <p className="text-[10px] text-zinc-500 dark:text-app-fg-faint">
+                Analyzed {new Date(data.analyzed_at).toLocaleString(undefined, {
+                  month: "short",
+                  day: "numeric",
+                  hour: "numeric",
+                  minute: "2-digit",
+                })}
+              </p>
+            ) : null}
           </div>
         ) : null}
       </div>

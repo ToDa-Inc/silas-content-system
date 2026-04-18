@@ -26,8 +26,10 @@ export default async function DashboardPage() {
   ]);
 
   const stats = statsRes.ok ? statsRes.data : null;
-  const hotGrowth =
-    activityRes.ok && activityRes.data ? activityRes.data.own_reel_growth : [];
+  const trendingHot =
+    activityRes.ok && activityRes.data?.trending_now?.reels?.length
+      ? activityRes.data.trending_now.reels
+      : [];
 
   return (
     <main className="mx-auto max-w-7xl px-4 py-8 md:px-6">
@@ -35,8 +37,8 @@ export default async function DashboardPage() {
         <div className="min-w-0 space-y-1">
           <h1 className="text-lg font-semibold text-app-fg">Dashboard</h1>
           <p className="max-w-xl text-xs text-app-fg-muted">
-            Headline numbers for your reels, what&apos;s heating up, and trends after each pull from
-            Instagram.
+            Headline numbers for your reels, fresh competitor breakouts to recreate, and trends after each
+            sync.
           </p>
         </div>
         <DashboardUpdateReels
@@ -54,7 +56,13 @@ export default async function DashboardPage() {
           <OwnReelMetricsDashboard clientSlug={clientSlug} orgSlug={orgSlug} />
         </div>
         <div className="lg:col-span-1">
-          <DashboardHotReels items={hotGrowth} />
+          <DashboardHotReels
+            reels={trendingHot}
+            clientSlug={clientSlug}
+            orgSlug={orgSlug}
+            disabled={syncDisabled}
+            disabledHint={syncDisabledHint}
+          />
         </div>
       </div>
     </main>

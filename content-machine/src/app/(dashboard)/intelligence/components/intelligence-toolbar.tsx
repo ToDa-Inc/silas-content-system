@@ -1,47 +1,34 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { Loader2, RefreshCw } from "lucide-react";
-import {
-  clientApiHeaders,
-  contentApiFetch,
-  formatFastApiError,
-  getContentApiBase,
-} from "@/lib/api-client";
-import { AnalyzeReelTrigger } from "./analyze-reel-trigger";
-import { NicheReelScrapeButton } from "./niche-reel-scrape-button";
-import {
-  INTELLIGENCE_TOOLBAR_ICON_CLASS,
-  INTELLIGENCE_TOOLBAR_SYNC_LABELED_CLASS,
-} from "./intelligence-toolbar-styles";
+import { useEffect, useState } from "react";
+import { RefreshCw } from "lucide-react";
+import { SyncDataModal } from "./sync-data-modal";
 
 type Props = {
   clientSlug: string;
   orgSlug: string;
   disabled?: boolean;
   disabledHint?: string | null;
-  /** Icon + “Sync” label (e.g. Intelligence → Reels). */
-  showSyncLabel?: boolean;
+  /** ISO timestamp of the last successful baseline sync, or null if never synced. */
+  lastSyncedAt?: string | null;
 };
 
-type SyncAllJson = {
-  baseline?: { error?: string } | Record<string, unknown>;
-  competitors_attempted?: number;
-  competitor_reels_processed?: number | null;
-  competitor_sync_mode?: string;
-  competitor_sync_message?: string;
-};
+const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 
-function apifyErrorHint(baselineErr: string): string {
-  const t = baselineErr.toLowerCase();
-  if (t.includes("403") || t.includes("forbidden")) {
-    return " Check APIFY_API_TOKEN on the API server (Apify → Settings → Integrations) and that your Apify account has credits.";
-  }
-  if (t.includes("401") || t.includes("unauthorized")) {
-    return " Check APIFY_API_TOKEN — it may be invalid or revoked.";
-  }
-  return "";
+function formatRelativeAgo(iso: string, now: number): string | null {
+  const ts = Date.parse(iso);
+  if (!Number.isFinite(ts)) return null;
+  const diffMs = now - ts;
+  if (diffMs < 0) return "just now";
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 45) return "just now";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} min ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} hr ago`;
+  const days = Math.floor(hr / 24);
+  if (days < 7) return `${days} day${days === 1 ? "" : "s"} ago`;
+  return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 export function IntelligenceToolbar({
@@ -49,166 +36,72 @@ export function IntelligenceToolbar({
   orgSlug,
   disabled,
   disabledHint,
-  showSyncLabel = false,
+  lastSyncedAt,
 }: Props) {
-  const router = useRouter();
-  const [toolbarMessage, setToolbarMessage] = useState<string | null>(null);
-  const [toolbarTone, setToolbarTone] = useState<"neutral" | "success" | "error">("neutral");
-  const [syncing, setSyncing] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  // Resolved on the client to avoid SSR/CSR drift, then re-ticked every minute so the
+  // "X min ago" label stays honest while the page is open.
+  const [now, setNow] = useState<number | null>(null);
+  useEffect(() => {
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
 
-  const syncTitle =
+  const tsParsed = lastSyncedAt ? Date.parse(lastSyncedAt) : NaN;
+  const ago = lastSyncedAt && now != null ? formatRelativeAgo(lastSyncedAt, now) : null;
+  const stale =
+    Number.isFinite(tsParsed) && now != null ? now - tsParsed > STALE_AFTER_MS : false;
+
+  const buttonTitle =
     disabledHint?.trim() ||
-    "Full sync: your Instagram reels plus every tracked competitor (Apify). Competitor scrapes run in the background on the API.";
-
-  async function runFullSync() {
-    if (disabled || !clientSlug.trim() || !orgSlug.trim()) {
-      setToolbarTone("error");
-      setToolbarMessage(
-        disabledHint?.trim() ||
-          (!orgSlug.trim()
-            ? "No organization context — refresh the page."
-            : "Select a creator in the header first."),
-      );
-      return;
-    }
-    setSyncing(true);
-    setToolbarTone("neutral");
-    setToolbarMessage("Syncing your reels and all competitors…");
-    try {
-      const apiBase = getContentApiBase();
-      const headers = await clientApiHeaders({ orgSlug });
-      const res = await contentApiFetch(
-        `${apiBase}/api/v1/clients/${encodeURIComponent(clientSlug)}/sync`,
-        { method: "POST", headers },
-      );
-      if (res.status === 409) {
-        setToolbarTone("error");
-        setToolbarMessage("A sync is already running — wait and try again.");
-        return;
-      }
-      if (res.status === 503) {
-        const t = await res.text();
-        setToolbarTone("error");
-        setToolbarMessage(
-          t.toLowerCase().includes("apify")
-            ? "Apify is not configured on the API."
-            : t.slice(0, 200),
-        );
-        return;
-      }
-      if (!res.ok) {
-        const text = await res.text().catch(() => "Sync failed");
-        let json: { detail?: unknown } = {};
-        try {
-          json = JSON.parse(text) as { detail?: unknown };
-        } catch {
-          /* plain text error */
-        }
-        setToolbarTone("error");
-        setToolbarMessage(formatFastApiError(json, text.slice(0, 200)));
-        return;
-      }
-      const json = (await res.json()) as SyncAllJson;
-      const parts: string[] = [];
-      const baselineErr =
-        json.baseline && typeof json.baseline === "object" && "error" in json.baseline
-          ? String((json.baseline as { error?: string }).error || "").trim()
-          : "";
-      if (baselineErr) {
-        parts.push(
-          `Your reels: ${baselineErr.slice(0, 220)}${apifyErrorHint(baselineErr)}`,
-        );
-      } else {
-        parts.push("Your reels were refreshed.");
-      }
-
-      const mode = json.competitor_sync_mode;
-      const n = json.competitors_attempted ?? 0;
-      const apiMsg =
-        typeof json.competitor_sync_message === "string" ? json.competitor_sync_message.trim() : "";
-
-      if (mode === "skipped_locked") {
-        parts.push("Competitors: a bulk sync was already running — skipped duplicate start.");
-      } else if (mode === "background") {
-        if (n > 0) {
-          parts.push(
-            `Competitor scrapes started in the background (${n} accounts). Refresh in a few minutes for new metrics.`,
-          );
-        } else {
-          parts.push(apiMsg || "No competitors to sync.");
-        }
-      } else if (mode === "queued") {
-        parts.push("Competitor jobs were queued — ensure the worker is running.");
-      } else {
-        parts.push(apiMsg || "Competitor sync finished.");
-      }
-
-      const apifyAuthFail =
-        !!baselineErr && /403|401|forbidden|unauthorized/i.test(baselineErr);
-      setToolbarTone(baselineErr ? (apifyAuthFail ? "error" : "neutral") : "success");
-      setToolbarMessage(parts.join(" "));
-      router.refresh();
-    } catch {
-      setToolbarTone("error");
-      setToolbarMessage("Something went wrong — try again.");
-    } finally {
-      setSyncing(false);
-    }
-  }
+    "Pull fresh metrics for this creator and every tracked competitor.";
 
   return (
-    <div className="flex flex-col items-end gap-2">
-      <div
-        className="inline-flex items-center gap-1 rounded-2xl border border-zinc-200/90 bg-zinc-50/95 p-1 shadow-sm dark:border-white/10 dark:bg-zinc-950/70"
-        role="toolbar"
-        aria-label="Intelligence actions"
+    <div className="flex flex-col items-end gap-1.5">
+      <button
+        type="button"
+        disabled={disabled || !clientSlug.trim() || !orgSlug.trim()}
+        title={buttonTitle}
+        aria-label="Sync data"
+        onClick={() => setOpen(true)}
+        className="inline-flex h-10 min-w-[6.5rem] items-center justify-center gap-2 rounded-xl border border-amber-500/50 bg-white px-4 text-sm font-semibold text-amber-800 shadow-sm outline-none transition-colors hover:border-amber-500/70 hover:bg-amber-50 focus-visible:ring-2 focus-visible:ring-amber-500/50 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50 dark:bg-zinc-900/90 dark:text-amber-300 dark:hover:bg-amber-500/10 dark:focus-visible:ring-offset-zinc-950 disabled:pointer-events-none disabled:opacity-45"
       >
-        <button
-          type="button"
-          disabled={disabled || !clientSlug.trim() || !orgSlug.trim() || syncing}
-          title={syncTitle}
-          aria-label={showSyncLabel ? "Sync — your reels and all competitors" : "Full sync — your reels and all competitors"}
-          onClick={() => void runFullSync()}
-          className={showSyncLabel ? INTELLIGENCE_TOOLBAR_SYNC_LABELED_CLASS : INTELLIGENCE_TOOLBAR_ICON_CLASS}
-        >
-          {syncing ? (
-            <Loader2 className="h-5 w-5 animate-spin shrink-0" aria-hidden />
-          ) : (
-            <RefreshCw className="h-5 w-5 shrink-0" aria-hidden />
-          )}
-          {showSyncLabel ? <span>Sync</span> : null}
-        </button>
-        <NicheReelScrapeButton
-          clientSlug={clientSlug}
-          orgSlug={orgSlug}
-          disabled={disabled}
-          disabledHint={disabledHint}
-          onMessage={(msg, tone) => {
-            setToolbarMessage(msg);
-            setToolbarTone(tone);
-          }}
-        />
-        <AnalyzeReelTrigger
-          clientSlug={clientSlug}
-          orgSlug={orgSlug}
-          disabled={disabled}
-          disabledHint={disabledHint}
-        />
-      </div>
-      {toolbarMessage ? (
+        <RefreshCw className="h-4 w-4 shrink-0" aria-hidden />
+        Sync
+      </button>
+      {ago ? (
         <p
           className={
-            toolbarTone === "error"
-              ? "max-w-[min(100%,22rem)] text-right text-[10px] leading-snug text-red-600 dark:text-red-400"
-              : toolbarTone === "success"
-                ? "max-w-[min(100%,22rem)] text-right text-[10px] leading-snug text-emerald-700 dark:text-emerald-400"
-                : "max-w-[min(100%,22rem)] text-right text-[10px] leading-snug text-zinc-600 dark:text-app-fg-muted"
+            stale
+              ? "text-[10px] leading-snug text-amber-700 dark:text-amber-400"
+              : "text-[10px] leading-snug text-app-fg-muted"
           }
+          aria-label={`Last synced ${ago}`}
+        >
+          {stale ? `Last synced ${ago} — out of date` : `Last synced ${ago}`}
+        </p>
+      ) : !disabled && clientSlug.trim() ? (
+        <p className="text-[10px] leading-snug text-app-fg-muted">Never synced</p>
+      ) : null}
+      {statusMsg ? (
+        <p
+          className="max-w-[min(100%,22rem)] text-right text-[10px] leading-snug text-app-fg-muted"
           role="status"
         >
-          {toolbarMessage}
+          {statusMsg}
         </p>
       ) : null}
+      <SyncDataModal
+        open={open}
+        onClose={() => setOpen(false)}
+        clientSlug={clientSlug}
+        orgSlug={orgSlug}
+        disabled={disabled}
+        disabledHint={disabledHint}
+        onSyncMessage={setStatusMsg}
+      />
     </div>
   );
 }

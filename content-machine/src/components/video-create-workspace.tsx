@@ -8,6 +8,7 @@ import {
   ChevronUp,
   Copy,
   Download,
+  Eye,
   Film,
   Image as ImageIcon,
   Loader2,
@@ -18,6 +19,7 @@ import {
   Video,
 } from "lucide-react";
 import { useToast } from "@/components/ui/toast-provider";
+import { PostPreviewModal } from "@/components/post-preview-modal";
 import {
   brollDelete,
   brollList,
@@ -335,6 +337,17 @@ function StepHeader({
 }
 
 type CoverMode = "ai" | "image";
+
+/** Active source tab for the merged Visual+Render card. Maps to backend `background_type`:
+ *  ai → generated_image, image → client_image, clip → broll. */
+type BgSource = "ai" | "image" | "clip";
+
+function bgSourceFromSession(t: string | null | undefined): BgSource {
+  const v = (t || "").trim().toLowerCase();
+  if (v === "broll") return "clip";
+  if (v === "client_image") return "image";
+  return "ai";
+}
 
 function ReelCoverSection({
   hooks,
@@ -664,6 +677,14 @@ export function VideoCreateWorkspace({
   const [coverMode, setCoverMode] = useState<CoverMode>("ai");
   const [coverImageId, setCoverImageId] = useState("");
   const [regenBusy, setRegenBusy] = useState(false);
+  /**
+   * Active source tab for the Visual card. Defaults to whatever's already set on the
+   * session; once the user manually clicks a tab we stop following the session so
+   * switching tabs doesn't snap back after a save. The shared preview always shows
+   * `session.background_url` regardless of which tab is active.
+   */
+  const [bgSource, setBgSource] = useState<BgSource | null>(null);
+  const bgSourceUserPickedRef = useRef(false);
 
   // Hold the latest parent callback in a ref so it never invalidates effects/callbacks.
   // (Parents typically pass an inline `onSessionUpdated`, which would otherwise loop.)
@@ -716,9 +737,34 @@ export function VideoCreateWorkspace({
     const raw = session?.source_format_key ?? null;
     return canonicalFormatKey(raw) ?? raw ?? (session?.source_type === "url_adapt" ? "text_overlay" : null);
   }, [session]);
+
+  /** Full-deliverable preview modal — opened from the recap card's "Preview post"
+   *  button. Replaces the previous in-place "Show more" caption toggle, which only
+   *  surfaced when the caption overflowed its 3-line clamp (and so was invisible
+   *  for short captions, even though users still wanted a single "see the whole
+   *  post" surface with the playable video next to it). */
+  const [previewOpen, setPreviewOpen] = useState(false);
   const isTextOverlay = fk === "text_overlay" || fk === "carousel";
   const isBroll = fk === "b_roll_reel";
   const isTalkingHead = fk === "talking_head";
+
+  /** Sync the active bg-source tab with the session's background_type until the user
+   *  explicitly clicks a tab; from then on the user's choice wins. b_roll_reel formats
+   *  are forced to "clip" (only valid option). */
+  useEffect(() => {
+    if (!session) return;
+    if (isBroll) {
+      setBgSource("clip");
+      return;
+    }
+    if (bgSourceUserPickedRef.current) return;
+    setBgSource(bgSourceFromSession(session.background_type));
+  }, [session, isBroll]);
+
+  const onPickBgSource = useCallback((next: BgSource) => {
+    bgSourceUserPickedRef.current = true;
+    setBgSource(next);
+  }, []);
 
   const savedBlocks = session?.text_blocks ?? [];
   const hasUnsavedBlocks = useMemo(() => {
@@ -1113,6 +1159,86 @@ export function VideoCreateWorkspace({
 
   return (
     <div className="space-y-4">
+      {/* ── Pinned deliverable recap (only on Done sessions) ──
+          Sits above the build steps so when a user reopens a finished session they
+          immediately see the result (cover + caption + download / copy actions),
+          instead of having to scroll past four build cards to find it. Mild action
+          overlap with the Output card below is intentional — top of page is the
+          "show me what I made" view; Output is the "how do I publish it" view. */}
+      {step3Done && session.thumbnail_url ? (
+        <div className="glass rounded-2xl border border-emerald-500/30 bg-emerald-500/[0.04] p-4 md:p-5">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+            <a
+              href={session.thumbnail_url}
+              target="_blank"
+              rel="noreferrer"
+              title="Open cover full size"
+              className="mx-auto block shrink-0 sm:mx-0"
+            >
+              <div className="w-[120px] overflow-hidden rounded-lg border border-app-divider bg-black/20 shadow-md">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={session.thumbnail_url}
+                  alt="Reel cover"
+                  width={120}
+                  className="block aspect-[9/16] w-full object-cover"
+                />
+              </div>
+            </a>
+
+            <div className="flex min-w-0 flex-1 flex-col gap-2.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+                <span className="text-xs font-bold uppercase tracking-wide text-emerald-400">
+                  Ready to publish
+                </span>
+                {session.updated_at ? (
+                  <span className="text-[11px] tabular-nums text-app-fg-subtle">
+                    · {new Date(session.updated_at).toLocaleDateString()}
+                  </span>
+                ) : null}
+              </div>
+
+              {session.caption_body ? (
+                <p className="line-clamp-3 whitespace-pre-line text-[13px] leading-relaxed text-app-fg-secondary">
+                  {session.caption_body}
+                </p>
+              ) : (
+                <p className="text-xs text-app-fg-muted">No caption yet.</p>
+              )}
+
+              <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => setPreviewOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25"
+                >
+                  <Eye className="h-3 w-3" /> Preview post
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void copyText("caption + hashtags", captionFull)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-app-divider px-3 py-1.5 text-xs font-bold text-app-fg hover:bg-white/5"
+                >
+                  <Copy className="h-3 w-3" /> Copy caption
+                </button>
+                {session.rendered_video_url ? (
+                  <a
+                    href={session.rendered_video_url}
+                    download="reel.mp4"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-bold text-zinc-950 shadow-sm hover:opacity-90"
+                  >
+                    <Download className="h-3 w-3" /> Download MP4
+                  </a>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {/* ── Step 1: On-screen text ── */}
       <div className="glass rounded-2xl border border-app-divider/80 p-5 md:p-6">
         <StepHeader n={1} label="On-screen text" done={step1Done}>
@@ -1204,58 +1330,100 @@ export function VideoCreateWorkspace({
         </div>
       </div>
 
-      {/* ── Step 2: Background ── */}
+      {/* ── Step 2: Visual & render (merged) ──
+          Source picker (tabs) + shared preview + per-source controls + render footer
+          all live in one card. The old separate Render step is now the card's footer
+          so the user never sees a "blocked" Render card sitting empty. */}
       <div className="glass rounded-2xl border border-app-divider/80 p-5 md:p-6">
-        <StepHeader n={2} label="Background" done={step2Done} />
+        <StepHeader n={2} label="Visual & render" done={step3Done} />
 
-        {isTextOverlay && (
-          <div className="space-y-5">
-            <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
-              <div className="mx-auto shrink-0 sm:mx-0">
-                {bgBusy ? (
-                  <div className="flex aspect-[2/3] w-[140px] flex-col items-center justify-center gap-2 rounded-xl border border-app-divider bg-app-chip-bg/40">
-                    <Loader2 className="h-6 w-6 animate-spin text-app-fg-subtle" />
-                    <p className="text-[10px] text-app-fg-muted">~30–60s</p>
-                  </div>
-                ) : session.background_url ? (
-                  <a href={session.background_url} target="_blank" rel="noreferrer" title="Open full size">
-                    <div className="w-[140px] overflow-hidden rounded-xl border border-app-divider shadow-md">
-                      {session.background_type === "broll" ? (
-                        <video
-                          src={session.background_url}
-                          muted
-                          loop
-                          autoPlay
-                          playsInline
-                          className="block aspect-[2/3] w-full object-cover"
-                          style={{ aspectRatio: "2/3" }}
-                        />
-                      ) : (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={session.background_url}
-                          alt="Background"
-                          width={140}
-                          className="block aspect-[2/3] w-full object-cover"
-                          style={{ aspectRatio: "2/3" }}
-                        />
-                      )}
-                    </div>
-                  </a>
-                ) : (
-                  <div className="flex aspect-[2/3] w-[140px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-app-divider/70 bg-app-chip-bg/20">
-                    <ImageIcon className="h-6 w-6 text-app-fg-subtle opacity-30" />
-                    <p className="px-3 text-center text-[10px] text-app-fg-subtle">No background</p>
-                  </div>
-                )}
+        {/* Source tabs — only shown when there's >1 valid source for this format.
+            b_roll_reel has only one valid source (clip), so we skip the tabs. */}
+        {isTextOverlay ? (
+          <div className="mb-4 inline-flex rounded-xl border border-app-divider bg-app-chip-bg/40 p-1">
+            {(
+              [
+                { key: "ai" as const, label: "AI image", icon: Sparkles },
+                { key: "image" as const, label: "Client photo", icon: ImageIcon },
+                { key: "clip" as const, label: "Stock clip", icon: Film },
+              ] as const
+            ).map(({ key, label, icon: Icon }) => {
+              const active = bgSource === key;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => onPickBgSource(key)}
+                  className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-colors ${
+                    active
+                      ? "bg-white/10 text-app-fg shadow-sm"
+                      : "text-app-fg-muted hover:text-app-fg"
+                  }`}
+                >
+                  <Icon className="h-3 w-3" /> {label}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+
+        {/* Preview-left + per-tab content-right. The preview is the "this is what your
+            reel will use" anchor — it always reflects whatever's saved on the session
+            (photo, clip, AI still) at proper 9:16, regardless of which tab is active.
+            Picker grids on the right are for browsing/selecting; this preview is for
+            verifying the choice (especially clips, which autoplay so you can check the loop). */}
+        <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
+          <div className="mx-auto shrink-0 sm:mx-0">
+            {bgBusy ? (
+              <div className="flex aspect-[9/16] w-[160px] flex-col items-center justify-center gap-2 rounded-xl border border-app-divider bg-app-chip-bg/40">
+                <Loader2 className="h-6 w-6 animate-spin text-app-fg-subtle" />
+                <p className="text-[10px] text-app-fg-muted">~30–60s</p>
               </div>
+            ) : session.background_url ? (
+              <a
+                href={session.background_url}
+                target="_blank"
+                rel="noreferrer"
+                title="Open full size"
+                className="block"
+              >
+                <div className="w-[160px] overflow-hidden rounded-xl border border-app-divider shadow-md">
+                  {session.background_type === "broll" ? (
+                    <video
+                      src={session.background_url}
+                      muted
+                      loop
+                      autoPlay
+                      playsInline
+                      className="block aspect-[9/16] w-full object-cover"
+                    />
+                  ) : (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={session.background_url}
+                      alt="Currently active background"
+                      width={160}
+                      className="block aspect-[9/16] w-full object-cover"
+                    />
+                  )}
+                </div>
+                <p className="mt-1.5 text-center text-[10px] uppercase tracking-wide text-app-fg-subtle">
+                  Currently active
+                </p>
+              </a>
+            ) : (
+              <div className="flex aspect-[9/16] w-[160px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-app-divider/70 bg-app-chip-bg/20">
+                <ImageIcon className="h-6 w-6 text-app-fg-subtle opacity-30" />
+                <p className="px-3 text-center text-[10px] text-app-fg-subtle">No background yet</p>
+              </div>
+            )}
+          </div>
 
-              <div className="flex flex-col gap-3">
-                <p className="text-xs font-semibold text-app-fg">AI still (2:3)</p>
+          <div className="flex min-w-0 flex-1 flex-col gap-3">
+            {bgSource === "ai" && (
+              <>
                 <p className="text-xs leading-relaxed text-app-fg-muted">
-                  Generates an atmospheric scene matched to the chosen angle. Uses{" "}
-                  <span className="font-semibold text-app-fg-secondary">gpt-5-image</span> via OpenRouter.
-                  Regenerating replaces a library clip if one is active.
+                  Generate a 9:16 still matched to the chosen angle. ~30–60s.
                 </p>
                 <button
                   type="button"
@@ -1264,121 +1432,115 @@ export function VideoCreateWorkspace({
                   className="inline-flex items-center gap-2 self-start rounded-xl bg-amber-500/15 px-4 py-2 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-50"
                 >
                   {bgBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                  {bgBusy ? "Generating…" : session.background_url ? "Regenerate" : "Generate image"}
+                  {bgBusy
+                    ? "Generating…"
+                    : session.background_type === "generated_image" && session.background_url
+                    ? "Regenerate"
+                    : "Generate image"}
                 </button>
+              </>
+            )}
+
+            {bgSource === "image" && (
+              <>
+                <p className="text-xs leading-relaxed text-app-fg-muted">
+                  Use an existing photo of you / your brand as a static 9:16 background.
+                </p>
+                <ClientImagesPicker
+                  images={images}
+                  selectedImageId={session.background_type === "client_image" ? selectedImageId : ""}
+                  busy={loading}
+                  onPick={(id) => void onSetBackgroundImage(id)}
+                />
+              </>
+            )}
+
+            {bgSource === "clip" && (
+              <>
+                {!isBroll ? (
+                  <p className="text-xs leading-relaxed text-app-fg-muted">
+                    Loop a video clip behind the text. Clip length doesn&apos;t matter — render follows
+                    your script timing.
+                  </p>
+                ) : null}
+                <BrollLibrarySection
+                  clips={clips}
+                  loading={loading}
+                  deletingClipId={deletingClipId}
+                  selectedClipId={selectedClipId}
+                  sessionBrollClipId={session.broll_clip_id}
+                  showClipBanner={false}
+                  onPick={(id) => void onSetBroll(id)}
+                  onDelete={(id) => void onDeleteClip(id)}
+                />
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Render footer — primary action lives in the same card as the visual decision
+            that unblocks it, instead of a separate "Render" card that's empty 90% of the time. */}
+        <div className="mt-5 border-t border-app-divider/50 pt-4">
+          {!step2Done && !step3Done ? (
+            <p className="text-xs text-app-fg-muted">Pick a background above to enable render.</p>
+          ) : isRendering ? (
+            <div className="flex items-center gap-3 rounded-xl border border-amber-500/25 bg-amber-500/[0.07] px-4 py-3">
+              <Loader2 className="h-5 w-5 shrink-0 animate-spin text-amber-500" />
+              <div>
+                <p className="text-sm font-semibold text-app-fg">Rendering…</p>
+                <p className="text-xs text-app-fg-muted">
+                  Usually 1–3 minutes. You can leave this page.
+                </p>
               </div>
             </div>
-
-            <div className="border-t border-app-divider/50 pt-5">
-              <p className="mb-1 text-xs font-semibold text-app-fg">Or: client image</p>
-              <p className="mb-4 text-xs leading-relaxed text-app-fg-muted">
-                Use an existing photo (e.g. of yourself) as a static background. Same render flow,
-                no AI generation cost.
-              </p>
-              <ClientImagesPicker
-                images={images}
-                selectedImageId={
-                  session.background_type === "client_image" ? selectedImageId : ""
-                }
-                busy={loading}
-                onPick={(id) => void onSetBackgroundImage(id)}
-              />
+          ) : session.render_status === "failed" ? (
+            <div className="space-y-3">
+              <div className="rounded-xl border border-red-500/25 bg-red-500/[0.07] px-4 py-3">
+                <p className="text-sm font-semibold text-red-400">Render failed</p>
+                {session.render_error && (
+                  <p className="mt-1 text-xs text-app-fg-muted">{session.render_error}</p>
+                )}
+              </div>
+              <button
+                type="button"
+                disabled={renderBusy}
+                onClick={() => void onRender()}
+                className="inline-flex items-center gap-2 rounded-xl border border-app-divider px-4 py-2 text-xs font-bold text-app-fg hover:bg-white/5 disabled:opacity-50"
+              >
+                <RefreshCw className="h-3.5 w-3.5" /> Retry render
+              </button>
             </div>
-
-            <div className="border-t border-app-divider/50 pt-5">
-              <p className="mb-1 text-xs font-semibold text-app-fg">Or: library footage</p>
-              <p className="mb-4 text-xs leading-relaxed text-app-fg-muted">
-                Footage loops; video length follows your script timing in render.
-              </p>
-              <BrollLibrarySection
-                clips={clips}
-                loading={loading}
-                deletingClipId={deletingClipId}
-                selectedClipId={selectedClipId}
-                sessionBrollClipId={session.broll_clip_id}
-                showClipBanner={session.background_type === "broll" && Boolean(session.background_url)}
-                clipBannerUrl={session.background_url}
-                onPick={(id) => void onSetBroll(id)}
-                onDelete={(id) => void onDeleteClip(id)}
-              />
+          ) : step3Done ? (
+            <div className="flex flex-wrap items-center gap-3">
+              <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-400" />
+              <p className="text-sm text-app-fg">Render complete — see output below.</p>
+              <button
+                type="button"
+                disabled={renderBusy}
+                onClick={() => void onRender()}
+                className="ml-auto rounded-lg border border-app-divider px-3 py-1.5 text-xs font-semibold text-app-fg-muted hover:text-app-fg disabled:opacity-50"
+              >
+                Re-render
+              </button>
             </div>
-          </div>
-        )}
-
-        {isBroll && (
-          <BrollLibrarySection
-            clips={clips}
-            loading={loading}
-            deletingClipId={deletingClipId}
-            selectedClipId={selectedClipId}
-            sessionBrollClipId={session.broll_clip_id}
-            showClipBanner={Boolean(session.background_url)}
-            clipBannerUrl={session.background_url}
-            onPick={(id) => void onSetBroll(id)}
-            onDelete={(id) => void onDeleteClip(id)}
-          />
-        )}
+          ) : (
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              <button
+                type="button"
+                disabled={renderBusy || !step2Done}
+                onClick={() => void onRender()}
+                className="inline-flex items-center gap-2 rounded-xl bg-violet-500/20 px-5 py-2.5 text-sm font-bold text-violet-200 hover:bg-violet-500/30 disabled:opacity-50"
+              >
+                {renderBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Video className="h-4 w-4" />}
+                {renderBusy ? "Starting…" : "Render video"}
+              </button>
+              <p className="text-xs text-app-fg-muted">1080×1920 · ~1–3 min</p>
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* ── Step 3: Render ── */}
-      <div className="glass rounded-2xl border border-app-divider/80 p-5 md:p-6">
-        <StepHeader n={3} label="Render" done={step3Done} />
-
-        {!step2Done && !step3Done ? (
-          <p className="text-xs text-app-fg-muted">Set a background in Step 2 first.</p>
-        ) : isRendering ? (
-          <div className="flex items-center gap-3 rounded-xl border border-amber-500/25 bg-amber-500/[0.07] px-4 py-3">
-            <Loader2 className="h-5 w-5 shrink-0 animate-spin text-amber-500" />
-            <div>
-              <p className="text-sm font-semibold text-app-fg">Rendering…</p>
-              <p className="text-xs text-app-fg-muted">Usually 1–3 minutes. You can leave this page.</p>
-            </div>
-          </div>
-        ) : session.render_status === "failed" ? (
-          <div className="space-y-3">
-            <div className="rounded-xl border border-red-500/25 bg-red-500/[0.07] px-4 py-3">
-              <p className="text-sm font-semibold text-red-400">Render failed</p>
-              {session.render_error && <p className="mt-1 text-xs text-app-fg-muted">{session.render_error}</p>}
-            </div>
-            <button
-              type="button"
-              disabled={renderBusy}
-              onClick={() => void onRender()}
-              className="inline-flex items-center gap-2 rounded-xl border border-app-divider px-4 py-2 text-xs font-bold text-app-fg hover:bg-white/5 disabled:opacity-50"
-            >
-              <RefreshCw className="h-3.5 w-3.5" /> Retry render
-            </button>
-          </div>
-        ) : step3Done ? (
-          <div className="flex items-center gap-3">
-            <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-400" />
-            <p className="text-sm text-app-fg">Render complete — see output below.</p>
-            <button
-              type="button"
-              disabled={renderBusy}
-              onClick={() => void onRender()}
-              className="ml-auto rounded-lg border border-app-divider px-3 py-1.5 text-xs font-semibold text-app-fg-muted hover:text-app-fg disabled:opacity-50"
-            >
-              Re-render
-            </button>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <button
-              type="button"
-              disabled={renderBusy || !step2Done}
-              onClick={() => void onRender()}
-              className="inline-flex items-center gap-2 rounded-xl bg-violet-500/20 px-5 py-2.5 text-sm font-bold text-violet-200 hover:bg-violet-500/30 disabled:opacity-50"
-            >
-              {renderBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Video className="h-4 w-4" />}
-              {renderBusy ? "Starting…" : "Render video"}
-            </button>
-            <p className="text-xs text-app-fg-muted">Remotion · 1080×1920 · ~1–3 min</p>
-          </div>
-        )}
-      </div>
-
-      {/* ── Step 4: Reel cover ── */}
+      {/* ── Step 3: Reel cover ── */}
       <ReelCoverSection
         hooks={hooks}
         images={images}
@@ -1392,13 +1554,13 @@ export function VideoCreateWorkspace({
         onSelectImage={setCoverImageId}
         onGenerateAi={onGenerateThumbnail}
         onComposeFromImage={onComposeCoverFromImage}
-        step={4}
+        step={3}
       />
 
-      {/* ── Step 5: Output (video + caption + hashtags) ── */}
+      {/* ── Step 4: Output (video + caption + hashtags) ── */}
       {(step3Done || session.rendered_video_url) && (
         <div className="glass rounded-2xl border border-app-divider/80 p-5 md:p-6">
-          <StepHeader n={5} label="Output" done={Boolean(session.rendered_video_url)} />
+          <StepHeader n={4} label="Output" done={Boolean(session.rendered_video_url)} />
 
           {session.rendered_video_url ? (
             <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
@@ -1462,6 +1624,16 @@ export function VideoCreateWorkspace({
         hooks={hooks}
         regenHooks={(fb) => onRegenSection("hooks", fb)}
         busy={regenBusy}
+      />
+
+      <PostPreviewModal
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        title="Post preview"
+        caption={session.caption_body}
+        hashtags={session.hashtags}
+        thumbnailUrl={session.thumbnail_url}
+        videoUrl={session.rendered_video_url}
       />
     </div>
   );

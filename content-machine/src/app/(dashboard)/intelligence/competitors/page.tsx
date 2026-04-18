@@ -34,9 +34,9 @@ export default async function IntelligenceCompetitorsPage() {
   const syncDisabled = !clientSlug.trim() || !orgSlug.trim();
   const syncDisabledHint =
     user && !tenancy
-      ? "No workspace membership visible for this login — see the alert above."
+      ? "No workspace for this login — see the alert above."
       : !orgSlug.trim()
-        ? "Missing organization slug — refresh or check Supabase session."
+        ? "Missing organization — refresh the page or sign in again."
         : !clientSlug.trim()
           ? "Pick a creator in the top bar or finish onboarding."
           : null;
@@ -47,8 +47,8 @@ export default async function IntelligenceCompetitorsPage() {
         <div className="glass mb-8 rounded-xl px-5 py-4 text-sm text-app-fg-secondary">
           <p className="font-medium text-app-fg">We can&apos;t see a workspace for this login</p>
           <p className="mt-1 text-xs text-app-fg-subtle">
-            The app did not find an <code className="rounded bg-zinc-200 px-1 dark:bg-zinc-800">organization_members</code>{" "}
-            row for your user. If you never onboarded here, start below.
+            Your account isn&apos;t linked to a workspace yet. Create one below, or sign out and back in if you already
+            did.
           </p>
           <Link
             href="/onboarding"

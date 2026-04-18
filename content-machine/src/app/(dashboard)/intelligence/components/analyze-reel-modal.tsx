@@ -145,8 +145,8 @@ export function AnalyzeReelModal({
     setMsg(null);
     setPhase(
       skipApify
-        ? "Queued — LLM re-analysis (no Apify / no video download)…"
-        : "Queued — scraping + analysis (~1 min)…",
+        ? "Queued — re-running analysis from saved data…"
+        : "Queued — fetching reel and analyzing (~1 min)…",
     );
     setResult(null);
     setShowFull(false);
@@ -189,12 +189,12 @@ export function AnalyzeReelModal({
         setPhase(
           skipApify
             ? i < 20
-              ? "Re-running Silas with Gemini (text + prior analysis)…"
+              ? "Re-running Silas score from saved data…"
               : "Still working…"
             : i < 8
-              ? "Scraping reel & downloading video…"
+              ? "Fetching reel and video…"
               : i < 25
-                ? "Analyzing with Gemini (video + criteria)…"
+                ? "Scoring the reel…"
                 : "Still working…",
         );
 

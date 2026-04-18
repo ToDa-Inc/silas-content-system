@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronUp, Loader2, RefreshCw, Sparkles, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Loader2, Sparkles, Trash2 } from "lucide-react";
 import { ReelThumbnail } from "@/components/reel-thumbnail";
 import { useToast } from "@/components/ui/toast-provider";
 import { VideoCreateWorkspace } from "@/components/video-create-workspace";
@@ -20,25 +20,29 @@ import {
   generationListSessions,
   generationStart,
   recommendFormatForIdea,
-  type AutoVideoIdea,
   type FormatDigestSummary,
-  type FormatRecommendation,
   type GenerationSession,
 } from "@/lib/api-client";
 
 type Step = "source" | "angles" | "create";
 
-/**
- * Source picker tabs visible in UI:
- *   - auto_idea  : LLM proposes one concrete idea + format
- *   - format_pick: pick a content style we already see in the niche
- *   - idea_match : describe an idea, we pick the best style
- *   - script_adapt: paste an English talking-head script to adapt
- *
- * `url_adapt` is intentionally NOT listed in the visible tabs (Intelligence
- * still routes here via `?mode=url_adapt&url=...` for "Recreate from reel").
- */
-type SourceMode = "auto_idea" | "format_pick" | "idea_match" | "url_adapt" | "script_adapt";
+/** Top-level user intent: write something new vs. adapt an existing reel. Persisted in localStorage. */
+type Mode = "idea" | "recreate";
+
+const MODE_STORAGE_KEY = "silas:generate:mode";
+
+/** Video format preset for idea / empty-composer flows (`auto` = pick from niche data or AI). */
+type FormatPreset = "auto" | "text_overlay" | "talking_head" | "carousel";
+
+function isLikelyInstagramReelUrl(s: string): boolean {
+  const t = s.trim().toLowerCase();
+  return (
+    t.includes("instagram.com/reel") ||
+    t.includes("instagram.com/reels/") ||
+    t.includes("instagram.com/p/") ||
+    t.includes("instagram.com/tv/")
+  );
+}
 
 /** Formats we want users to choose from in the unified flow. */
 const ALLOWED_VIDEO_FORMATS = new Set(["text_overlay", "talking_head", "carousel"]);
@@ -445,32 +449,224 @@ function ScriptAdaptReferenceCard({
   );
 }
 
+/**
+ * One row in the Recent sessions panel. Adapts to the session's actual state instead
+ * of pretending every session looks the same:
+ *   - **Done** (`render_status === "done"` and `thumbnail_url` exists) → visual card:
+ *     9:16 cover thumbnail + caption snippet so the user can see what they made.
+ *   - **In progress** (anything else) → compact text row, same as before. We don't
+ *     fake a thumbnail when there isn't one — that would be theater.
+ *
+ * The card is the catalogue entry users browse to find / reopen / show off finished
+ * posts. The same data we already fetch from `generationListSessions` (no backend work).
+ */
+function SessionCard({
+  session,
+  loading,
+  onOpen,
+  onDelete,
+}: {
+  session: GenerationSession;
+  loading: boolean;
+  onOpen: () => void;
+  onDelete: () => void;
+}) {
+  const isDone = session.render_status === "done" && Boolean(session.thumbnail_url);
+  const formatKey = canonicalFormatKey(session.source_format_key);
+  const captionSnippet = (session.caption_body ?? "").trim().replace(/\s+/g, " ");
+
+  return (
+    <li className="flex flex-col gap-1">
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={onOpen}
+          className="glass min-w-0 flex-1 rounded-xl border border-app-divider text-left transition-colors hover:bg-white/5"
+        >
+          {isDone ? (
+            <div className="flex items-stretch gap-3 p-2.5">
+              {/* 9:16 cover thumbnail — the actual reel cover, at the actual aspect ratio. */}
+              <div className="shrink-0 overflow-hidden rounded-lg border border-app-divider bg-black/20">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={session.thumbnail_url ?? ""}
+                  alt=""
+                  className="block aspect-[9/16] w-[72px] object-cover md:w-[80px]"
+                />
+              </div>
+              <div className="flex min-w-0 flex-1 flex-col justify-between py-0.5">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold text-app-fg">
+                    {sessionAngleSummary(session)}
+                  </p>
+                  {captionSnippet ? (
+                    <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-app-fg-muted">
+                      {captionSnippet}
+                    </p>
+                  ) : null}
+                </div>
+                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                  <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-400">
+                    Done
+                  </span>
+                  {formatKey ? (
+                    <span className="rounded-full bg-violet-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase text-violet-300">
+                      {formatKeyLabel(formatKey)}
+                    </span>
+                  ) : null}
+                  <span className="text-[10px] tabular-nums text-app-fg-subtle">
+                    {formatSessionDate(session.created_at)}
+                  </span>
+                </div>
+              </div>
+            </div>
+          ) : (
+            // Compact / in-progress row — same density as today, nothing to preview yet.
+            <div className="px-4 py-3 md:py-3.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs tabular-nums text-app-fg-muted">
+                  {formatSessionDate(session.created_at)}
+                </span>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${statusBadgeClass(session.status)}`}
+                >
+                  {session.status.replace("_", " ")}
+                </span>
+                <span className="rounded-full bg-app-chip-bg px-2 py-0.5 text-[10px] font-semibold uppercase text-app-fg-subtle">
+                  {sourceTypeLabel(session.source_type)}
+                </span>
+                {formatKey ? (
+                  <span className="rounded-full bg-violet-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase text-violet-300">
+                    {formatKeyLabel(formatKey)}
+                  </span>
+                ) : null}
+              </div>
+              <p className="mt-1.5 truncate text-sm font-medium text-app-fg md:text-base">
+                {sessionAngleSummary(session)}
+              </p>
+            </div>
+          )}
+        </button>
+        <button
+          type="button"
+          title="Delete session"
+          disabled={loading}
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          className="shrink-0 self-stretch rounded-xl border border-red-500/30 px-3.5 text-red-400 transition-colors hover:bg-red-500/10 disabled:opacity-40"
+        >
+          <Trash2 className="mx-auto h-4 w-4 md:h-5 md:w-5" />
+        </button>
+      </div>
+      {/* Surface the "video pipeline ready" hint only on in-progress rows; on done rows
+          the Done pill already says it. */}
+      {!isDone && sessionHasPackage(session) ? (
+        <span className="self-end pr-12 text-[11px] font-semibold text-emerald-500 md:pr-14 dark:text-emerald-400">
+          Video pipeline ready →
+        </span>
+      ) : null}
+    </li>
+  );
+}
+
+/**
+ * The green "Blueprint" pill on angle 1 of url_adapt sessions, with a focus/hover
+ * popover that names what the LLM preserves vs swaps. Mirrors the prompt contract in
+ * `backend/services/content_generation.py::run_angle_generation` (FAITHFUL BLUEPRINT branch)
+ * so the UI promise matches what the model is actually instructed to do.
+ */
+function BlueprintBadge() {
+  return (
+    <span className="group relative inline-flex items-center gap-1">
+      <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-300">
+        Blueprint
+      </span>
+      <button
+        type="button"
+        aria-label="What's preserved and swapped in the Blueprint angle"
+        className="rounded-full text-[11px] leading-none text-emerald-400/80 transition-colors hover:text-emerald-300 focus:outline-none focus-visible:ring-1 focus-visible:ring-emerald-400/60"
+      >
+        ⓘ
+      </button>
+      <span
+        role="tooltip"
+        className="pointer-events-none invisible absolute left-0 top-full z-30 mt-1.5 w-72 rounded-xl border border-app-divider bg-zinc-900/95 p-3 text-left text-[11px] leading-relaxed text-zinc-100 opacity-0 shadow-xl backdrop-blur transition-opacity duration-100 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
+      >
+        <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-emerald-400">
+          What &ldquo;Blueprint&rdquo; means
+        </p>
+        <p className="mb-2.5 text-zinc-300">
+          This angle keeps the source reel&apos;s structure — and rewrites everything else in your
+          client&apos;s voice.
+        </p>
+        <div className="grid grid-cols-2 gap-x-3">
+          <div>
+            <p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-300/80">
+              Preserved
+            </p>
+            <ul className="space-y-0.5 text-zinc-300">
+              <li>Format &amp; beats</li>
+              <li>Hook mechanism</li>
+              <li>Topic arc</li>
+              <li>Payoff / CTA</li>
+            </ul>
+          </div>
+          <div>
+            <p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300/80">
+              Swapped
+            </p>
+            <ul className="space-y-0.5 text-zinc-300">
+              <li>Language</li>
+              <li>Names &amp; setting</li>
+              <li>Concrete examples</li>
+              <li>Voice (Client DNA)</li>
+            </ul>
+          </div>
+        </div>
+      </span>
+    </span>
+  );
+}
+
 export default function GeneratePage() {
   const { show } = useToast();
   const router = useRouter();
   const searchParams = useSearchParams();
   const sessionIdFromUrl = searchParams.get("session");
-  const modeFromUrl = searchParams.get("mode") as SourceMode | null;
   const urlFromUrl = searchParams.get("url");
   const [step, setStep] = useState<Step>("source");
-  const [sourceMode, setSourceMode] = useState<SourceMode>(
-    modeFromUrl === "url_adapt" ||
-      modeFromUrl === "idea_match" ||
-      modeFromUrl === "script_adapt" ||
-      modeFromUrl === "auto_idea"
-      ? modeFromUrl
-      : "auto_idea",
+  /**
+   * Suppresses the source/angles/create UI on the very first render when the page
+   * was opened via `/generate?session=…` (e.g. from /media or the Recent sessions
+   * panel). Without this we render the composer for one frame before the session
+   * fetch resolves, which reads as a broken navigation. Cleared as soon as the
+   * loading effect either succeeds or fails.
+   */
+  const [loadingFromUrl, setLoadingFromUrl] = useState<boolean>(() =>
+    Boolean(sessionIdFromUrl?.trim()),
   );
+  /**
+   * Initial mode = stored preference, but a `?url=…` deep-link forces Recreate.
+   * (`?session=…` skips the source step entirely so it doesn't matter there.)
+   */
+  const [mode, setMode] = useState<Mode>(() => {
+    if (urlFromUrl?.trim()) return "recreate";
+    if (typeof window === "undefined") return "idea";
+    try {
+      const stored = window.localStorage.getItem(MODE_STORAGE_KEY);
+      if (stored === "idea" || stored === "recreate") return stored;
+    } catch {
+      // ignore (private mode, etc.)
+    }
+    return "idea";
+  });
+  const [composerInput, setComposerInput] = useState(urlFromUrl?.trim() ?? "");
+  const [formatPreset, setFormatPreset] = useState<FormatPreset>("auto");
   const [extraInstruction, setExtraInstruction] = useState("");
+  const [focusNoteOpen, setFocusNoteOpen] = useState(false);
   const [formatDigests, setFormatDigests] = useState<FormatDigestSummary[]>([]);
-  const [selectedFormatKey, setSelectedFormatKey] = useState<string | null>(null);
-  const [ideaText, setIdeaText] = useState("");
-  const [formatRecommendations, setFormatRecommendations] = useState<FormatRecommendation[]>([]);
-  const [autoIdea, setAutoIdea] = useState<AutoVideoIdea | null>(null);
-  const [autoIdeaBusy, setAutoIdeaBusy] = useState(false);
-  const [autoIdeaFormat, setAutoIdeaFormat] = useState<string | null>(null);
-  const [adaptUrl, setAdaptUrl] = useState(urlFromUrl?.trim() ?? "");
-  const [scriptAdaptText, setScriptAdaptText] = useState("");
   const [adaptPreviewRows, setAdaptPreviewRows] = useState<ScrapedReelRow[]>([]);
   const [adaptPreviewLoading, setAdaptPreviewLoading] = useState(false);
   const [adaptPreviewError, setAdaptPreviewError] = useState<string | null>(null);
@@ -479,7 +675,6 @@ export default function GeneratePage() {
   const [loading, setLoading] = useState(false);
   /** Index of angle being submitted (content generation); other angle cards stay visible but dimmed. */
   const [choosingAngleIndex, setChoosingAngleIndex] = useState<number | null>(null);
-  const [loadingList, setLoadingList] = useState(false);
   const [patternsOpen, setPatternsOpen] = useState(false);
   const [clientSlug, setClientSlug] = useState("");
   const [orgSlug, setOrgSlug] = useState("");
@@ -497,51 +692,39 @@ export default function GeneratePage() {
     return ctx;
   }, []);
 
-  const loadFormatDigests = useCallback(
-    async (refresh: boolean) => {
-      if (!clientSlug || !orgSlug) return;
-      setLoadingList(true);
-      try {
-        const res = await fetchFormatDigests(clientSlug, orgSlug, refresh);
-        if (res.ok) {
-          setFormatDigests(res.data);
-          if (refresh) show("Styles list updated.", "success");
-        } else {
-          show(res.error, "error");
-          if (!refresh) setFormatDigests([]);
-        }
-      } finally {
-        setLoadingList(false);
+  /** Persist mode + clear composer so a stale URL doesn't leak into idea mode (or vice versa). */
+  const onChangeMode = useCallback((next: Mode) => {
+    setMode(next);
+    setComposerInput("");
+    try {
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(MODE_STORAGE_KEY, next);
       }
-    },
-    [clientSlug, orgSlug, show],
-  );
+    } catch {
+      // ignore
+    }
+  }, []);
 
   useEffect(() => {
     void (async () => {
       const ctx = await refreshContext();
       if (!ctx.clientSlug || !ctx.orgSlug) return;
-      setLoadingList(true);
-      try {
-        const [listRes, digRes] = await Promise.all([
-          generationListSessions(ctx.clientSlug, ctx.orgSlug, 15),
-          fetchFormatDigests(ctx.clientSlug, ctx.orgSlug, false),
-        ]);
-        if (listRes.ok) setSessions(listRes.data);
-        if (digRes.ok) {
-          setFormatDigests(digRes.data);
-        } else {
-          show(digRes.error, "error");
-        }
-      } finally {
-        setLoadingList(false);
+      const [listRes, digRes] = await Promise.all([
+        generationListSessions(ctx.clientSlug, ctx.orgSlug, 15),
+        fetchFormatDigests(ctx.clientSlug, ctx.orgSlug, false),
+      ]);
+      if (listRes.ok) setSessions(listRes.data);
+      if (digRes.ok) {
+        setFormatDigests(digRes.data);
+      } else {
+        show(digRes.error, "error");
       }
     })();
-  }, [refreshContext]);
+  }, [refreshContext, show]);
 
-  /** Top competitor reels by comments÷views — URL adapt quick picks. */
+  /** Top competitor reels by comments÷views — quick-pick URLs into the composer. */
   useEffect(() => {
-    if (!clientSlug || !orgSlug || sourceMode !== "url_adapt") return;
+    if (!clientSlug || !orgSlug || step !== "source") return;
     let cancelled = false;
     setAdaptPreviewLoading(true);
     setAdaptPreviewError(null);
@@ -557,18 +740,26 @@ export default function GeneratePage() {
     return () => {
       cancelled = true;
     };
-  }, [clientSlug, orgSlug, sourceMode]);
+  }, [clientSlug, orgSlug, step]);
 
-  /** Open session from Intelligence “Recreate” flow (`/generate?session=…`). */
+  /** Open session from Intelligence "Recreate" flow, /media cards, or the Recent
+   *  sessions panel (`/generate?session=…`). While this effect is in flight we
+   *  hide the composer/angles UI behind a `loadingFromUrl` gate so the user
+   *  doesn't see a flash of the wrong step. */
   useEffect(() => {
     const raw = sessionIdFromUrl?.trim();
-    if (!raw || !clientSlug.trim() || !orgSlug.trim()) return;
+    if (!raw) return;
+    if (!clientSlug.trim() || !orgSlug.trim()) {
+      // Wait for client/org bootstrap to finish — keep the loading gate up.
+      return;
+    }
     let cancelled = false;
     void (async () => {
       const res = await generationGetSession(clientSlug, orgSlug, raw);
       if (cancelled) return;
       router.replace("/generate", { scroll: false });
       if (!res.ok) {
+        setLoadingFromUrl(false);
         show(res.error, "error");
         return;
       }
@@ -579,6 +770,7 @@ export default function GeneratePage() {
         setStep("angles");
       }
       await refreshSessions();
+      setLoadingFromUrl(false);
       show("Session loaded.", "success");
     })();
     return () => {
@@ -610,58 +802,17 @@ export default function GeneratePage() {
     [clientSlug, orgSlug, refreshSessions, session?.id, show],
   );
 
-  const onSuggestFormats = useCallback(async () => {
-    const ctx = await refreshContext();
-    if (!ctx.clientSlug || !ctx.orgSlug) {
-      show("No workspace client — finish onboarding.", "error");
-      return;
-    }
-    const idea = ideaText.trim();
-    if (idea.length < 3) {
-      show("Describe your idea in a few words (at least 3 characters).", "error");
-      return;
-    }
-    setLoadingList(true);
-    try {
-      const res = await recommendFormatForIdea(ctx.clientSlug, ctx.orgSlug, idea);
-      if (!res.ok) {
-        show(res.error, "error");
-        setFormatRecommendations([]);
-        return;
+  /** Niche reel count per video format — annotates the format pills with social proof. */
+  const nicheReelCountByFormat = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const d of formatDigests) {
+      const canon = canonicalFormatKey(d.format_key);
+      if (ALLOWED_VIDEO_FORMATS.has(canon)) {
+        m.set(canon, d.reel_count ?? 0);
       }
-      setFormatRecommendations(res.data);
-      if (res.data.length === 0) show("No recommendations returned — try refreshing digests.", "error");
-    } finally {
-      setLoadingList(false);
     }
-  }, [ideaText, refreshContext, show]);
-
-  /** Format digests visible in the source picker — only the three video formats we support. */
-  const visibleFormatDigests = useMemo(
-    () => formatDigests.filter((d) => ALLOWED_VIDEO_FORMATS.has(canonicalFormatKey(d.format_key))),
-    [formatDigests],
-  );
-
-  const onGenerateAutoIdea = useCallback(async () => {
-    const ctx = await refreshContext();
-    if (!ctx.clientSlug || !ctx.orgSlug) {
-      show("No workspace client — finish onboarding.", "error");
-      return;
-    }
-    setAutoIdeaBusy(true);
-    try {
-      const res = await generateAutoVideoIdea(ctx.clientSlug, ctx.orgSlug);
-      if (!res.ok) {
-        show(res.error, "error");
-        return;
-      }
-      setAutoIdea(res.data);
-      const suggested = canonicalFormatKey(res.data.suggested_format_key);
-      setAutoIdeaFormat(ALLOWED_VIDEO_FORMATS.has(suggested) ? suggested : "text_overlay");
-    } finally {
-      setAutoIdeaBusy(false);
-    }
-  }, [refreshContext, show]);
+    return m;
+  }, [formatDigests]);
 
   const onStart = useCallback(async () => {
     const ctx = await refreshContext();
@@ -669,83 +820,71 @@ export default function GeneratePage() {
       show("No workspace client — finish onboarding.", "error");
       return;
     }
-    if (sourceMode === "format_pick") {
-      if (!selectedFormatKey) {
-        show("Select a format.", "error");
-        return;
-      }
-    }
-    if (sourceMode === "idea_match") {
-      if (!ideaText.trim()) {
-        show("Enter what you want to communicate in the video.", "error");
-        return;
-      }
-      if (!selectedFormatKey) {
-        show("Pick a suggested format or select one from the list.", "error");
-        return;
-      }
-    }
-    if (sourceMode === "auto_idea") {
-      if (!autoIdea?.idea?.trim()) {
-        show("Generate an idea first.", "error");
-        return;
-      }
-      if (!autoIdeaFormat) {
-        show("Pick a format for this idea.", "error");
-        return;
-      }
-    }
-    if (sourceMode === "url_adapt") {
-      const u = adaptUrl.trim();
-      if (!u || !u.includes("instagram.com")) {
-        show("Paste a valid Instagram reel URL.", "error");
-        return;
-      }
-    }
-    if (sourceMode === "script_adapt") {
-      if (scriptAdaptText.trim().length < 40) {
-        show("Paste the English script — at least a few sentences (40+ characters).", "error");
-        return;
-      }
-    }
+    const raw = composerInput.trim();
+    const extra = extraInstruction.trim() || undefined;
     setLoading(true);
     try {
       let body: Parameters<typeof generationStart>[2];
-      if (sourceMode === "format_pick") {
-        body = {
-          source_type: "format_pick",
-          format_key: selectedFormatKey!,
-          extra_instruction: extraInstruction.trim() || undefined,
-        };
-      } else if (sourceMode === "idea_match") {
-        body = {
-          source_type: "idea_match",
-          format_key: selectedFormatKey!,
-          idea_text: ideaText.trim(),
-          extra_instruction: extraInstruction.trim() || undefined,
-        };
-      } else if (sourceMode === "auto_idea") {
-        // auto_idea is shaped like idea_match for the backend; the AI-generated
-        // idea text is the seed and the user keeps/overrides the suggested format.
-        body = {
-          source_type: "idea_match",
-          format_key: autoIdeaFormat!,
-          idea_text: autoIdea!.idea.trim(),
-          extra_instruction: extraInstruction.trim() || undefined,
-        };
-      } else if (sourceMode === "script_adapt") {
-        body = {
-          source_type: "script_adapt",
-          source_script: scriptAdaptText.trim(),
-          extra_instruction: extraInstruction.trim() || undefined,
-        };
-      } else {
+
+      if (mode === "recreate") {
+        if (!raw) {
+          show("Paste a reel URL or pick one from the quick picks below.", "error");
+          return;
+        }
+        if (!isLikelyInstagramReelUrl(raw)) {
+          show("That doesn't look like an Instagram reel URL.", "error");
+          return;
+        }
         body = {
           source_type: "url_adapt",
-          url: adaptUrl.trim(),
-          extra_instruction: extraInstruction.trim() || undefined,
+          url: raw,
+          extra_instruction: extra,
+        };
+      } else if (raw.length > 0) {
+        // Idea mode + text → idea_match (auto resolves format from niche data).
+        let fk: string;
+        if (formatPreset === "auto") {
+          const recRes = await recommendFormatForIdea(ctx.clientSlug, ctx.orgSlug, raw);
+          if (!recRes.ok) {
+            show(recRes.error, "error");
+            return;
+          }
+          const first = recRes.data[0]?.format_key;
+          const canon = first ? canonicalFormatKey(String(first)) : "";
+          fk = ALLOWED_VIDEO_FORMATS.has(canon) ? canon : "text_overlay";
+        } else {
+          fk = formatPreset;
+        }
+        body = {
+          source_type: "idea_match",
+          format_key: fk,
+          idea_text: raw,
+          extra_instruction: extra,
+        };
+      } else if (formatPreset !== "auto") {
+        // Idea mode + empty box + explicit format → format_pick (style only).
+        body = {
+          source_type: "format_pick",
+          format_key: formatPreset,
+          extra_instruction: extra,
+        };
+      } else {
+        // Idea mode + empty + auto → AI proposes both an idea and the format.
+        const ideaRes = await generateAutoVideoIdea(ctx.clientSlug, ctx.orgSlug);
+        if (!ideaRes.ok) {
+          show(ideaRes.error, "error");
+          return;
+        }
+        let fk = canonicalFormatKey(ideaRes.data.suggested_format_key);
+        if (!ALLOWED_VIDEO_FORMATS.has(fk)) fk = "text_overlay";
+        body = {
+          source_type: "idea_match",
+          format_key: fk,
+          idea_text: ideaRes.data.idea.trim(),
+          extra_instruction: extra,
         };
       }
+
       const res = await generationStart(ctx.clientSlug, ctx.orgSlug, body);
       if (!res.ok) {
         show(res.error, "error");
@@ -760,16 +899,12 @@ export default function GeneratePage() {
       setLoading(false);
     }
   }, [
-    adaptUrl,
-    autoIdea,
-    autoIdeaFormat,
-    scriptAdaptText,
+    composerInput,
     extraInstruction,
-    ideaText,
+    formatPreset,
+    mode,
     refreshContext,
-    selectedFormatKey,
     show,
-    sourceMode,
   ]);
 
   const onChooseAngle = useCallback(
@@ -850,9 +985,8 @@ export default function GeneratePage() {
         </span>
         <h1 className="mb-2 max-w-2xl text-lg font-semibold text-app-fg">Outlier-driven copy</h1>
         <p className="max-w-2xl text-xs leading-relaxed text-app-fg-muted">
-          Format intelligence from mature competitor reels → five angles → hooks, script, caption, and story
-          lines in your client&apos;s voice (client DNA). Digests use reels posted 7+ days ago for reliable
-          performance signals.
+          Start from an idea or recreate a winning reel — we&apos;ll propose five angles in your client&apos;s
+          voice (Client DNA), then hooks, script, and caption.
         </p>
       </header>
 
@@ -862,342 +996,160 @@ export default function GeneratePage() {
         </p>
       )}
 
-      {step === "source" && (
+      {/* Loading gate: when the page was opened with `?session=…` (deep-link from
+          /media, Recent sessions, Intelligence Recreate), show a quiet loading state
+          instead of the composer until the session fetch resolves. Prevents the
+          one-frame flash of the wrong step that read as a broken navigation. */}
+      {loadingFromUrl && (
+        <div className="glass flex flex-col items-center justify-center gap-3 rounded-2xl border border-app-divider/80 px-6 py-16 text-center">
+          <Loader2 className="h-6 w-6 animate-spin text-app-fg-muted" aria-hidden />
+          <p className="text-sm font-medium text-app-fg">Loading session…</p>
+          <p className="text-xs text-app-fg-subtle">Pulling angles, script, and render status.</p>
+        </div>
+      )}
+
+      {!loadingFromUrl && step === "source" && (
         <div className="flex flex-col gap-8 lg:gap-10">
           <section className="glass w-full rounded-2xl border border-app-divider/80 p-6 shadow-sm md:p-8 lg:p-10">
-            <div className="mx-auto max-w-5xl space-y-8">
-
-              {/* ── Mode tabs ── */}
-              <div>
-                <h2 className="mb-1 text-sm font-semibold uppercase tracking-wider text-app-fg-subtle">
-                  How do you want to start?
-                </h2>
-                <p className="mb-4 max-w-2xl text-sm text-app-fg-muted">
-                  Choose one starting point below. Each path produces five angles in your client&apos;s voice.
-                </p>
-                <div className="flex flex-wrap gap-2">
+            <div className="mx-auto max-w-3xl space-y-7">
+              {/* Mode switch — two real intents, no overlap */}
+              <div className="flex justify-center">
+                <div
+                  role="tablist"
+                  aria-label="What are you doing?"
+                  className="inline-flex rounded-xl border border-app-divider bg-app-chip-bg/40 p-1"
+                >
                   {(
                     [
-                      {
-                        mode: "auto_idea" as SourceMode,
-                        label: "Generate video idea",
-                        sub: "AI proposes a concrete topic + format using your client context and competitors",
-                      },
-                      {
-                        mode: "format_pick" as SourceMode,
-                        label: "Pick a content style",
-                        sub: "Choose a style we've already seen work in your niche",
-                      },
-                      {
-                        mode: "idea_match" as SourceMode,
-                        label: "Start from an idea",
-                        sub: "Describe what you want to say; we find the best style for it",
-                      },
-                      {
-                        mode: "script_adapt" as SourceMode,
-                        label: "Adapt an English script",
-                        sub: "Paste a talking-head script; we extract structure and write in your client language",
-                      },
-                    ] as { mode: SourceMode; label: string; sub: string }[]
-                  ).map(({ mode, label, sub }) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      onClick={() => setSourceMode(mode)}
-                      className={`flex-1 min-w-[200px] rounded-xl border p-3 text-left transition-colors ${
-                        sourceMode === mode
-                          ? "border-amber-500/50 bg-amber-500/10"
-                          : "border-app-divider bg-app-chip-bg/40 hover:bg-app-chip-bg/70"
-                      }`}
-                    >
-                      <span className="block text-sm font-semibold text-app-fg">{label}</span>
-                      <span className="mt-0.5 block text-xs leading-relaxed text-app-fg-muted">{sub}</span>
-                    </button>
-                  ))}
+                      { key: "idea" as const, label: "Start from an idea" },
+                      { key: "recreate" as const, label: "Recreate a reel" },
+                    ] as const
+                  ).map(({ key, label }) => {
+                    const active = mode === key;
+                    return (
+                      <button
+                        key={key}
+                        role="tab"
+                        type="button"
+                        aria-selected={active}
+                        onClick={() => onChangeMode(key)}
+                        className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition-colors ${
+                          active
+                            ? "bg-amber-500/15 text-app-fg"
+                            : "text-app-fg-muted hover:text-app-fg"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
-              {/* ── Auto idea (LLM-proposed video idea) ── */}
-              {sourceMode === "auto_idea" ? (
-                <div className="space-y-4">
+              {mode === "idea" ? (
+                <>
                   <div>
-                    <h3 className="text-sm font-semibold text-app-fg">AI-proposed video idea</h3>
-                    <p className="mt-0.5 text-xs text-app-fg-muted">
-                      We&apos;ll pull your client context (DNA, ICP, products) and recent competitor signals,
-                      then draft one specific video idea plus a recommended format. You can change the format or
-                      re-roll the idea before generating angles.
-                    </p>
+                    <label htmlFor="gen-idea" className="mb-2 block text-sm font-semibold text-app-fg">
+                      What&apos;s the idea?
+                    </label>
+                    <textarea
+                      id="gen-idea"
+                      rows={5}
+                      value={composerInput}
+                      onChange={(e) => setComposerInput(e.target.value)}
+                      placeholder={
+                        'e.g. "Your boss says \'I need this by EOD\' at 4pm — what do you do?"\nLeave empty and we\'ll propose one from your niche context.'
+                      }
+                      className="glass-inset min-h-[6rem] w-full resize-y rounded-xl p-3 text-sm leading-relaxed text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+                    />
                   </div>
 
-                  {!autoIdea ? (
-                    <button
-                      type="button"
-                      disabled={autoIdeaBusy || !clientSlug}
-                      onClick={() => void onGenerateAutoIdea()}
-                      className="inline-flex items-center gap-2 rounded-xl bg-amber-500/15 px-4 py-2 text-sm font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-50"
-                    >
-                      {autoIdeaBusy ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
-                      {autoIdeaBusy ? "Thinking…" : "Generate video idea"}
-                    </button>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="rounded-xl border border-amber-500/25 bg-amber-500/[0.07] p-4">
-                        <p className="text-[10px] font-bold uppercase tracking-wider text-app-fg-subtle">
-                          Suggested idea
-                        </p>
-                        <p className="mt-1.5 text-sm leading-relaxed text-app-fg">{autoIdea.idea}</p>
-                        {autoIdea.reasoning ? (
-                          <p className="mt-2 text-[11px] leading-relaxed text-app-fg-muted">
-                            <span className="font-semibold text-app-fg-secondary">Why: </span>
-                            {autoIdea.reasoning}
-                          </p>
-                        ) : null}
-                      </div>
-
-                      <div>
-                        <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-app-fg-subtle">
-                          Format for this idea
-                        </p>
-                        <div className="flex flex-wrap gap-2">
-                          {(["text_overlay", "talking_head", "carousel"] as const).map((fk) => {
-                            const active = autoIdeaFormat === fk;
-                            const isSuggested = canonicalFormatKey(autoIdea.suggested_format_key) === fk;
-                            return (
-                              <button
-                                key={fk}
-                                type="button"
-                                onClick={() => setAutoIdeaFormat(fk)}
-                                className={`rounded-xl border px-3 py-2 text-left transition-colors ${
-                                  active
-                                    ? "border-amber-500/50 bg-amber-500/10"
-                                    : "border-app-divider bg-app-chip-bg/40 hover:bg-app-chip-bg/70"
-                                }`}
+                  <div>
+                    <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-app-fg-subtle">
+                      Format
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {(
+                        [
+                          { key: "auto" as const, label: "Auto", showCount: false },
+                          { key: "text_overlay" as const, label: "Text overlay", showCount: true },
+                          { key: "talking_head" as const, label: "Talking head", showCount: true },
+                          { key: "carousel" as const, label: "Carousel", showCount: true },
+                        ] as const
+                      ).map(({ key, label, showCount }) => {
+                        const active = formatPreset === key;
+                        const count = showCount ? nicheReelCountByFormat.get(key) ?? 0 : 0;
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() => setFormatPreset(key)}
+                            className={`rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${
+                              active
+                                ? "border-amber-500/50 bg-amber-500/10 text-app-fg"
+                                : "border-app-divider bg-app-chip-bg/40 text-app-fg-muted hover:bg-app-chip-bg/70"
+                            }`}
+                          >
+                            {label}
+                            {showCount && count > 0 ? (
+                              <span
+                                className="ml-1.5 font-normal text-app-fg-subtle"
+                                title="Analyzed competitor reels in this style"
                               >
-                                <span className="block text-sm font-semibold capitalize text-app-fg">
-                                  {formatKeyLabel(fk)}
-                                </span>
-                                {isSuggested ? (
-                                  <span className="mt-0.5 block text-[10px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
-                                    AI suggestion
-                                  </span>
-                                ) : null}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          disabled={autoIdeaBusy}
-                          onClick={() => void onGenerateAutoIdea()}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-app-divider px-3 py-2 text-xs font-semibold text-app-fg hover:bg-white/5 disabled:opacity-50"
-                        >
-                          {autoIdeaBusy ? (
-                            <Loader2 className="size-3.5 animate-spin" />
-                          ) : (
-                            <RefreshCw className="size-3.5" />
-                          )}
-                          {autoIdeaBusy ? "Re-rolling…" : "Generate another idea"}
-                        </button>
-                        <span className="text-[11px] text-app-fg-muted">
-                          Don&apos;t love it? Re-roll for a fresh angle.
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : null}
-
-              {/* ── Content styles (format_pick) ── */}
-              {sourceMode === "format_pick" ? (
-                <div>
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <h3 className="text-sm font-semibold text-app-fg">
-                        Content styles from your niche
-                      </h3>
-                      <p className="mt-0.5 text-xs text-app-fg-muted">
-                        These are the video styles we found in your competitors&apos; analyzed reels. Pick one to
-                        generate angles in that style.{" "}
-                        <span className="text-app-fg-subtle">
-                          Numbers = how many reels we analyzed · avg comments/views · typical length.
-                        </span>
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={loadingList || !clientSlug}
-                      onClick={() => void loadFormatDigests(true)}
-                      title="Recompute style summaries from your latest scraped reels. Run this after syncing new competitors in Intelligence."
-                      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-app-divider px-3 py-1.5 text-xs font-semibold text-app-fg hover:bg-white/5 disabled:opacity-50"
-                    >
-                      <RefreshCw className={`size-3.5 ${loadingList ? "animate-spin" : ""}`} />
-                      Refresh styles
-                    </button>
-                  </div>
-
-                  {loadingList ? (
-                    <div className="flex justify-center py-10">
-                      <Loader2 className="size-6 animate-spin text-app-fg-subtle" />
-                    </div>
-                  ) : visibleFormatDigests.length === 0 ? (
-                    <div className="rounded-xl border border-app-divider bg-app-chip-bg/25 px-5 py-8 text-center">
-                      <p className="text-sm font-semibold text-app-fg">No styles yet</p>
-                      <p className="mt-1 max-w-sm mx-auto text-xs leading-relaxed text-app-fg-muted">
-                        Go to <strong className="text-app-fg-secondary">Intelligence → Reels</strong>, sync
-                        competitors, run Silas analysis on a few reels, then come back and hit{" "}
-                        <strong className="text-app-fg-secondary">Refresh styles</strong> above. First run takes
-                        1–3 minutes. Only{" "}
-                        <span className="font-medium text-app-fg-secondary">
-                          text overlay, talking head and carousel
-                        </span>{" "}
-                        styles are listed.
-                      </p>
-                    </div>
-                  ) : (
-                    <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                      {visibleFormatDigests.map((d) => (
-                        <li key={d.format_key}>
-                          <button
-                            type="button"
-                            onClick={() => setSelectedFormatKey(d.format_key)}
-                            className={`w-full rounded-xl border px-4 py-3 text-left transition-colors ${
-                              selectedFormatKey === d.format_key
-                                ? "border-amber-500/50 bg-amber-500/10"
-                                : "border-app-divider hover:bg-white/[0.04]"
-                            }`}
-                          >
-                            <span className="block font-semibold capitalize text-app-fg">
-                              {formatKeyLabel(d.format_key)}
-                            </span>
-                            <span className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 tabular-nums text-[11px] text-app-fg-muted">
-                              <span title="Analyzed reels in this style (all ages)">{d.reel_count ?? "—"} reels</span>
-                              {d.avg_comment_view_ratio != null ? (
-                                <span title="Avg comments ÷ views — how much conversation each view tends to generate">
-                                  {d.avg_comment_view_ratio > 0 ? ((1 / d.avg_comment_view_ratio) * 100).toFixed(2) : "0"}% C/V
-                                </span>
-                              ) : d.avg_engagement != null ? (
-                                <span title="Avg (likes+comments+saves+shares) ÷ views">
-                                  {(d.avg_engagement * 100).toFixed(2)}% eng
-                                </span>
-                              ) : null}
-                              {d.avg_duration_s != null ? (
-                                <span title="Mean video length when available">~{d.avg_duration_s}s</span>
-                              ) : null}
-                            </span>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              ) : null}
-
-              {/* ── Idea match ── */}
-              {sourceMode === "idea_match" ? (
-                <div className="space-y-4">
-                  <div>
-                    <h3 className="text-sm font-semibold text-app-fg">What do you want to say?</h3>
-                    <p className="mt-0.5 text-xs text-app-fg-muted">
-                      Describe the message or situation. We&apos;ll suggest which content style fits it best based
-                      on your niche data.
-                    </p>
-                  </div>
-                  <textarea
-                    id="gen-idea"
-                    rows={4}
-                    value={ideaText}
-                    onChange={(e) => setIdeaText(e.target.value)}
-                    placeholder={'e.g. "Your manager says \'I need this by end of day\' at 4pm — what do you do?"'}
-                    className="glass-inset min-h-[5rem] w-full resize-y rounded-xl p-3 text-sm text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
-                  />
-                  <button
-                    type="button"
-                    disabled={loadingList || !clientSlug}
-                    onClick={() => void onSuggestFormats()}
-                    className="rounded-lg border border-app-divider px-3 py-2 text-xs font-bold text-app-fg hover:bg-white/5 disabled:opacity-50"
-                  >
-                    {loadingList ? "Thinking…" : "Find best style →"}
-                  </button>
-                  {formatRecommendations.length > 0 ? (
-                    <ul className="space-y-2">
-                      {formatRecommendations.map((r, i) => (
-                        <li key={`${r.format_key ?? i}-${i}`}>
-                          <button
-                            type="button"
-                            onClick={() => r.format_key && setSelectedFormatKey(r.format_key)}
-                            className={`w-full rounded-lg border px-3 py-2 text-left text-xs ${
-                              r.format_key && selectedFormatKey === r.format_key
-                                ? "border-amber-500/40 bg-amber-500/10"
-                                : "border-app-divider hover:bg-white/[0.04]"
-                            }`}
-                          >
-                            <span className="font-semibold capitalize">
-                              {r.format_key ? formatKeyLabel(r.format_key) : "—"}
-                            </span>
-                            {r.score != null ? (
-                              <span className="ml-2 tabular-nums text-app-fg-muted">{r.score}/100</span>
+                                · {count} in your niche
+                              </span>
                             ) : null}
-                            <p className="mt-1 text-app-fg-muted">{str(r.reasoning)}</p>
                           </button>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : null}
-                  {visibleFormatDigests.length > 0 ? (
-                    <div>
-                      <p className="mb-2 text-[10px] font-semibold uppercase text-app-fg-subtle">
-                        Or pick a style manually
-                      </p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {visibleFormatDigests.map((d) => (
-                          <button
-                            key={d.format_key}
-                            type="button"
-                            onClick={() => setSelectedFormatKey(d.format_key)}
-                            className={`rounded-full px-2.5 py-1 text-xs font-medium ${
-                              selectedFormatKey === d.format_key
-                                ? "bg-amber-500/25 text-app-fg ring-1 ring-amber-500/40"
-                                : "bg-app-chip-bg text-app-fg-muted hover:bg-white/5"
-                            }`}
-                          >
-                            {formatKeyLabel(d.format_key)}
-                          </button>
-                        ))}
-                      </div>
+                        );
+                      })}
                     </div>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {/* ── URL adapt ── */}
-              {sourceMode === "url_adapt" ? (
-                <div className="space-y-4">
-                  <div>
-                    <h3 className="text-sm font-semibold text-app-fg">Competitor reel URL</h3>
-                    <p className="mt-0.5 text-xs text-app-fg-muted">
-                      We&apos;ll fetch the reel, analyse its structure, and rewrite it in your client&apos;s voice
-                      and niche. Takes a bit longer than the other modes.
+                    <p className="mt-2 text-[11px] leading-relaxed text-app-fg-muted">
+                      Auto picks the best fit from your niche data when you have text — or a proven style (and
+                      a fresh idea) when the box is empty.
                     </p>
                   </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label htmlFor="gen-url" className="mb-2 block text-sm font-semibold text-app-fg">
+                      Which reel?
+                    </label>
+                    <input
+                      id="gen-url"
+                      type="text"
+                      value={composerInput}
+                      onChange={(e) => setComposerInput(e.target.value)}
+                      placeholder="https://www.instagram.com/reel/…"
+                      className="glass-inset w-full rounded-xl p-3 text-sm leading-relaxed text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+                    />
+                    {composerInput.trim() && !isLikelyInstagramReelUrl(composerInput) ? (
+                      <p className="mt-2 text-[11px] text-amber-500">
+                        That doesn&apos;t look like an Instagram reel URL.
+                      </p>
+                    ) : (
+                      <p className="mt-2 text-[11px] leading-relaxed text-app-fg-muted">
+                        We&apos;ll fetch the reel, learn what made it work, then propose a faithful{" "}
+                        <span className="font-medium text-app-fg-secondary">Blueprint</span> angle (same
+                        structure, your client&apos;s voice) plus four variants.
+                      </p>
+                    )}
+                  </div>
 
-                  <div className="rounded-xl border border-app-divider bg-app-chip-bg/25 p-3 md:p-4">
-                    <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+                  <div className="rounded-xl border border-app-divider bg-app-chip-bg/25 p-4">
+                    <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
                       <div>
-                        <p className="text-xs font-semibold text-app-fg">Suggested competitor reels</p>
+                        <p className="text-xs font-semibold text-app-fg">No URL handy? Quick picks</p>
                         <p className="mt-0.5 text-[11px] leading-relaxed text-app-fg-muted">
-                          Top five by <span className="text-app-fg-secondary">comments ÷ views</span> among
-                          synced competitor reels (not your creator&apos;s own). Tap a card to paste its URL
-                          below.
+                          Top competitor reels by{" "}
+                          <span className="text-app-fg-secondary">comments ÷ views</span> — tap to use one.
                         </p>
                       </div>
                       <Link
-                        href="/intelligence/reels"
+                        href="/intelligence/breakouts"
                         className="shrink-0 text-xs font-semibold text-amber-600 hover:underline dark:text-amber-400"
                       >
-                        View all reels →
+                        Browse breakouts →
                       </Link>
                     </div>
                     {adaptPreviewLoading ? (
@@ -1208,24 +1160,27 @@ export default function GeneratePage() {
                       <p className="text-xs text-red-400/90">{adaptPreviewError}</p>
                     ) : adaptPreviewRows.length === 0 ? (
                       <p className="text-xs text-app-fg-muted">
-                        No competitor reels with enough views yet. Sync accounts in{" "}
-                        <Link href="/intelligence/reels" className="font-semibold text-amber-600 hover:underline dark:text-amber-400">
+                        No competitor reels yet. Sync in{" "}
+                        <Link
+                          href="/intelligence/reels"
+                          className="font-semibold text-amber-600 hover:underline dark:text-amber-400"
+                        >
                           Intelligence → Reels
                         </Link>
                         .
                       </p>
                     ) : (
-                      <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-5">
-                        {adaptPreviewRows.map((row) => {
+                      <ul className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        {adaptPreviewRows.slice(0, 4).map((row) => {
                           const url = (row.post_url ?? "").trim();
-                          const selected = url && adaptUrl.trim() === url;
+                          const selected = url.length > 0 && composerInput.trim() === url;
                           return (
                             <li key={row.id}>
                               <button
                                 type="button"
                                 disabled={!url}
                                 onClick={() => {
-                                  if (url) setAdaptUrl(url);
+                                  if (url) setComposerInput(url);
                                 }}
                                 className={`flex w-full flex-col gap-1.5 rounded-xl border p-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                                   selected
@@ -1252,61 +1207,47 @@ export default function GeneratePage() {
                       </ul>
                     )}
                   </div>
+                </>
+              )}
 
-                  <div>
-                    <label htmlFor="gen-url" className="text-xs font-semibold text-app-fg-muted">
-                      Paste URL (or pick above)
+              {/* Optional focus note — collapsed by default to keep the page calm */}
+              {focusNoteOpen ? (
+                <div>
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <label htmlFor="gen-extra" className="text-sm font-semibold text-app-fg">
+                      Focus note <span className="font-normal text-app-fg-muted">(optional)</span>
                     </label>
-                    <input
-                      id="gen-url"
-                      type="url"
-                      value={adaptUrl}
-                      onChange={(e) => setAdaptUrl(e.target.value)}
-                      placeholder="https://www.instagram.com/reel/…"
-                      className="glass-inset mt-1.5 w-full rounded-xl px-3 py-2.5 font-mono text-sm text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
-                    />
-                  </div>
-                </div>
-              ) : null}
-
-              {/* ── Script adapt (English → client language) ── */}
-              {sourceMode === "script_adapt" ? (
-                <div className="space-y-4">
-                  <div>
-                    <h3 className="text-sm font-semibold text-app-fg">English talking-head script</h3>
-                    <p className="mt-0.5 text-xs text-app-fg-muted">
-                      Paste the full script (hook through CTA). We extract winning structure, then generate five
-                      fresh angles for your client — not a word-for-word translation.
-                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setExtraInstruction("");
+                        setFocusNoteOpen(false);
+                      }}
+                      className="text-[11px] font-semibold text-app-fg-muted hover:text-app-fg"
+                    >
+                      Remove
+                    </button>
                   </div>
                   <textarea
-                    id="gen-script-adapt"
-                    rows={12}
-                    value={scriptAdaptText}
-                    onChange={(e) => setScriptAdaptText(e.target.value)}
-                    placeholder="Paste English script here…"
-                    className="glass-inset min-h-[12rem] w-full resize-y rounded-xl p-3 font-mono text-sm leading-relaxed text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+                    id="gen-extra"
+                    rows={3}
+                    value={extraInstruction}
+                    onChange={(e) => setExtraInstruction(e.target.value)}
+                    placeholder={'e.g. "Lean emotional, not tactical" or "Avoid mentioning money directly"'}
+                    className="glass-inset min-h-[4.5rem] w-full resize-y rounded-xl p-3 text-sm leading-relaxed text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
                   />
                 </div>
-              ) : null}
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setFocusNoteOpen(true)}
+                  className="text-xs font-semibold text-amber-600 hover:underline dark:text-amber-400"
+                >
+                  + Add a focus note
+                </button>
+              )}
 
-              {/* ── Optional focus note (all modes) ── */}
-              <div className="space-y-2">
-                <label htmlFor="gen-extra" className="text-sm font-semibold text-app-fg">
-                  Anything specific to focus on?{" "}
-                  <span className="font-normal text-app-fg-muted">(optional)</span>
-                </label>
-                <textarea
-                  id="gen-extra"
-                  rows={3}
-                  value={extraInstruction}
-                  onChange={(e) => setExtraInstruction(e.target.value)}
-                  placeholder={'e.g. "Focus on the emotional side, not the tactical" or "Avoid mentioning money directly"'}
-                  className="glass-inset min-h-[4.5rem] w-full resize-y rounded-xl p-3 text-sm leading-relaxed text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
-                />
-              </div>
-
-              {/* ── Generate button ── */}
+              {/* Generate */}
               <div className="flex flex-col items-end gap-2">
                 <button
                   type="button"
@@ -1321,19 +1262,17 @@ export default function GeneratePage() {
                   )}
                   {loading ? "Running models…" : "Generate angles"}
                 </button>
-                {sourceMode === "url_adapt" ? (
+                {mode === "recreate" ? (
                   <p className="text-right text-xs text-app-fg-muted">
-                    URL mode fetches and analyses the reel first — expect 30–60s.
+                    Reels are fetched and analyzed first — usually 30–60s.
                   </p>
-                ) : null}
-                {sourceMode === "auto_idea" ? (
+                ) : !composerInput.trim() && formatPreset === "auto" ? (
                   <p className="text-right text-xs text-app-fg-muted">
-                    Generates angles around the AI-proposed idea in the chosen format.
+                    Empty box = we propose a fresh idea from your niche, then five angles.
                   </p>
-                ) : null}
-                {sourceMode === "script_adapt" ? (
+                ) : !composerInput.trim() ? (
                   <p className="text-right text-xs text-app-fg-muted">
-                    Script mode runs two model steps (structure → angles) — usually under a minute.
+                    Empty box + format chosen = we generate angles in that style only.
                   </p>
                 ) : null}
               </div>
@@ -1345,65 +1284,19 @@ export default function GeneratePage() {
               Recent sessions
             </h2>
             <p className="mt-2 text-xs leading-relaxed text-app-fg-muted">
-              The full record for this client: source, angles, package, and status. Pick a row to continue
-              from where you left off — approved sessions resume directly in the video pipeline.
+              In‑progress runs and finished posts for this client. Done posts show their cover and caption;
+              click any row to reopen.
             </p>
             {sessions.length > 0 ? (
               <ul className="mt-4 flex max-h-[min(50vh,28rem)] flex-col gap-2 overflow-y-auto pr-1 md:max-h-[min(45vh,26rem)]">
                 {sessions.map((s) => (
-                  <li key={s.id} className="flex flex-col gap-1">
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void loadSessionById(s.id)}
-                        className="glass min-w-0 flex-1 rounded-xl border border-app-divider px-4 py-3 text-left transition-colors hover:bg-white/5 md:px-4 md:py-3.5"
-                      >
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-xs tabular-nums text-app-fg-muted">
-                            {formatSessionDate(s.created_at)}
-                          </span>
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${statusBadgeClass(s.status)}`}
-                          >
-                            {s.status.replace("_", " ")}
-                          </span>
-                          <span className="rounded-full bg-app-chip-bg px-2 py-0.5 text-[10px] font-semibold uppercase text-app-fg-subtle">
-                            {sourceTypeLabel(s.source_type)}
-                          </span>
-                          {canonicalFormatKey(s.source_format_key) ? (
-                            <span className="rounded-full bg-violet-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase text-violet-300">
-                              {formatKeyLabel(canonicalFormatKey(s.source_format_key))}
-                            </span>
-                          ) : (
-                            <span className="rounded-full bg-zinc-500/15 px-2 py-0.5 text-[10px] text-app-fg-subtle">
-                              Format — (patterns / adapt)
-                            </span>
-                          )}
-                        </div>
-                        <p className="mt-1.5 truncate text-sm font-medium text-app-fg md:text-base">
-                          {sessionAngleSummary(s)}
-                        </p>
-                        <p className="mt-0.5 font-mono text-[11px] text-app-fg-subtle">{s.id.slice(0, 14)}…</p>
-                      </button>
-                      <button
-                        type="button"
-                        title="Delete session"
-                        disabled={loading}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void onDeleteSession(s.id);
-                        }}
-                        className="shrink-0 self-stretch rounded-xl border border-red-500/30 px-3.5 text-red-400 transition-colors hover:bg-red-500/10 disabled:opacity-40"
-                      >
-                        <Trash2 className="mx-auto h-4 w-4 md:h-5 md:w-5" />
-                      </button>
-                    </div>
-                    {sessionHasPackage(s) ? (
-                      <span className="self-end pr-12 text-[11px] font-semibold text-emerald-500 md:pr-14 dark:text-emerald-400">
-                        Video pipeline ready →
-                      </span>
-                    ) : null}
-                  </li>
+                  <SessionCard
+                    key={s.id}
+                    session={s}
+                    loading={loading}
+                    onOpen={() => void loadSessionById(s.id)}
+                    onDelete={() => void onDeleteSession(s.id)}
+                  />
                 ))}
               </ul>
             ) : (
@@ -1416,7 +1309,7 @@ export default function GeneratePage() {
         </div>
       )}
 
-      {step === "angles" && session && (
+      {!loadingFromUrl && step === "angles" && session && (
         <section className="space-y-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <button
@@ -1479,11 +1372,7 @@ export default function GeneratePage() {
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="text-sm font-semibold text-app-fg">{str(raw.title)}</p>
-                    {blueprint ? (
-                      <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-300">
-                        Blueprint
-                      </span>
-                    ) : null}
+                    {blueprint ? <BlueprintBadge /> : null}
                   </div>
                   <p className="text-xs text-app-fg-muted">{str(raw.situation)}</p>
                   <p className="text-[11px] text-app-fg-subtle">
@@ -1513,7 +1402,7 @@ export default function GeneratePage() {
       )}
 
 
-      {step === "create" && session && clientSlug && orgSlug && (
+      {!loadingFromUrl && step === "create" && session && clientSlug && orgSlug && (
         <section className="space-y-5 pb-12">
           {/* compact header: nav back + 1-line angle title + format pill + delete */}
           <div className="flex flex-wrap items-center gap-3 border-b border-app-divider/60 pb-4">

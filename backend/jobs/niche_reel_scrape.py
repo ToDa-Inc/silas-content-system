@@ -2,6 +2,17 @@
 
 Parallel to competitor discovery: does not write competitors. Rows use competitor_id NULL unless
 the same post_url already exists from a profile scrape (preserved).
+
+DEPRECATED (superseded 2026-04):
+    keyword_reel_similarity (enqueued by daily_intelligence_tick with
+    search_window=last-2-days) does topic-aware niche discovery with a
+    two-gate Gemini similarity prompt — same raw source (Sasky keyword search)
+    but adds quality gating so only genuinely relevant reels reach scraped_reels.
+
+    This handler is kept live so the existing routers/intelligence.py
+    enqueue_niche_reel_scrape endpoint continues to function during migration.
+    Remove once the UI and external callers no longer reference it
+    (Phase 7 deployment cleanup).
 """
 
 from __future__ import annotations
@@ -115,6 +126,12 @@ def _update_query_stats(
 
 
 def run_niche_reel_scrape(settings: Settings, job: Dict[str, Any]) -> None:
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "niche_reel_scrape is DEPRECATED — keyword_reel_similarity (enqueued by "
+        "daily_intelligence_tick) does the same Sasky discovery plus Gemini quality "
+        "gating. Retire enqueue sites in routers/intelligence.py."
+    )
     if not settings.apify_api_token:
         raise RuntimeError("APIFY_API_TOKEN not configured")
 

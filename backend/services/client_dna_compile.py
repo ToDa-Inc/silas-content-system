@@ -12,6 +12,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from core.config import Settings
+from services.niche_keywords_compile import (
+    generate_similarity_keywords_auto,
+    merge_similarity_keywords_into_dna,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +189,30 @@ def compile_client_dna(
     }
 
 
+def merge_client_dna_with_similarity_keywords(
+    settings: Settings,
+    client_row: Dict[str, Any],
+    dna_new: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Merge new DNA compile into existing client_dna and refresh similarity_keywords.auto."""
+    old = client_row.get("client_dna") if isinstance(client_row.get("client_dna"), dict) else {}
+    merged = {**old, **dna_new}
+    ab = (merged.get("analysis_brief") or "").strip()
+    if not ab or not settings.openrouter_api_key:
+        return merged
+    try:
+        auto = generate_similarity_keywords_auto(
+            openrouter_key=settings.openrouter_api_key,
+            model=settings.openrouter_model,
+            client_row=client_row,
+            analysis_brief=ab,
+        )
+        return merge_similarity_keywords_into_dna(merged, auto_phrases=auto)
+    except Exception:
+        logger.exception("similarity_keywords auto-gen failed; saving DNA without new auto keywords")
+        return merged
+
+
 def maybe_recompile_client_dna(
     settings: Settings,
     supabase,
@@ -228,7 +256,8 @@ def maybe_recompile_client_dna(
         logger.exception("client_dna compile failed for client %s", client_id)
         return
 
-    supabase.table("clients").update({"client_dna": dna}).eq("id", client_id).execute()
+    merged = merge_client_dna_with_similarity_keywords(settings, row, dna)
+    supabase.table("clients").update({"client_dna": merged}).eq("id", client_id).execute()
 
 
 def force_recompile_client_dna_sync(
@@ -258,5 +287,6 @@ def force_recompile_client_dna_sync(
         client_row=row,
         source_hash=new_hash,
     )
-    supabase.table("clients").update({"client_dna": dna}).eq("id", client_id).execute()
-    return dna
+    merged = merge_client_dna_with_similarity_keywords(settings, row, dna)
+    supabase.table("clients").update({"client_dna": merged}).eq("id", client_id).execute()
+    return merged

@@ -96,7 +96,7 @@ export function DiscoverInline({ clientSlug, orgSlug, suggestedKeywords, disable
 
   const title =
     disabledHint?.trim() ||
-    "Add a competitor by @handle or profile URL. Optionally scrape their reels right after (Apify).";
+    "Add a competitor by @handle or profile URL. Optionally pull their latest reels right after.";
 
   return (
     <div className="glass overflow-hidden rounded-xl border border-zinc-200/60 dark:border-white/[0.08]">

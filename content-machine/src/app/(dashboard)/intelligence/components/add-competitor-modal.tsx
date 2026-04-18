@@ -238,7 +238,7 @@ export function AddCompetitorModal({
           <span>
             <strong className="font-semibold text-zinc-900 dark:text-app-fg">Sync reels after adding</strong>
             <span className="block text-zinc-500 dark:text-app-fg-faint">
-              Pulls recent posts via Apify (~30s–2 min). Turn off to only save the account.
+              Pulls recent posts from Instagram (~30s–2 min). Turn off to only save the account.
             </span>
           </span>
         </label>

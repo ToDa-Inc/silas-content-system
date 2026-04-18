@@ -68,6 +68,20 @@ export type ReelAnalysisDetail = {
     weighted_total?: number | null;
     weighted_scores?: Record<string, number | null>;
     raw_scores?: Record<string, number | null>;
+    /**
+     * Niche-keyword-match analyses (source = "keyword_similarity") write here instead
+     * of the Silas-score fields. Different prompt, different output shape.
+     */
+    keyword_similarity?: {
+      verdict?: string | null;
+      similarity_score?: number | null;
+      matched_keywords?: string[] | null;
+      what_matches?: string | null;
+      what_differs?: string | null;
+      adaptation_angle?: string | null;
+      what_the_video_is_about?: string | null;
+      video_analyzed?: boolean | null;
+    } | null;
   } | null;
   model_used: string | null;
   prompt_version: string | null;

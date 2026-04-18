@@ -39,6 +39,15 @@ class DnaChatApplyBody(BaseModel):
     summary: Optional[str] = Field(None, max_length=4000)
 
 
+class NicheConfigPatch(BaseModel):
+    """Partial update for client_context.niche (manual keywords, blacklist, settings)."""
+
+    keywords_manual: Optional[List[Any]] = None
+    blacklist: Optional[Dict[str, Any]] = None
+    settings: Optional[Dict[str, Any]] = None
+    dismissed_short_codes: Optional[List[str]] = None
+
+
 class ClientOut(BaseModel):
     model_config = ConfigDict(extra="ignore")
 

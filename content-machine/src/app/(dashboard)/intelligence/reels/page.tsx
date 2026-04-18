@@ -1,5 +1,6 @@
 import Link from "next/link";
 import {
+  fetchBaseline,
   fetchCompetitors,
   fetchScrapedReels,
   getCachedServerApiContext,
@@ -7,15 +8,17 @@ import {
 } from "@/lib/api";
 import { IntelligenceToolbar } from "../components/intelligence-toolbar";
 import { IntelligenceReelsTable } from "./intelligence-reels-table";
+import { SourceFilterPills } from "./source-filter-pills";
 
 type PageProps = {
-  searchParams: Promise<{ outliers?: string; competitor?: string }>;
+  searchParams: Promise<{ outliers?: string; competitor?: string; source?: string }>;
 };
 
 export default async function IntelligenceReelsPage({ searchParams }: PageProps) {
   const sp = await searchParams;
   const outliersOnly = sp.outliers === "1" || sp.outliers === "true";
   const competitorId = (sp.competitor ?? "").trim();
+  const source = (sp.source ?? "").trim();
 
   const { clientSlug, orgSlug, user, tenancy } = await getCachedServerApiContext();
   const syncDisabled = !clientSlug.trim() || !orgSlug.trim();
@@ -27,8 +30,13 @@ export default async function IntelligenceReelsPage({ searchParams }: PageProps)
         : !clientSlug.trim()
           ? "Pick a creator in the header or finish onboarding."
           : null;
-  // Fetch 200 most recent reels sorted by posted_at — enough for all filters, avoids full table dump
-  const [reelsRes, compRes] = await Promise.all([fetchScrapedReels(false, true, 200, "posted_at"), fetchCompetitors()]);
+  // Fetch 500 most recent reels sorted by posted_at — enough for all filters, avoids full table dump
+  const [reelsRes, compRes, baselineRes] = await Promise.all([
+    fetchScrapedReels(false, true, 500, "posted_at", source || undefined),
+    fetchCompetitors(),
+    fetchBaseline(),
+  ]);
+  const lastSyncedAt = baselineRes.ok && baselineRes.data ? baselineRes.data.scraped_at : null;
 
   const reelsAll = reelsRes.ok ? reelsRes.data : [];
   const competitors = compRes.ok ? compRes.data : [];
@@ -45,10 +53,11 @@ export default async function IntelligenceReelsPage({ searchParams }: PageProps)
     rows = rows.filter((r) => r.competitor_id === competitorId);
   }
 
-  const buildHref = (opts: { outliers?: boolean; competitor?: string | null }) => {
+  const buildHref = (opts: { outliers?: boolean; competitor?: string | null; source?: string | null }) => {
     const p = new URLSearchParams();
     if (opts.outliers) p.set("outliers", "1");
     if (opts.competitor) p.set("competitor", opts.competitor);
+    if (opts.source) p.set("source", opts.source);
     const q = p.toString();
     return q ? `/intelligence/reels?${q}` : "/intelligence/reels";
   };
@@ -72,31 +81,37 @@ export default async function IntelligenceReelsPage({ searchParams }: PageProps)
             orgSlug={orgSlug}
             disabled={syncDisabled}
             disabledHint={syncDisabledHint}
-            showSyncLabel
+            lastSyncedAt={lastSyncedAt}
           />
         </div>
-        <div className="flex flex-wrap gap-2 text-xs">
-          <Link
-            href={buildHref({ outliers: false, competitor: competitorId || null })}
-            className={
-              !outliersOnly
-                ? "rounded-lg bg-zinc-200 px-3 py-1.5 font-semibold text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100"
-                : "rounded-lg px-3 py-1.5 text-app-fg-muted hover:bg-zinc-200 dark:hover:bg-zinc-800"
-            }
-          >
-            All
-          </Link>
-          <Link
-            href={buildHref({ outliers: true, competitor: competitorId || null })}
-            className={
-              outliersOnly
-                ? "rounded-lg bg-amber-500/20 px-3 py-1.5 font-semibold text-amber-700 dark:text-amber-400"
-                : "rounded-lg px-3 py-1.5 text-app-fg-muted hover:bg-zinc-200 dark:hover:bg-zinc-800"
-            }
-          >
-            Breakouts only
-          </Link>
-        </div>
+        <SourceFilterPills
+          pills={[
+            {
+              href: buildHref({ outliers: false, competitor: competitorId || null, source: null }),
+              label: "All sources",
+              active: !source && !outliersOnly,
+              variant: "neutral",
+            },
+            {
+              href: buildHref({ outliers: true, competitor: competitorId || null, source: source || null }),
+              label: "Breakouts only",
+              active: outliersOnly,
+              variant: "amber",
+            },
+            {
+              href: buildHref({ outliers: false, competitor: competitorId || null, source: "profile" }),
+              label: "Competitors",
+              active: source === "profile",
+              variant: "neutral",
+            },
+            {
+              href: buildHref({ outliers: false, competitor: competitorId || null, source: "keyword_similarity" }),
+              label: "Niche reels",
+              active: source === "keyword_similarity",
+              variant: "purple",
+            },
+          ]}
+        />
       </header>
 
       {(competitorId && competitorLabel) || competitorId ? (

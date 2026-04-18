@@ -205,6 +205,7 @@ export type ScrapedReelRow = {
   first_seen_at: string | null;
   last_updated_at: string | null;
   source?: string | null;
+  similarity_score?: number | null;
   analysis?: ReelAnalysisSummary | null;
   /** Present on GET /activity week_breakouts tops — delta from snapshots in post-age window (days 8–14 by default). */
   growth_views?: number | null;
@@ -484,7 +485,7 @@ export type IntelligenceActivityRow = {
   since: string;
   new_breakout_reels: ScrapedReelRow[];
   niche_benchmarks?: NicheBenchmarksPayload;
-  /** Competitor reels posted in ~48h with views ≥ 0.3× account average. */
+  /** Competitor reels posted in ~24h with views ≥ 0.3× account average. */
   trending_now?: ActivityLanePayload;
   /** Competitor reels 14d+ old: growth vs snapshot anchor, else top by views. */
   proven_performers?: ActivityLanePayload;
@@ -531,6 +532,7 @@ export async function fetchScrapedReels(
   includeAnalysis = true,
   limit = 50,
   sortBy: "posted_at" | "views" | "outlier_ratio" = "posted_at",
+  source?: string,
 ): Promise<{
   ok: boolean;
   data: ScrapedReelRow[];
@@ -542,6 +544,7 @@ export async function fetchScrapedReels(
   if (includeAnalysis) params.set("include_analysis", "true");
   params.set("limit", String(limit));
   params.set("sort_by", sortBy);
+  if (source) params.set("source", source);
   const q = `?${params.toString()}`;
   try {
     const { headers, clientSlug } = await getCachedServerApiContext();

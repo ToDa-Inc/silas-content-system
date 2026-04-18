@@ -105,9 +105,19 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
         raise RuntimeError("profile_scrape job missing client_id")
 
     payload = job.get("payload") or {}
+
+    # Recurring scrape of the client's OWN handle. Separate branch from the
+    # competitor flow — no competitor_id, no outlier ratios, no destructive
+    # orphan cleanup (baseline_scrape does that once at onboarding).
+    if payload.get("scrape_own"):
+        _run_own_scrape(settings, supabase, job, job_id, str(client_id), payload)
+        return
+
     competitor_id = payload.get("competitor_id")
     if not competitor_id:
-        raise RuntimeError("profile_scrape payload missing competitor_id")
+        raise RuntimeError(
+            "profile_scrape payload missing competitor_id (or set scrape_own=true for own handle)"
+        )
 
     cres = (
         supabase.table("competitors")
@@ -363,5 +373,169 @@ def run_profile_scrape(settings: Settings, job: Dict[str, Any]) -> None:
         try:
             enqueue_format_digest_recompute(supabase, org_id=str(org_id), client_id=str(client_id))
             enqueue_auto_analyze_scraped(supabase, org_id=str(org_id), client_id=str(client_id))
+        except Exception:
+            pass
+
+
+# ── own-handle scrape (recurring, called via scrape_own=true) ──────────────────
+
+
+# apify~instagram-reel-scraper: $0.0023 per returned reel (= $2.30 / 1K)
+_COST_REEL_ACTOR_PER_RESULT_USD = 0.0023
+
+# Safety buffer: cron enqueues with window slightly wider than cadence so a late
+# or missed run doesn't lose posts. 4 days covers a daily cron with 3 days of slack.
+_DEFAULT_OWN_ONLY_NEWER_THAN = "4 days"
+_DEFAULT_OWN_RESULTS_LIMIT = 15
+
+
+def _run_own_scrape(
+    settings: Settings,
+    supabase: Any,
+    job: Dict[str, Any],
+    job_id: str,
+    client_id: str,
+    payload: Dict[str, Any],
+) -> None:
+    """Scrape the client's own Instagram handle (non-destructive, recurring-safe).
+
+    Differences from the competitor path:
+    - No competitor_id lookup; reads clients.instagram_handle instead.
+    - Writes with source='client_baseline', competitor_id NULL (matches baseline_scrape
+      so niche_reel_scrape's protection rule continues to apply).
+    - No outlier_* computations (own reels are the baseline, not outliers against it).
+    - No orphan deletion (baseline_scrape owns that at onboarding; recurring runs
+      must preserve historical rows so reel_snapshots growth curves stay intact).
+    - Passes onlyPostsNewerThan to Apify to minimize pay-per-result cost.
+    """
+    clres = (
+        supabase.table("clients")
+        .select("instagram_handle")
+        .eq("id", client_id)
+        .limit(1)
+        .execute()
+    )
+    if not clres.data:
+        raise RuntimeError("Client not found")
+    ig = (clres.data[0].get("instagram_handle") or "").replace("@", "").strip()
+    if not ig:
+        # Soft-fail: cron shouldn't block on clients without an IG handle set.
+        supabase.table("background_jobs").update(
+            {
+                "status": "completed",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "result": {
+                    "pipeline": "profile_scrape.own",
+                    "skipped": "no_instagram_handle",
+                    "reels_upserted": 0,
+                },
+            }
+        ).eq("id", job_id).execute()
+        return
+
+    only_newer_than = str(payload.get("only_newer_than") or _DEFAULT_OWN_ONLY_NEWER_THAN)
+    raw_limit = int(payload.get("results_limit") or payload.get("limit") or _DEFAULT_OWN_RESULTS_LIMIT)
+    results_limit = max(1, min(50, raw_limit))
+
+    items = run_actor(
+        settings.apify_api_token,
+        settings.apify_reel_actor,
+        instagram_reel_scraper_input(
+            [ig],
+            results_limit,
+            include_shares_count=settings.apify_include_shares_count,
+            only_newer_than=only_newer_than,
+        ),
+    )
+    videos = _reel_items(items)
+
+    batch: List[Dict[str, Any]] = []
+    for item in videos:
+        url = _post_url(item)
+        if not url:
+            continue
+        views = int(item.get("videoViewCount") or item.get("playsCount") or 0)
+        likes = int(item.get("likesCount") or 0)
+        comments = int(item.get("commentsCount") or 0)
+        saves, shares = saves_and_shares_from_item(item)
+        caption = _caption_text(item)
+        thumb = reel_thumbnail_url_from_apify_item(item)
+        hook = (caption.split("\n")[0][:500] if caption else "") or None
+        video_duration = video_duration_seconds_from_item(item)
+
+        batch.append(
+            {
+                "post_url": canonical_instagram_post_url(url),
+                "thumbnail_url": str(thumb) if thumb else None,
+                "account_username": ig,
+                "views": views,
+                "likes": likes,
+                "comments": comments,
+                "saves": saves,
+                "shares": shares,
+                # Own reels are the baseline; outlier ratios would be self-referential.
+                "outlier_ratio": None,
+                "is_outlier": False,
+                "hook_text": hook,
+                "caption": caption or None,
+                "hashtags": _hashtags(item, caption),
+                "posted_at": apify_instagram_item_posted_at_iso(item),
+                "format": "reel",
+                "source": "client_baseline",
+                "video_duration": video_duration,
+            }
+        )
+
+    done_at = datetime.now(timezone.utc)
+    if batch:
+        # Preserve stable id per (client_id, post_url) so reel_snapshots keeps tracking.
+        existing_res = (
+            supabase.table("scraped_reels")
+            .select("id, post_url")
+            .eq("client_id", client_id)
+            .is_("competitor_id", "null")
+            .execute()
+        )
+        id_by_canon: Dict[str, str] = {}
+        for e in existing_res.data or []:
+            key = canonical_instagram_post_url(str(e.get("post_url") or ""))
+            if key and key not in id_by_canon:
+                id_by_canon[key] = str(e["id"])
+
+        id_for_url: Dict[str, str] = {}
+        for row in batch:
+            pu = str(row["post_url"])
+            if pu not in id_for_url:
+                id_for_url[pu] = id_by_canon.get(pu) or generate_reel_id()
+            row["id"] = id_for_url[pu]
+            row["client_id"] = client_id
+            row["competitor_id"] = None
+            row["scrape_job_id"] = job_id
+
+        supabase.table("scraped_reels").upsert(
+            batch, on_conflict="client_id,post_url"
+        ).execute()
+        insert_snapshots_for_scrape_job(supabase, client_id=client_id, scrape_job_id=job_id)
+
+    supabase.table("background_jobs").update(
+        {
+            "status": "completed",
+            "completed_at": done_at.isoformat(),
+            "result": {
+                "pipeline": "profile_scrape.own",
+                "username": ig,
+                "only_newer_than": only_newer_than,
+                "apify_items": len(items),
+                "reels_upserted": len(batch),
+                "estimated_cost_usd": round(len(items) * _COST_REEL_ACTOR_PER_RESULT_USD, 4),
+            },
+        }
+    ).eq("id", job_id).execute()
+
+    org_id = job.get("org_id")
+    if org_id and batch:
+        try:
+            enqueue_format_digest_recompute(supabase, org_id=str(org_id), client_id=client_id)
+            enqueue_auto_analyze_scraped(supabase, org_id=str(org_id), client_id=client_id)
         except Exception:
             pass

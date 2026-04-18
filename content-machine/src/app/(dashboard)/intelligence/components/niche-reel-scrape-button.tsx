@@ -41,7 +41,7 @@ export function NicheReelScrapeButton({
 
   const title =
     disabledHint?.trim() ||
-    "Scrape reels from your niche keywords (Instagram topic search). Saves to Intelligence metrics — runs in the background; can take several minutes.";
+    "Find reels that match your niche keywords on Instagram and save them to Intelligence. Runs in the background and can take several minutes.";
 
   async function run() {
     if (disabled || !clientSlug.trim() || !orgSlug.trim()) {
@@ -78,7 +78,7 @@ export function NicheReelScrapeButton({
         return;
       }
       if (postRes.status === 503) {
-        onMessage?.("Apify is not configured on the API server.", "error");
+        onMessage?.("Keyword search isn’t available on the server right now — contact support.", "error");
         setBusy(false);
         return;
       }

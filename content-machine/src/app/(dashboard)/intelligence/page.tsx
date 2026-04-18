@@ -1,11 +1,10 @@
 import Link from "next/link";
 import {
+  fetchBaseline,
   fetchCompetitors,
   fetchOutlierCount,
   getCachedServerApiContext,
 } from "@/lib/api";
-import { BreakoutsTeaserCard } from "./components/breakouts-teaser-card";
-import { CompetitorsTeaserCard } from "./components/competitors-teaser-card";
 import { IntelligenceToolbar } from "./components/intelligence-toolbar";
 import { WhatHappenedSection } from "./components/what-happened-section";
 
@@ -22,21 +21,23 @@ export default async function IntelligencePage() {
   const { user, tenancy, clientSlug, orgSlug } = await getCachedServerApiContext();
 
   // fetchOutlierCount is a single COUNT query — replaces the previous full reels fetch
-  const [compRes, outlierRes] = await Promise.all([
+  const [compRes, outlierRes, baselineRes] = await Promise.all([
     fetchCompetitors(),
     fetchOutlierCount(),
+    fetchBaseline(),
   ]);
 
   const competitors = compRes.ok ? compRes.data : [];
   const nOutliers = outlierRes.ok ? outlierRes.count : 0;
+  const lastSyncedAt = baselineRes.ok && baselineRes.data ? baselineRes.data.scraped_at : null;
 
   const clientLabel = formatClientLabel(clientSlug);
   const syncDisabled = !clientSlug.trim() || !orgSlug.trim();
   const syncDisabledHint =
     user && !tenancy
-      ? "No workspace membership visible for this login — see the alert above."
+      ? "No workspace for this login — see the alert above."
       : !orgSlug.trim()
-        ? "Missing organization slug — refresh or check Supabase session."
+        ? "Missing organization — refresh the page or sign in again."
         : !clientSlug.trim()
           ? "Pick a creator in the top bar or finish onboarding."
           : null;
@@ -55,10 +56,8 @@ export default async function IntelligencePage() {
             We can&apos;t see a workspace for this login
           </p>
           <p className="mt-1 text-xs text-app-fg-subtle">
-            The app did not find an <code className="rounded bg-zinc-200 px-1 dark:bg-zinc-800">organization_members</code>{" "}
-            row for your user (Supabase RLS + session). If you never onboarded here, start below. If you already did,
-            confirm this project&apos;s Supabase URL/keys match the project where onboarding ran, and that your user has
-            a membership row.
+            Your account isn&apos;t linked to a workspace yet. If you&apos;re new here, create one below. If you already
+            set one up, try signing out and back in, or contact support if it keeps happening.
           </p>
           <Link
             href="/onboarding"
@@ -81,6 +80,7 @@ export default async function IntelligencePage() {
           orgSlug={orgSlug}
           disabled={syncDisabled}
           disabledHint={syncDisabledHint}
+          lastSyncedAt={lastSyncedAt}
         />
       </header>
 
@@ -98,12 +98,8 @@ export default async function IntelligencePage() {
           {loadErrorDetails.includes("401") ||
           loadErrorDetails.toLowerCase().includes("missing api key") ? (
             <p className="text-xs leading-relaxed text-app-fg-muted">
-              The server must send your profile API key to FastAPI. Ensure{" "}
-              <code className="rounded bg-zinc-200 px-1 dark:bg-zinc-800">SUPABASE_SERVICE_ROLE_KEY</code> is set
-              in the repo <code className="rounded bg-zinc-200 px-1 dark:bg-zinc-800">.env</code> (Next loads it via{" "}
-              <code className="rounded bg-zinc-200 px-1 dark:bg-zinc-800">next.config</code>), and that your user has
-              a row in <code className="rounded bg-zinc-200 px-1 dark:bg-zinc-800">profiles</code> with{" "}
-              <code className="rounded bg-zinc-200 px-1 dark:bg-zinc-800">api_key</code> (onboarding creates it).
+              We couldn&apos;t authorize this request. Try refreshing the page. If you just signed up, finish onboarding
+              first. Still stuck? Contact support — they can verify your workspace setup.
             </p>
           ) : null}
         </div>
@@ -119,10 +115,36 @@ export default async function IntelligencePage() {
       ) : null}
 
       {clientSlug.trim() && orgSlug.trim() ? (
-        <div className="mb-8 grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-3">
-          <BreakoutsTeaserCard count={outlierRes.ok ? nOutliers : "—"} />
-          <CompetitorsTeaserCard count={compRes.ok ? competitors.length : "—"} />
-        </div>
+        <nav
+          className="mb-8 flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-xl border border-zinc-200/60 bg-zinc-50/40 px-4 py-2.5 text-xs dark:border-white/[0.08] dark:bg-white/[0.02]"
+          aria-label="Intelligence quick links"
+        >
+          <Link
+            href="/intelligence/breakouts"
+            className="group inline-flex items-center gap-1.5 font-medium text-app-fg-secondary transition-colors hover:text-amber-700 dark:hover:text-amber-400"
+          >
+            <span className="rounded-full bg-zinc-200 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-zinc-700 dark:bg-white/12 dark:text-app-fg-muted">
+              {outlierRes.ok ? nOutliers : "—"}
+            </span>
+            <span>competitor breakouts</span>
+            <span aria-hidden className="text-app-fg-muted transition-transform group-hover:translate-x-0.5 group-hover:text-amber-600 dark:group-hover:text-amber-400">
+              →
+            </span>
+          </Link>
+          <span className="text-app-fg-muted" aria-hidden>·</span>
+          <Link
+            href="/intelligence/competitors"
+            className="group inline-flex items-center gap-1.5 font-medium text-app-fg-secondary transition-colors hover:text-amber-700 dark:hover:text-amber-400"
+          >
+            <span className="rounded-full bg-zinc-200 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-zinc-700 dark:bg-white/12 dark:text-app-fg-muted">
+              {compRes.ok ? competitors.length : "—"}
+            </span>
+            <span>competitors tracked</span>
+            <span aria-hidden className="text-app-fg-muted transition-transform group-hover:translate-x-0.5 group-hover:text-amber-600 dark:group-hover:text-amber-400">
+              →
+            </span>
+          </Link>
+        </nav>
       ) : null}
     </main>
   );

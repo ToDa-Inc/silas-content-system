@@ -1,8 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Download,
+  Eye,
   Film,
   Image as ImageIcon,
   Loader2,
@@ -11,6 +13,7 @@ import {
   Video,
 } from "lucide-react";
 import { useToast } from "@/components/ui/toast-provider";
+import { PostPreviewModal } from "@/components/post-preview-modal";
 import {
   brollDelete,
   brollList,
@@ -78,6 +81,11 @@ export default function MediaPage() {
   const [imageUploadBusy, setImageUploadBusy] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  /** Whichever Renders/Covers card the user clicked "Preview" on. The full
+   *  PostPreviewModal renders the playable video, the cover, and the full caption +
+   *  hashtags in one place — replaces the old plain-MP4 new-tab link, which gave no
+   *  context (no caption, no cover, no actions). */
+  const [previewSession, setPreviewSession] = useState<GenerationSession | null>(null);
 
   // ── Bootstrap ────────────────────────────────────────────────────────────
 
@@ -301,49 +309,68 @@ export default function MediaPage() {
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
               {renders.map((s) => (
                 <div key={s.id} className="glass flex flex-col gap-2 rounded-2xl p-3">
-                  {/* 9:16 video preview */}
-                  <div className="overflow-hidden rounded-xl bg-black" style={{ aspectRatio: "9/16" }}>
+                  {/* 9:16 cover — clicking opens the session in Generate so users can
+                      go from "browsing finished posts" → "edit / re-publish this one" without
+                      having to copy the session ID by hand. */}
+                  <Link
+                    href={`/generate?session=${encodeURIComponent(s.id)}`}
+                    title="Open session"
+                    className="group block overflow-hidden rounded-xl bg-black"
+                    style={{ aspectRatio: "9/16" }}
+                  >
                     {s.thumbnail_url ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
                         src={s.thumbnail_url}
                         alt=""
-                        className="h-full w-full object-cover"
+                        className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.02]"
                       />
                     ) : (
                       <div className="flex h-full items-center justify-center">
                         <Video className="h-6 w-6 text-white/20" />
                       </div>
                     )}
-                  </div>
+                  </Link>
                   {/* Meta */}
                   <p className="line-clamp-2 text-[11px] font-medium leading-snug text-app-fg">
                     {sessionTitle(s)}
                   </p>
+                  {s.caption_body ? (
+                    <p className="line-clamp-3 text-[10px] leading-snug text-app-fg-muted">
+                      {s.caption_body}
+                    </p>
+                  ) : null}
                   <p className="text-[10px] text-app-fg-subtle">{formatDate(s.created_at)}</p>
-                  {/* Actions */}
+                  {/* Actions. Thumbnail click opens the session in Generate; Preview
+                      opens the full deliverable modal (playable video + cover + full
+                      caption + hashtags). Download is the quick "grab the file" job. */}
                   <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setPreviewSession(s)}
+                      title="Preview post"
+                      className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-amber-500/15 py-1.5 text-[11px] font-bold text-app-on-amber-title hover:bg-amber-500/25"
+                    >
+                      <Eye className="h-3 w-3" />
+                      Preview
+                    </button>
                     <a
                       href={s.rendered_video_url!}
                       target="_blank"
                       rel="noreferrer"
                       download
                       title="Download MP4"
-                      className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg border border-app-divider py-1.5 text-[11px] font-semibold text-app-fg hover:bg-white/5"
-                    >
-                      <Download className="h-3 w-3" />
-                      MP4
-                    </a>
-                    <a
-                      href={s.rendered_video_url!}
-                      target="_blank"
-                      rel="noreferrer"
-                      title="Preview"
                       className="inline-flex items-center justify-center rounded-lg border border-app-divider px-2 py-1.5 text-[11px] text-app-fg-muted hover:bg-white/5"
                     >
-                      ▶
+                      <Download className="h-3 w-3" />
                     </a>
                   </div>
+                  <Link
+                    href={`/generate?session=${encodeURIComponent(s.id)}`}
+                    className="text-center text-[11px] font-semibold text-sky-500 hover:underline dark:text-sky-400"
+                  >
+                    Open session →
+                  </Link>
                 </div>
               ))}
             </div>
@@ -358,32 +385,57 @@ export default function MediaPage() {
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
               {covers.map((s) => (
                 <div key={s.id} className="glass flex flex-col gap-2 rounded-2xl p-3">
-                  {/* 9:16 cover image */}
-                  <div className="overflow-hidden rounded-xl border border-app-divider" style={{ aspectRatio: "9/16" }}>
+                  {/* Cover thumbnail clicks back to the source session, same as Renders. */}
+                  <Link
+                    href={`/generate?session=${encodeURIComponent(s.id)}`}
+                    title="Open session"
+                    className="group block overflow-hidden rounded-xl border border-app-divider"
+                    style={{ aspectRatio: "9/16" }}
+                  >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={s.thumbnail_url!}
                       alt=""
-                      className="h-full w-full object-cover"
+                      className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.02]"
                     />
-                  </div>
+                  </Link>
                   {/* Meta */}
                   <p className="line-clamp-2 text-[11px] font-medium leading-snug text-app-fg">
                     {sessionTitle(s)}
                   </p>
+                  {s.caption_body ? (
+                    <p className="line-clamp-3 text-[10px] leading-snug text-app-fg-muted">
+                      {s.caption_body}
+                    </p>
+                  ) : null}
                   <p className="text-[10px] text-app-fg-subtle">{formatDate(s.created_at)}</p>
-                  {/* Download */}
-                  <a
-                    href={s.thumbnail_url!}
-                    target="_blank"
-                    rel="noreferrer"
-                    download
-                    title="Download cover"
-                    className="inline-flex items-center justify-center gap-1 rounded-lg border border-app-divider py-1.5 text-[11px] font-semibold text-app-fg hover:bg-white/5"
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setPreviewSession(s)}
+                      title="Preview post"
+                      className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-amber-500/15 py-1.5 text-[11px] font-bold text-app-on-amber-title hover:bg-amber-500/25"
+                    >
+                      <Eye className="h-3 w-3" />
+                      Preview
+                    </button>
+                    <a
+                      href={s.thumbnail_url!}
+                      target="_blank"
+                      rel="noreferrer"
+                      download
+                      title="Download cover"
+                      className="inline-flex items-center justify-center rounded-lg border border-app-divider px-2 py-1.5 text-[11px] text-app-fg-muted hover:bg-white/5"
+                    >
+                      <Download className="h-3 w-3" />
+                    </a>
+                  </div>
+                  <Link
+                    href={`/generate?session=${encodeURIComponent(s.id)}`}
+                    className="text-center text-[11px] font-semibold text-sky-500 hover:underline dark:text-sky-400"
                   >
-                    <Download className="h-3 w-3" />
-                    Download
-                  </a>
+                    Open session →
+                  </Link>
                 </div>
               ))}
             </div>
@@ -505,6 +557,19 @@ export default function MediaPage() {
             </div>
           )
       )}
+
+      <PostPreviewModal
+        open={previewSession !== null}
+        onClose={() => setPreviewSession(null)}
+        title={previewSession ? sessionTitle(previewSession) : "Post preview"}
+        caption={previewSession?.caption_body}
+        hashtags={previewSession?.hashtags}
+        thumbnailUrl={previewSession?.thumbnail_url}
+        videoUrl={previewSession?.rendered_video_url}
+        openSessionHref={
+          previewSession ? `/generate?session=${encodeURIComponent(previewSession.id)}` : null
+        }
+      />
     </main>
   );
 }

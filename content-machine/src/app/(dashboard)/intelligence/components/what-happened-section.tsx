@@ -17,9 +17,10 @@ import { commentViewRatio, formatCommentViewPct } from "@/lib/reel-comment-view"
 import { AppSelect } from "@/components/ui/app-select";
 import { ReelThumbnail } from "@/components/reel-thumbnail";
 import { ActivityReelHubModal } from "./activity-reel-hub-modal";
+import { AnalyzeReelModal } from "./analyze-reel-modal";
 import { ReelCardWithAnalysis } from "./reel-card-with-analysis";
 import { ReplicateSection } from "./replicate-section";
-import { StoredBreakoutsRecomputeButton } from "./stored-breakouts-recompute-button";
+import { SYNC_COMPLETED_EVENT } from "./sync-data-modal";
 
 type ActivityPayload = {
   since: string;
@@ -42,13 +43,13 @@ type Tab = "act" | "track";
 const TABS: { id: Tab; label: string; hint: string }[] = [
   {
     id: "act",
-    label: "Act now",
-    hint: "Recent competitor reels outperforming their own baseline — ranked for adaptation.",
+    label: "Hot this week",
+    hint: "Fresh competitor posts that are already beating that account’s usual reach — good candidates to recreate first.",
   },
   {
     id: "track",
-    label: "Track performance",
-    hint: "What has grown the most over time — proven posts and weekly momentum.",
+    label: "Long-term winners",
+    hint: "Older posts that kept gaining — patterns worth studying when you’re planning ahead.",
   },
 ];
 
@@ -396,6 +397,15 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
   const [activeTab, setActiveTab] = useState<Tab>("act");
   const [weeklyMetric, setWeeklyMetric] = useState<"views" | "likes" | "comments">("comments");
   const [hubReel, setHubReel] = useState<ScrapedReelRow | null>(null);
+  const [analyzeOpen, setAnalyzeOpen] = useState(false);
+
+  // After any sync (toolbar Sync button), invalidate the 3-min activity cache so the
+  // user sees fresh "What happened" data immediately, not stale cached results.
+  useEffect(() => {
+    const handler = () => setActivityRefreshKey((k) => k + 1);
+    window.addEventListener(SYNC_COMPLETED_EVENT, handler);
+    return () => window.removeEventListener(SYNC_COMPLETED_EVENT, handler);
+  }, []);
 
   useEffect(() => {
     if (disabled || !clientSlug.trim() || !orgSlug.trim()) {
@@ -494,15 +504,8 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
   return (
     <section className="mb-8">
       {/* Header */}
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+      <div className="mb-4">
         <h2 className="text-sm font-semibold text-app-fg">What happened</h2>
-        <StoredBreakoutsRecomputeButton
-          clientSlug={clientSlug}
-          orgSlug={orgSlug}
-          disabled={disabled}
-          disabledHint={disabledHint}
-          onAfterSuccess={() => setActivityRefreshKey((k) => k + 1)}
-        />
       </div>
 
       {/* Tab bar */}
@@ -524,7 +527,7 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
       </div>
       <p className="mb-5 text-[11px] leading-relaxed text-app-fg-muted">{activeTabMeta.hint}</p>
 
-      {/* Tab: Act now — Replicate + Trending */}
+      {/* Tab: Hot this week — Replicate + trending lane */}
       {activeTab === "act" ? (
         <div>
           <ReplicateSection
@@ -536,8 +539,8 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
           {(data?.trending_now?.reels ?? []).length > 0 ? (
             <div className="mt-2 border-t border-zinc-200/50 pt-5 dark:border-white/[0.08]">
               <ActivityLaneBlock
-                title="Also trending"
-                subtitle={`Competitor reels posted in the last ${trendHours}h with views at least ${Math.round(trendFloor * 100)}% of that account's average. Ranked by ratio vs account baseline — use Details & actions on a card to analyze or recreate.`}
+                title="More from the last day"
+                subtitle={`Competitor reels posted in the last ${trendHours}h with views at least ${Math.round(trendFloor * 100)}% of that account’s usual reach. Ranked strongest first — open a card for details or recreate.`}
                 reels={data?.trending_now?.reels ?? []}
                 clientSlug={clientSlug}
                 orgSlug={orgSlug}
@@ -549,12 +552,12 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
         </div>
       ) : null}
 
-      {/* Tab: Track performance — Proven + Weekly momentum */}
+      {/* Tab: Long-term winners — proven + weekly momentum */}
       {activeTab === "track" ? (
         <div>
           <ActivityLaneBlock
-            title="Proven performers"
-            subtitle={`Top 5 competitor posts at least ${provenDays} days old, ranked by view growth vs a snapshot taken around ${provenDays} days after the post. Without enough snapshots, falls back to strongest totals in your catalog.`}
+            title="Still gaining after weeks"
+            subtitle={`Top competitor posts at least ${provenDays} days old, ranked by how much they grew after publish. If we don’t have enough history yet, we show the strongest totals in your catalog instead.`}
             reels={data?.proven_performers?.reels ?? []}
             clientSlug={clientSlug}
             orgSlug={orgSlug}
@@ -606,7 +609,15 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
         />
       ) : null}
 
-      <div className="mt-4 flex justify-end border-t border-zinc-200/50 pt-3 dark:border-white/[0.08]">
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-zinc-200/50 pt-3 dark:border-white/[0.08]">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => setAnalyzeOpen(true)}
+          className="text-xs font-semibold text-app-fg-muted transition-colors hover:text-amber-700 disabled:opacity-50 dark:hover:text-amber-400"
+        >
+          + Analyze a reel
+        </button>
         <Link
           href="/intelligence/reels"
           className="group inline-flex items-center gap-1 text-xs font-semibold text-amber-700 transition-colors hover:text-amber-600 dark:text-amber-400 dark:hover:text-amber-300"
@@ -620,6 +631,15 @@ export function WhatHappenedSection({ clientSlug, orgSlug, disabled, disabledHin
           </span>
         </Link>
       </div>
+
+      <AnalyzeReelModal
+        open={analyzeOpen}
+        onClose={() => setAnalyzeOpen(false)}
+        clientSlug={clientSlug}
+        orgSlug={orgSlug}
+        disabled={disabled}
+        disabledHint={disabledHint}
+      />
     </section>
   );
 }

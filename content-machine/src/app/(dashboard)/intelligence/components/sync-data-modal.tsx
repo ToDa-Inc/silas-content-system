@@ -23,6 +23,51 @@ type Props = {
   onSyncMessage?: (msg: string | null) => void;
 };
 
+/**
+ * Window-level event fired after any successful sync (incl. recompute).
+ * Listened to by `WhatHappenedSection` so its 3-min cache invalidates
+ * immediately — no more stale activity after the user clicks Sync.
+ */
+export const SYNC_COMPLETED_EVENT = "silas:intelligence-synced";
+
+function dispatchSyncCompleted() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(SYNC_COMPLETED_EVENT, { detail: { ts: Date.now() } }));
+}
+
+/** Always run after a successful sync — re-flags outliers from stored data. Silent. */
+async function runRecomputeBreakouts(clientSlug: string, orgSlug: string): Promise<void> {
+  try {
+    const apiBase = getContentApiBase();
+    const headers = await clientApiHeaders({ orgSlug });
+    await contentApiFetch(
+      `${apiBase}/api/v1/clients/${encodeURIComponent(clientSlug)}/recompute-breakouts`,
+      { method: "POST", headers },
+    );
+  } catch {
+    /* recompute is a best-effort cleanup step — silent on failure */
+  }
+}
+
+/** Optional add-on: kick off a niche keyword scrape in the background. */
+async function startNicheScrape(clientSlug: string, orgSlug: string): Promise<boolean> {
+  try {
+    const apiBase = getContentApiBase();
+    const headers = await clientApiHeaders({ orgSlug });
+    const res = await contentApiFetch(
+      `${apiBase}/api/v1/clients/${encodeURIComponent(clientSlug)}/niche-reels/scrape`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 function useFakeProgress(active: boolean, fromPct: number, toPct: number) {
   const [pct, setPct] = useState(fromPct);
   useEffect(() => {
@@ -56,7 +101,8 @@ export function SyncDataModal({
   onSyncMessage,
 }: Props) {
   const router = useRouter();
-  const [mode, setMode] = useState<SyncMode>("own");
+  const [mode, setMode] = useState<SyncMode>("both");
+  const [includeNiche, setIncludeNiche] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progressLabel, setProgressLabel] = useState("");
@@ -83,7 +129,8 @@ export function SyncDataModal({
     setProgressPct(0);
     setProgressStatus(null);
     setProgressPhase("idle");
-    setMode("own");
+    setMode("both");
+    setIncludeNiche(false);
     onClose();
   }, [busy, onClose]);
 
@@ -95,7 +142,8 @@ export function SyncDataModal({
       setProgressPct(0);
       setProgressStatus(null);
       setProgressPhase("idle");
-      setMode("own");
+      setMode("both");
+      setIncludeNiche(false);
     });
     return () => cancelAnimationFrame(raf);
   }, [open, busy]);
@@ -171,10 +219,21 @@ export function SyncDataModal({
     setProgressStatus("running");
     onSyncMessage?.(null);
 
-    const finishOk = () => {
+    const finishOk = async (extraNote?: string) => {
+      setProgressPct(96);
+      // Always refresh outlier flags from the freshly-synced rows. Silent + fast.
+      await runRecomputeBreakouts(clientSlug, orgSlug);
+      // Optional add-on. Fire-and-forget; the user already knows it runs in background.
+      if (includeNiche) {
+        void startNicheScrape(clientSlug, orgSlug);
+      }
       setProgressPct(100);
       setProgressStatus("completed");
+      // Tell every interested client component that fresh data is live — invalidates
+      // the 3-min activity cache in WhatHappenedSection so the UI updates immediately.
+      dispatchSyncCompleted();
       router.refresh();
+      if (extraNote) onSyncMessage?.(extraNote);
       setTimeout(() => {
         onClose();
         setBusy(false);
@@ -186,7 +245,7 @@ export function SyncDataModal({
     try {
       if (mode === "own") {
         setProgressPhase("own");
-        setProgressLabel("Pulling your latest reels from Instagram…");
+        setProgressLabel("Refreshing your reels…");
         const ok = await runOwn();
         if (!ok) {
           setProgressStatus("failed");
@@ -196,14 +255,14 @@ export function SyncDataModal({
         }
         setProgressLabel("Done — your reels are up to date.");
         onSyncMessage?.("Your reels were refreshed.");
-        finishOk();
+        await finishOk();
         return;
       }
 
       if (mode === "competitors") {
         setProgressPhase("competitors");
         setProgressPct(0);
-        setProgressLabel("Starting competitor scrapes on the API…");
+        setProgressLabel("Refreshing tracked creators…");
         const comp = await runCompetitors();
         if (!comp.ok) {
           setProgressStatus("failed");
@@ -212,18 +271,18 @@ export function SyncDataModal({
           return;
         }
         if (comp.background) {
-          setProgressLabel("Scrapes started — they run in the background on this server.");
+          setProgressLabel("Refresh started — running in the background.");
           onSyncMessage?.(
-            "Refresh in a few minutes for updated reels and breakout flags (uses your client threshold, e.g. 5×).",
+            "Tracked creators continue refreshing — check back in a few minutes for new reels.",
           );
         } else if (comp.queued) {
-          setProgressLabel("Jobs queued for a worker process.");
-          onSyncMessage?.("If nothing updates, upgrade the API — sync now runs inside uvicorn by default.");
+          setProgressLabel("Refresh queued.");
+          onSyncMessage?.("Tracked creator refresh was queued.");
         } else {
-          setProgressLabel("Done — competitor reels updated.");
-          onSyncMessage?.("Tracked creators’ reels were refreshed.");
+          setProgressLabel("Done — tracked creators are up to date.");
+          onSyncMessage?.("Tracked creators were refreshed.");
         }
-        finishOk();
+        await finishOk();
         return;
       }
 
@@ -239,7 +298,7 @@ export function SyncDataModal({
       }
       setProgressPct(45);
       setProgressPhase("competitors");
-      setProgressLabel("Step 2 of 2 — starting competitor scrapes…");
+      setProgressLabel("Step 2 of 2 — tracked creators…");
       const comp = await runCompetitors();
       if (!comp.ok) {
         setProgressStatus("failed");
@@ -248,18 +307,18 @@ export function SyncDataModal({
         return;
       }
       if (comp.background) {
-        setProgressLabel("Done — your reels synced; competitor scrapes running on the API.");
+        setProgressLabel("Done — your reels are fresh. Tracked creators continue in the background.");
         onSyncMessage?.(
-          "Your reels are updated. Competitor scrapes continue in the background — refresh shortly for new data.",
+          "Your reels are up to date. Tracked creators continue refreshing — check back in a few minutes.",
         );
       } else if (comp.queued) {
-        setProgressLabel("Done — your reels synced; old queued-job mode.");
-        onSyncMessage?.("Competitor jobs were queued for a separate worker.");
+        setProgressLabel("Done — your reels are fresh. Refresh queued for tracked creators.");
+        onSyncMessage?.("Your reels are up to date. Tracked creator refresh was queued.");
       } else {
-        setProgressLabel("Done — your reels and all creators are up to date.");
-        onSyncMessage?.("Full update finished (your reels + all creators).");
+        setProgressLabel("Done — everything is up to date.");
+        onSyncMessage?.("Your reels and tracked creators are up to date.");
       }
-      finishOk();
+      await finishOk();
     } catch {
       setError("Something went wrong — try again.");
       setProgressStatus("failed");
@@ -285,11 +344,10 @@ export function SyncDataModal({
         <div className="mb-4 flex items-start justify-between gap-2">
           <div>
             <h2 id="sync-data-title" className="text-sm font-semibold text-zinc-900 dark:text-app-fg">
-              Update data
+              Sync
             </h2>
             <p className="mt-1 text-[11px] text-zinc-600 dark:text-app-fg-subtle">
-              Refresh metrics for the creator selected in the sidebar. This uses your Instagram handle
-              and tracked accounts — it can take from under a minute to several minutes.
+              Pull fresh metrics for the active creator. Takes anywhere from a minute to several.
             </p>
           </div>
           <button
@@ -314,6 +372,32 @@ export function SyncDataModal({
         ) : (
           <fieldset className="mb-4 space-y-3" disabled={busy}>
             <legend className="sr-only">What to sync</legend>
+            <label
+              className={`flex cursor-pointer gap-3 rounded-xl border p-3 transition-colors ${
+                mode === "both"
+                  ? "border-amber-500/60 bg-amber-500/5 dark:border-amber-500/40 dark:bg-amber-500/[0.04]"
+                  : "border-zinc-200/90 dark:border-white/10 dark:hover:bg-white/[0.03]"
+              }`}
+            >
+              <input
+                type="radio"
+                name="sync-mode"
+                checked={mode === "both"}
+                onChange={() => setMode("both")}
+                className="mt-1 border-zinc-300 text-amber-600 dark:border-white/20"
+              />
+              <span>
+                <span className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-app-fg">
+                  Everything
+                  <span className="rounded-full bg-amber-500/20 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-300">
+                    Recommended
+                  </span>
+                </span>
+                <span className="mt-0.5 block text-[11px] text-zinc-600 dark:text-app-fg-muted">
+                  Your reels and every tracked creator. Longest, but full picture.
+                </span>
+              </span>
+            </label>
             <label className="flex cursor-pointer gap-3 rounded-xl border border-zinc-200/90 p-3 dark:border-white/10 dark:hover:bg-white/[0.03]">
               <input
                 type="radio"
@@ -327,7 +411,7 @@ export function SyncDataModal({
                   My reels only
                 </span>
                 <span className="mt-0.5 block text-[11px] text-zinc-600 dark:text-app-fg-muted">
-                  Pull your latest posts from Instagram so the dashboard and charts stay current.
+                  Just refresh the active creator&apos;s own reels.
                 </span>
               </span>
             </label>
@@ -344,24 +428,24 @@ export function SyncDataModal({
                   Tracked creators only
                 </span>
                 <span className="mt-0.5 block text-[11px] text-zinc-600 dark:text-app-fg-muted">
-                  Update reels for every competitor you follow (does not refresh your own profile).
+                  Just refresh the competitors you follow.
                 </span>
               </span>
             </label>
-            <label className="flex cursor-pointer gap-3 rounded-xl border border-zinc-200/90 p-3 dark:border-white/10 dark:hover:bg-white/[0.03]">
+
+            <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-dashed border-zinc-300/80 px-3 py-2.5 dark:border-white/12">
               <input
-                type="radio"
-                name="sync-mode"
-                checked={mode === "both"}
-                onChange={() => setMode("both")}
-                className="mt-1 border-zinc-300 text-amber-600 dark:border-white/20"
+                type="checkbox"
+                checked={includeNiche}
+                onChange={(e) => setIncludeNiche(e.target.checked)}
+                className="mt-1 rounded border-zinc-300 text-amber-600 dark:border-white/20"
               />
               <span>
-                <span className="text-sm font-semibold text-zinc-900 dark:text-app-fg">
-                  Both
+                <span className="text-[12px] font-semibold text-zinc-900 dark:text-app-fg">
+                  Also pull niche keyword reels
                 </span>
                 <span className="mt-0.5 block text-[11px] text-zinc-600 dark:text-app-fg-muted">
-                  Your reels first, then all tracked creators (longest run).
+                  Search Instagram for trending posts matching this creator&apos;s niche. Heavier — runs in the background.
                 </span>
               </span>
             </label>
@@ -383,7 +467,7 @@ export function SyncDataModal({
               className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-amber-500 px-4 py-2.5 text-xs font-bold text-zinc-950 disabled:opacity-50"
             >
               <RefreshCw className="h-3.5 w-3.5 shrink-0" aria-hidden />
-              Start update
+              Sync now
             </button>
             <button
               type="button"

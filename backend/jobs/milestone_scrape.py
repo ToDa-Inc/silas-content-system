@@ -1,6 +1,16 @@
 """milestone_scrape job — fetch current metrics for one reel and record its milestone.
 
 Lightweight: Apify scrape only (no video download, no Gemini analysis).
+
+DEPRECATED (superseded 2026-04):
+    scraped_reels_refresh now updates views/likes/comments and appends to
+    reel_snapshots for ALL reels <60d old, not just competitor reels that
+    happen to cross a 24/48/72h boundary. The daily_intelligence_tick runs
+    scraped_reels_refresh automatically — no external cron needed.
+
+    This handler is kept live so the existing routers/cron.py milestone_scrapes
+    endpoint continues to function during migration. Remove once external
+    cron hits are retired (Phase 7 deployment cleanup).
 """
 
 from __future__ import annotations
@@ -22,6 +32,12 @@ def _views_from_item(item: dict) -> int:
 
 
 def run_milestone_scrape(settings: Settings, job: Dict[str, Any]) -> None:
+    logger.warning(
+        "milestone_scrape is DEPRECATED — scraped_reels_refresh (enqueued by "
+        "daily_intelligence_tick) now handles view/like/comment refresh and "
+        "reel_snapshots growth tracking for all reels <60d old. "
+        "Retire external cron hits to routers/cron.py::milestone_scrapes."
+    )
     if not settings.apify_api_token:
         raise RuntimeError("APIFY_API_TOKEN not configured")
 

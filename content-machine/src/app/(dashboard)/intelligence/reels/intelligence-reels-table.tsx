@@ -2,9 +2,19 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronDown, ChevronUp, Clapperboard, Sparkles } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  ChevronsUpDown,
+  Clapperboard,
+  Info,
+  Search,
+  Sparkles,
+  X,
+} from "lucide-react";
 import { ReelThumbnail } from "@/components/reel-thumbnail";
 import { AppSelect } from "@/components/ui/app-select";
+import { Tooltip } from "@/components/ui/tooltip";
 import type { ScrapedReelRow } from "@/lib/api";
 import { formatViewsToComments, viewsToCommentsRatio } from "@/lib/reel-comment-view";
 import {
@@ -39,6 +49,7 @@ type SortKey =
   | "comment_view_ratio"
   | "video_duration"
   | "outlier_ratio"
+  | "similarity_score"
   | "posted_at"
   | "total_score";
 type AnalysisFilter = "all" | "analyzed" | "pending";
@@ -112,9 +123,13 @@ function compareForSort(a: ScrapedReelRow, b: ScrapedReelRow, key: SortKey): num
       if (vb == null) return -1;
       return Number(va) - Number(vb);
     }
-    case "outlier_ratio": {
-      const va = a.outlier_ratio;
-      const vb = b.outlier_ratio;
+    case "outlier_ratio":
+    case "similarity_score": {
+      // Unified "Signal" sort. Niche reels never have outlier_ratio and competitor
+      // reels never have similarity_score, but both signal "why this reel surfaced".
+      // Falling back per-row keeps niche matches from sinking when sorting Signal.
+      const va = a.outlier_ratio ?? a.similarity_score ?? null;
+      const vb = b.outlier_ratio ?? b.similarity_score ?? null;
       if (va == null && vb == null) return 0;
       if (va == null) return 1;
       if (vb == null) return -1;
@@ -143,45 +158,143 @@ function compareForSort(a: ScrapedReelRow, b: ScrapedReelRow, key: SortKey): num
   }
 }
 
+/**
+ * Airtable-feel column header. Sort indicator is always rendered (faded when
+ * inactive) so users can see at a glance which columns are sortable. The (i)
+ * icon next to the label is what carries the explanatory tooltip — it stays
+ * out of the way visually but invites a hover when a metric needs context.
+ */
 function SortHeader({
   label,
   active,
   dir,
   onClick,
-  title,
+  hint,
+  align = "left",
+  className,
 }: {
   label: string;
   active: boolean;
   dir: "asc" | "desc";
   onClick: () => void;
-  /** Native tooltip for metric caveats (Apify / Instagram). */
-  title?: string;
+  /** Tooltip body shown when the (i) icon is hovered/focused. */
+  hint?: string;
+  align?: "left" | "right";
+  className?: string;
 }) {
+  const ariaSort = active ? (dir === "desc" ? "descending" : "ascending") : "none";
   return (
-    <th className="py-3 pr-2 font-medium">
-      <button
-        type="button"
-        onClick={onClick}
-        title={title}
-        className="inline-flex items-center gap-0.5 text-left uppercase tracking-widest hover:text-zinc-700 dark:hover:text-app-fg-muted"
+    <th
+      aria-sort={ariaSort}
+      className={`py-3 pr-2 font-medium ${align === "right" ? "text-right" : ""} ${className ?? ""}`}
+    >
+      <span
+        className={`inline-flex items-center gap-1 ${align === "right" ? "justify-end" : ""}`}
       >
-        {label}
-        {active ? (
-          dir === "desc" ? (
-            <ChevronDown className="h-3 w-3 shrink-0" aria-hidden />
+        <button
+          type="button"
+          onClick={onClick}
+          className={`group inline-flex items-center gap-1 rounded text-left uppercase tracking-widest transition-colors ${
+            active
+              ? "text-zinc-800 dark:text-app-fg"
+              : "text-zinc-500 hover:text-zinc-700 dark:text-app-fg-subtle dark:hover:text-app-fg-muted"
+          }`}
+          aria-label={`Sort by ${label}${active ? `, currently ${dir === "desc" ? "descending" : "ascending"}` : ""}`}
+        >
+          <span>{label}</span>
+          {active ? (
+            dir === "desc" ? (
+              <ArrowDown className="h-3 w-3 shrink-0" aria-hidden />
+            ) : (
+              <ArrowUp className="h-3 w-3 shrink-0" aria-hidden />
+            )
           ) : (
-            <ChevronUp className="h-3 w-3 shrink-0" aria-hidden />
-          )
+            <ChevronsUpDown
+              className="h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-50"
+              aria-hidden
+            />
+          )}
+        </button>
+        {hint ? (
+          <Tooltip content={hint}>
+            <span
+              className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded text-zinc-400 transition-colors hover:bg-zinc-200/80 hover:text-zinc-700 dark:text-app-fg-faint dark:hover:bg-white/10 dark:hover:text-app-fg-muted"
+              tabIndex={0}
+            >
+              <Info className="h-3 w-3" aria-hidden />
+              <span className="sr-only">{`What is ${label}?`}</span>
+            </span>
+          </Tooltip>
         ) : null}
-      </button>
+      </span>
     </th>
   );
 }
+
+/** Removable chip used in the active-filters strip above the table. */
+function FilterChip({
+  label,
+  value,
+  onClear,
+}: {
+  label: string;
+  value: string;
+  onClear: () => void;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-zinc-200/90 bg-white/90 py-0.5 pl-2 pr-1 font-medium text-zinc-700 shadow-sm dark:border-white/10 dark:bg-zinc-900/80 dark:text-app-fg-secondary">
+      <span className="text-[10px] uppercase tracking-wide text-zinc-500 dark:text-app-fg-subtle">
+        {label}
+      </span>
+      <span className="truncate">{value}</span>
+      <button
+        type="button"
+        onClick={onClear}
+        className="inline-flex h-4 w-4 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-zinc-200/80 hover:text-zinc-700 dark:text-app-fg-faint dark:hover:bg-white/10 dark:hover:text-app-fg-muted"
+        aria-label={`Remove ${label} filter`}
+      >
+        <X className="h-3 w-3" aria-hidden />
+      </button>
+    </span>
+  );
+}
+
+/** Friendly labels for the active-filter chip strip. */
+const SORT_KEY_LABELS: Record<SortKey, string> = {
+  views: "Views",
+  likes: "Likes",
+  comments: "Comments",
+  saves: "Saves",
+  shares: "Shares",
+  comment_view_ratio: "C/V",
+  video_duration: "Duration",
+  outlier_ratio: "Signal",
+  similarity_score: "Signal",
+  posted_at: "Posted",
+  total_score: "Score",
+};
 
 /** First-time analyze only: has post URL and no analysis row yet. */
 function isAnalyzable(row: ScrapedReelRow): boolean {
   return Boolean(row.post_url?.trim() && !row.analysis);
 }
+
+/**
+ * Niche-keyword analyses (source = "keyword_similarity") write to a different
+ * payload shape than Silas scoring — the score columns end up null/0 in the DB.
+ * Detect that combo so we can render the row's actual content (verdict, similarity)
+ * instead of a misleading "0/50 · Weak" Silas display.
+ */
+function isNicheMatchOnly(row: ScrapedReelRow): boolean {
+  const a = row.analysis;
+  if (!a) return false;
+  const hasSilasScore =
+    a.weighted_total != null || (a.total_score != null && a.total_score > 0);
+  return row.source === "keyword_similarity" && !hasSilasScore;
+}
+
+/** Subtle styling for empty cells (`0` or `—`) so populated values pop. */
+const EMPTY_CELL_CLASS = "text-zinc-400 dark:text-app-fg-faint";
 
 type BulkJobPoll = {
   status: string;
@@ -221,6 +334,8 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
   const [detailReelId, setDetailReelId] = useState<string | null>(null);
   const [creatorFilter, setCreatorFilter] = useState("");
   const [analysisFilter, setAnalysisFilter] = useState<AnalysisFilter>("all");
+  const [searchInput, setSearchInput] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [analyzeOpen, setAnalyzeOpen] = useState(false);
@@ -255,6 +370,12 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
     return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
   }, [rows]);
 
+  // Debounce raw input → query so the table doesn't re-sort on every keystroke.
+  useEffect(() => {
+    const id = setTimeout(() => setSearchQuery(searchInput.trim().toLowerCase()), 200);
+    return () => clearTimeout(id);
+  }, [searchInput]);
+
   const filteredRows = useMemo(() => {
     let out = rows;
     if (creatorFilter) {
@@ -265,8 +386,32 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
     } else if (analysisFilter === "pending") {
       out = out.filter((r) => isAnalyzable(r));
     }
+    if (searchQuery) {
+      const q = searchQuery;
+      out = out.filter((r) => {
+        const u = r.account_username?.toLowerCase() ?? "";
+        const h = r.hook_text?.toLowerCase() ?? "";
+        const c = r.caption?.toLowerCase() ?? "";
+        return u.includes(q) || h.includes(q) || c.includes(q);
+      });
+    }
     return out;
-  }, [rows, creatorFilter, analysisFilter]);
+  }, [rows, creatorFilter, analysisFilter, searchQuery]);
+
+  const activeFilterCount =
+    (creatorFilter ? 1 : 0) +
+    (analysisFilter !== "all" ? 1 : 0) +
+    (searchQuery ? 1 : 0) +
+    (sortKey ? 1 : 0);
+
+  const clearAllFilters = () => {
+    setCreatorFilter("");
+    setAnalysisFilter("all");
+    setSearchInput("");
+    setSearchQuery("");
+    setSortKey(null);
+    setSortDir("desc");
+  };
 
   const displayRows = useMemo(() => {
     if (!sortKey) return filteredRows;
@@ -291,7 +436,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
 
   useEffect(() => {
     setPage(1);
-  }, [creatorFilter, analysisFilter, sortKey, sortDir]);
+  }, [creatorFilter, analysisFilter, searchQuery, sortKey, sortDir]);
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -475,12 +620,22 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
     };
   }, [trackedJobId, clientSlug, orgSlug, router]);
 
+  /**
+   * Airtable-style 3-state cycle: none → desc → asc → none. Cycling back to
+   * "none" lets the user remove sort entirely (was impossible before — clicking
+   * the active column only flipped direction).
+   */
   function handleSort(key: SortKey) {
-    if (sortKey === key) {
-      setSortDir((d) => (d === "desc" ? "asc" : "desc"));
-    } else {
+    if (sortKey !== key) {
       setSortKey(key);
-      // Higher C/V = more engagement; default desc so best performers sort to top.
+      // Higher value = more useful for almost every column here; default desc.
+      setSortDir("desc");
+      return;
+    }
+    if (sortDir === "desc") {
+      setSortDir("asc");
+    } else {
+      setSortKey(null);
       setSortDir("desc");
     }
   }
@@ -583,7 +738,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
     <>
       <div className="mb-4 flex flex-col gap-3">
         <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
-          <div className="flex flex-wrap items-end gap-4">
+          <div className="flex flex-wrap items-end gap-3">
             <AppSelect
               label="Creator"
               value={creatorFilter}
@@ -603,6 +758,38 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                 { value: "pending", label: "Not analyzed" },
               ]}
             />
+            <div className="flex flex-col">
+              <span className="mb-1 block text-[10px] font-medium uppercase tracking-wider text-zinc-500 dark:text-app-fg-subtle">
+                Search
+              </span>
+              <div className="glass-inset relative inline-flex min-w-[220px] items-center rounded-lg border border-zinc-200/80 bg-white/80 text-sm text-zinc-900 shadow-sm transition-colors focus-within:border-zinc-300/90 focus-within:ring-2 focus-within:ring-amber-500/30 dark:border-white/10 dark:bg-zinc-900/80 dark:text-app-fg dark:focus-within:ring-amber-400/25">
+                <Search
+                  className="ml-2.5 h-3.5 w-3.5 shrink-0 text-zinc-400 dark:text-app-fg-faint"
+                  aria-hidden
+                />
+                <input
+                  type="search"
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  placeholder="@account, hook, or caption"
+                  className="w-full bg-transparent px-2 py-2 text-sm placeholder:text-zinc-400 focus:outline-none dark:placeholder:text-app-fg-faint"
+                  aria-label="Search reels by account, hook, or caption"
+                />
+                {searchInput ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearchInput("");
+                      setSearchQuery("");
+                    }}
+                    className="mr-1 inline-flex h-6 w-6 items-center justify-center rounded text-zinc-400 hover:bg-zinc-200/70 hover:text-zinc-700 dark:text-app-fg-faint dark:hover:bg-white/10 dark:hover:text-app-fg-muted"
+                    aria-label="Clear search"
+                  >
+                    <X className="h-3.5 w-3.5" aria-hidden />
+                  </button>
+                ) : null}
+              </div>
+            </div>
           </div>
           <div className="flex min-w-0 max-w-full flex-[1_1_280px] flex-col gap-2">
             {trackedJobId ? (
@@ -649,6 +836,64 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
             {bulkMsg}
           </p>
         ) : null}
+
+        {(activeFilterCount > 0 || displayRows.length !== rows.length) ? (
+          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+            <span className="text-zinc-500 dark:text-app-fg-subtle">
+              {displayRows.length === rows.length
+                ? `${rows.length} reel${rows.length === 1 ? "" : "s"}`
+                : `${displayRows.length} of ${rows.length} reel${rows.length === 1 ? "" : "s"}`}
+            </span>
+            {activeFilterCount > 0 ? (
+              <span className="text-zinc-300 dark:text-app-fg-faint" aria-hidden>
+                ·
+              </span>
+            ) : null}
+            {creatorFilter ? (
+              <FilterChip
+                label="Creator"
+                value={`@${creatorFilter}`}
+                onClear={() => setCreatorFilter("")}
+              />
+            ) : null}
+            {analysisFilter !== "all" ? (
+              <FilterChip
+                label="Analysis"
+                value={analysisFilter === "analyzed" ? "Analyzed only" : "Not analyzed"}
+                onClear={() => setAnalysisFilter("all")}
+              />
+            ) : null}
+            {searchQuery ? (
+              <FilterChip
+                label="Search"
+                value={`"${searchQuery}"`}
+                onClear={() => {
+                  setSearchInput("");
+                  setSearchQuery("");
+                }}
+              />
+            ) : null}
+            {sortKey ? (
+              <FilterChip
+                label="Sort"
+                value={`${SORT_KEY_LABELS[sortKey]} ${sortDir === "desc" ? "↓" : "↑"}`}
+                onClear={() => {
+                  setSortKey(null);
+                  setSortDir("desc");
+                }}
+              />
+            ) : null}
+            {activeFilterCount > 0 ? (
+              <button
+                type="button"
+                onClick={clearAllFilters}
+                className="text-[11px] font-semibold text-amber-600 transition-colors hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300"
+              >
+                Clear all
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-zinc-200/90 bg-zinc-50/90 dark:border-white/10 dark:bg-zinc-950/60">
@@ -671,7 +916,8 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
               <th className="py-3 pr-2 font-medium">Thumb</th>
               <th className="py-3 pr-2 font-medium">Account</th>
               <SortHeader
-                label="Silas"
+                label="Score"
+                hint="Silas score 0–100. Reels without a score haven't been analyzed yet — use Analyze to run one. Niche reels show a match instead of a score."
                 active={sortKey === "total_score"}
                 dir={sortDir}
                 onClick={() => handleSort("total_score")}
@@ -683,8 +929,9 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                 onClick={() => handleSort("views")}
               />
               <SortHeader
-                label="×Their avg"
-                active={sortKey === "outlier_ratio"}
+                label="Signal"
+                hint="Why this reel surfaced. N× = beat the account's average by that multiple (competitor breakout). N% match = how closely it matches your niche keywords."
+                active={sortKey === "outlier_ratio" || sortKey === "similarity_score"}
                 dir={sortDir}
                 onClick={() => handleSort("outlier_ratio")}
               />
@@ -696,21 +943,21 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
               />
               <SortHeader
                 label="C/V"
-                title="Comments ÷ views — conversation rate. Higher % = more discussion per view."
+                hint="Comments ÷ views — conversation rate. Higher % = more discussion per view."
                 active={sortKey === "comment_view_ratio"}
                 dir={sortDir}
                 onClick={() => handleSort("comment_view_ratio")}
               />
               <SortHeader
                 label="Saves"
-                title="From Instagram via Apify. Public scrape often returns 0 — saves are not always exposed."
+                hint="From Instagram when exposed. Often empty — the platform doesn't always return saves."
                 active={sortKey === "saves"}
                 dir={sortDir}
                 onClick={() => handleSort("saves")}
               />
               <SortHeader
                 label="Shares"
-                title="Requires includeSharesCount in Apify (paid plan). Sync again after upgrading Apify."
+                hint="Only when your Instagram data source includes share counts. May stay empty until your plan supports it."
                 active={sortKey === "shares"}
                 dir={sortDir}
                 onClick={() => handleSort("shares")}
@@ -723,7 +970,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
               />
               <SortHeader
                 label="Dur."
-                title="Length in seconds when Apify provides videoDuration (not all reels include it)."
+                hint="Length in seconds when Instagram returns duration (not all reels include it)."
                 active={sortKey === "video_duration"}
                 dir={sortDir}
                 onClick={() => handleSort("video_duration")}
@@ -740,7 +987,8 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
           <tbody className="text-xs text-zinc-800 dark:text-app-fg-secondary">
             {pageRows.map((row, i) => {
               const a = row.analysis;
-              const silas = a ? formatSilasScoreSummary(a) : null;
+              const nicheMatch = isNicheMatchOnly(row);
+              const silas = a && !nicheMatch ? formatSilasScoreSummary(a) : null;
               const canAnalyze = isAnalyzable(row);
               const hasPost = rowHasPostUrl(row);
               const rowIndex =
@@ -774,10 +1022,34 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                     />
                   </td>
                   <td className="py-2.5 pr-2 align-middle font-medium text-zinc-900 dark:text-app-fg">
-                    @{row.account_username}
+                    <div className="flex flex-col gap-0.5">
+                      <span>@{row.account_username}</span>
+                      {row.source === "keyword_similarity" ? (
+                        <Tooltip content="Found via your niche keywords, not from a tracked competitor.">
+                          <span className="w-fit rounded bg-purple-500/15 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-purple-700 dark:text-purple-400">
+                            Niche match
+                          </span>
+                        </Tooltip>
+                      ) : null}
+                    </div>
                   </td>
                   <td className="py-2.5 pr-2 align-middle">
-                    {a ? (
+                    {a && nicheMatch ? (
+                      <div className="flex flex-col gap-0.5">
+                        <Tooltip content="Niche-keyword analysis (no Silas score). Open it for the full match breakdown.">
+                          <span className="w-fit rounded bg-purple-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-purple-700 dark:text-purple-400">
+                            Niche match
+                          </span>
+                        </Tooltip>
+                        <button
+                          type="button"
+                          onClick={() => setDetailReelId(row.id)}
+                          className="w-fit text-left text-[10px] font-semibold text-amber-600 hover:underline dark:text-amber-400"
+                        >
+                          View analysis
+                        </button>
+                      </div>
+                    ) : a ? (
                       <div className="flex flex-col gap-0.5">
                         <span className="whitespace-nowrap text-[10px] font-semibold text-emerald-700 dark:text-emerald-300/95">
                           {silas ? (
@@ -796,39 +1068,48 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                           View analysis
                         </button>
                         {hasPost ? (
+                          <Tooltip content="Re-run Silas from saved data only (no new video download).">
+                            <button
+                              type="button"
+                              disabled={disableReelAnalysis}
+                              onClick={() => {
+                                setAnalyzeSkipApify(true);
+                                setAnalyzeInitialUrl(row.post_url!.trim());
+                                setAnalyzeOpen(true);
+                              }}
+                              className="inline-flex w-fit items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-semibold text-amber-700 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-40 dark:text-amber-300"
+                            >
+                              <Sparkles className="h-3 w-3 shrink-0" aria-hidden />
+                              Re-analyze
+                            </button>
+                          </Tooltip>
+                        ) : null}
+                      </div>
+                    ) : canAnalyze ? (
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[9px] uppercase tracking-wide text-zinc-500 dark:text-app-fg-muted">
+                          Not scored yet
+                        </span>
+                        <Tooltip content="Run Silas video analysis (same as Intelligence toolbar).">
                           <button
                             type="button"
                             disabled={disableReelAnalysis}
                             onClick={() => {
-                              setAnalyzeSkipApify(true);
+                              setAnalyzeSkipApify(false);
                               setAnalyzeInitialUrl(row.post_url!.trim());
                               setAnalyzeOpen(true);
                             }}
                             className="inline-flex w-fit items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-semibold text-amber-700 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-40 dark:text-amber-300"
-                            title="Re-run Silas via Gemini only (no Apify / no video re-download)"
                           >
                             <Sparkles className="h-3 w-3 shrink-0" aria-hidden />
-                            Re-analyze
+                            Analyze
                           </button>
-                        ) : null}
+                        </Tooltip>
                       </div>
-                    ) : canAnalyze ? (
-                      <button
-                        type="button"
-                        disabled={disableReelAnalysis}
-                        onClick={() => {
-                          setAnalyzeSkipApify(false);
-                          setAnalyzeInitialUrl(row.post_url!.trim());
-                          setAnalyzeOpen(true);
-                        }}
-                        className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-semibold text-amber-700 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-40 dark:text-amber-300"
-                        title="Run Silas video analysis (same as Intelligence toolbar)"
-                      >
-                        <Sparkles className="h-3 w-3 shrink-0" aria-hidden />
-                        Analyze
-                      </button>
                     ) : (
-                      <span className="text-zinc-400 dark:text-app-fg-faint">—</span>
+                      <Tooltip content="No post link saved — re-sync the source to enable analysis.">
+                        <span className={EMPTY_CELL_CLASS}>—</span>
+                      </Tooltip>
                     )}
                   </td>
                   <td className="py-2.5 pr-2 align-middle tabular-nums">
@@ -838,10 +1119,16 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                     className={
                       row.is_outlier === true
                         ? "py-2.5 pr-2 align-middle font-bold text-amber-600 dark:text-amber-400"
-                        : "py-2.5 pr-2 align-middle text-zinc-400 dark:text-app-fg-faint"
+                        : row.similarity_score != null && row.outlier_ratio == null
+                          ? "py-2.5 pr-2 align-middle font-bold text-purple-600 dark:text-purple-400"
+                          : "py-2.5 pr-2 align-middle text-zinc-400 dark:text-app-fg-faint"
                     }
                   >
-                    {row.outlier_ratio != null ? `${Number(row.outlier_ratio).toFixed(1)}×` : "—"}
+                    {row.outlier_ratio != null
+                      ? `${Number(row.outlier_ratio).toFixed(1)}×`
+                      : row.similarity_score != null
+                        ? `${row.similarity_score}% match`
+                        : "—"}
                   </td>
                   <td className="py-2.5 pr-2 align-middle tabular-nums">
                     {row.comments != null ? row.comments.toLocaleString() : "—"}
@@ -849,13 +1136,21 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                   <td className="py-2.5 pr-2 align-middle tabular-nums font-medium text-zinc-900 dark:text-app-fg">
                     {formatViewsToComments(row)}
                   </td>
-                  <td className="py-2.5 pr-2 align-middle tabular-nums">
+                  <td
+                    className={`py-2.5 pr-2 align-middle tabular-nums ${
+                      row.saves != null && row.saves > 0 ? "" : EMPTY_CELL_CLASS
+                    }`}
+                  >
                     {row.saves != null ? row.saves.toLocaleString() : "—"}
                   </td>
-                  <td className="py-2.5 pr-2 align-middle tabular-nums">
+                  <td
+                    className={`py-2.5 pr-2 align-middle tabular-nums ${
+                      row.shares != null && row.shares > 0 ? "" : EMPTY_CELL_CLASS
+                    }`}
+                  >
                     {row.shares != null ? row.shares.toLocaleString() : "—"}
                   </td>
-                  <td className="py-2.5 pr-2 align-middle tabular-nums text-zinc-400 dark:text-app-fg-faint">
+                  <td className="py-2.5 pr-2 align-middle tabular-nums">
                     {row.likes != null ? row.likes.toLocaleString() : "—"}
                   </td>
                   <td className="py-2.5 pr-2 align-middle tabular-nums">
@@ -875,16 +1170,17 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                         >
                           ↗
                         </a>
-                        <button
-                          type="button"
-                          disabled={disableReelAnalysis}
-                          onClick={() => setRecreateRow(row)}
-                          className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 hover:underline disabled:cursor-not-allowed disabled:opacity-40 dark:text-emerald-300/90"
-                          title="Adapt for your client: same format & idea as this reel (opens Generate)"
-                        >
-                          <Clapperboard className="h-3 w-3 shrink-0" aria-hidden />
-                          Recreate
-                        </button>
+                        <Tooltip content="Adapt for your client — same format & idea as this reel (opens Generate).">
+                          <button
+                            type="button"
+                            disabled={disableReelAnalysis}
+                            onClick={() => setRecreateRow(row)}
+                            className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 hover:underline disabled:cursor-not-allowed disabled:opacity-40 dark:text-emerald-300/90"
+                          >
+                            <Clapperboard className="h-3 w-3 shrink-0" aria-hidden />
+                            Recreate
+                          </button>
+                        </Tooltip>
                       </div>
                     ) : (
                       "—"
