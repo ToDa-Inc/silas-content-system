@@ -10,7 +10,7 @@ name: Cron sync-all
 
 on:
   schedule:
-    # Once daily at 05:00 UTC — milestone mini-cron handles recent reels every 2h
+    # Once daily at 05:00 UTC — see cron-scraped-reels-refresh.yml for daily metrics refresh
     - cron: "0 5 * * *"
   workflow_dispatch:
 

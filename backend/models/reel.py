@@ -188,3 +188,5 @@ class ScrapedReelOut(BaseModel):
     growth_likes: Optional[int] = None
     growth_comments: Optional[int] = None
     proven_growth_source: Optional[str] = None
+    # Dashboard competitor-wins lane (views / account_avg_views)
+    win_ratio: Optional[float] = None

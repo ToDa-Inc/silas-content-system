@@ -1,5 +1,5 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
-import { NextResponse, type NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 const PROTECTED_PREFIXES = [
   "/dashboard",
@@ -8,6 +8,8 @@ const PROTECTED_PREFIXES = [
   "/settings",
   "/context",
   "/scheduling",
+  "/media",
+  "/create",
 ];
 
 function isProtectedPath(pathname: string): boolean {
@@ -15,6 +17,10 @@ function isProtectedPath(pathname: string): boolean {
 }
 
 export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("x-middleware-pathname", pathname);
+
   // Middleware may run on Edge — prefer NEXT_PUBLIC_* (inlined at build). Node falls back to SUPABASE_*.
   const e = process.env;
   const url = e["NEXT_PUBLIC_SUPABASE_URL"] || e["SUPABASE_URL"] || "";
@@ -25,10 +31,21 @@ export async function middleware(request: NextRequest) {
     console.error(
       "[content-machine] Set SUPABASE_URL and SUPABASE_ANON_KEY in repo-root `.env`. See `.env.example`.",
     );
-    return NextResponse.next();
+    if (isProtectedPath(pathname) || pathname === "/onboarding") {
+      const u = request.nextUrl.clone();
+      u.pathname = "/login";
+      u.searchParams.set("error", "config");
+      u.searchParams.set("next", pathname);
+      return NextResponse.redirect(u);
+    }
+    return NextResponse.next({
+      request: new NextRequest(request.url, { headers: requestHeaders }),
+    });
   }
 
-  let supabaseResponse = NextResponse.next({ request });
+  let supabaseResponse = NextResponse.next({
+    request: new NextRequest(request.url, { headers: requestHeaders }),
+  });
 
   const supabase = createServerClient(url, key, {
     cookies: {
@@ -37,7 +54,9 @@ export async function middleware(request: NextRequest) {
       },
       setAll(cookiesToSet: { name: string; value: string; options: CookieOptions }[]) {
         cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
-        supabaseResponse = NextResponse.next({ request });
+        supabaseResponse = NextResponse.next({
+          request: new NextRequest(request.url, { headers: requestHeaders }),
+        });
         cookiesToSet.forEach(({ name, value, options }) =>
           supabaseResponse.cookies.set(name, value, options),
         );
@@ -48,8 +67,6 @@ export async function middleware(request: NextRequest) {
   const {
     data: { user },
   } = await supabase.auth.getUser();
-
-  const { pathname } = request.nextUrl;
 
   if (pathname.startsWith("/auth/callback")) {
     return supabaseResponse;
@@ -94,6 +111,10 @@ export const config = {
     "/settings/:path*",
     "/context/:path*",
     "/scheduling/:path*",
+    "/media",
+    "/media/:path*",
+    "/create",
+    "/create/:path*",
     "/onboarding",
     "/login",
     "/signup",

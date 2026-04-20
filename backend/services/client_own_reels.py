@@ -104,11 +104,16 @@ def upsert_client_own_reels(
     if not rows:
         return 0
 
+    # Look up only prior client_baseline rows so we can preserve their stable id
+    # across runs. Scoping by source is critical — other source types
+    # (keyword_similarity, url_paste, niche_search) also have competitor_id NULL
+    # and must not be touched here, otherwise the orphan-cleanup below would
+    # silently wipe them on every baseline scrape.
     existing_res = (
         supabase.table("scraped_reels")
         .select("id, post_url")
         .eq("client_id", client_id)
-        .is_("competitor_id", "null")
+        .eq("source", "client_baseline")
         .execute()
     )
     id_by_url: Dict[str, str] = {}
@@ -127,11 +132,15 @@ def upsert_client_own_reels(
 
     supabase.table("scraped_reels").upsert(rows, on_conflict="client_id,post_url").execute()
 
+    # Orphan cleanup: only consider client_baseline rows. Without this scope a
+    # niche-discovery reel (source=keyword_similarity, competitor_id NULL) would
+    # be flagged as an orphan and deleted, cascading reel_analyses.reel_id to
+    # NULL and effectively erasing it from /intelligence/reels.
     fresh_res = (
         supabase.table("scraped_reels")
         .select("id, post_url")
         .eq("client_id", client_id)
-        .is_("competitor_id", "null")
+        .eq("source", "client_baseline")
         .execute()
     )
     orphan_ids: List[str] = []

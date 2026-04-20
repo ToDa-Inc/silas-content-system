@@ -9,6 +9,7 @@ from services.cleanup_renders import cleanup_old_renders
 from services.scrape_cycle import (
     enqueue_keyword_reel_similarity_all_clients,
     enqueue_milestone_scrapes_all_clients,
+    enqueue_scraped_reels_refresh_all_clients,
     enqueue_stale_profile_scrapes_all_clients,
     enqueue_sync_all_jobs_all_clients,
 )
@@ -69,10 +70,29 @@ def milestone_scrapes(
     settings: Annotated[Settings, Depends(get_settings)],
     x_cron_secret: Annotated[Optional[str], Header(alias="X-Cron-Secret")] = None,
 ) -> Dict[str, Any]:
-    """Enqueue milestone_scrape jobs for reels that just crossed 24h/48h/72h."""
+    """Deprecated: use POST /scraped-reels-refresh on a schedule instead.
+
+    Still enqueues legacy milestone_scrape jobs for backwards compatibility.
+    """
     _require_cron_secret(settings, x_cron_secret)
     supabase = get_supabase()
     return enqueue_milestone_scrapes_all_clients(supabase)
+
+
+@router.post("/scraped-reels-refresh", status_code=status.HTTP_200_OK)
+def cron_scraped_reels_refresh(
+    settings: Annotated[Settings, Depends(get_settings)],
+    x_cron_secret: Annotated[Optional[str], Header(alias="X-Cron-Secret")] = None,
+) -> Dict[str, Any]:
+    """Enqueue scraped_reels_refresh for each active client (daily metrics / snapshots)."""
+    _require_cron_secret(settings, x_cron_secret)
+    if not settings.apify_api_token:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="APIFY_API_TOKEN required for scraped reels refresh",
+        )
+    supabase = get_supabase()
+    return enqueue_scraped_reels_refresh_all_clients(supabase)
 
 
 @router.post("/recompute-breakouts", status_code=status.HTTP_200_OK)

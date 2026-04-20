@@ -1,9 +1,10 @@
 import {
-  fetchIntelligenceActivity,
+  fetchDashboardCompetitorWins,
+  fetchDashboardFreshNiche,
   fetchIntelligenceStats,
   getCachedServerApiContext,
 } from "@/lib/api";
-import { DashboardHotReels } from "./dashboard-hot-reels";
+import { CompetitorWins, FreshFromNiche } from "./dashboard-daily-lane";
 import { DashboardKpiStrip } from "./dashboard-kpi-strip";
 import { DashboardUpdateReels } from "./dashboard-update-reels";
 import { OwnReelMetricsDashboard } from "./own-reel-metrics-dashboard";
@@ -20,16 +21,15 @@ export default async function DashboardPage() {
           ? "Pick a creator in the top bar or finish onboarding."
           : null;
 
-  const [statsRes, activityRes] = await Promise.all([
+  const [statsRes, freshRes, winsRes] = await Promise.all([
     fetchIntelligenceStats(),
-    fetchIntelligenceActivity(),
+    fetchDashboardFreshNiche(),
+    fetchDashboardCompetitorWins(),
   ]);
 
   const stats = statsRes.ok ? statsRes.data : null;
-  const trendingHot =
-    activityRes.ok && activityRes.data?.trending_now?.reels?.length
-      ? activityRes.data.trending_now.reels
-      : [];
+  const freshNicheReels = freshRes.ok ? freshRes.data : [];
+  const competitorWinReels = winsRes.ok ? winsRes.data : [];
 
   return (
     <main className="mx-auto max-w-7xl px-4 py-8 md:px-6">
@@ -37,8 +37,8 @@ export default async function DashboardPage() {
         <div className="min-w-0 space-y-1">
           <h1 className="text-lg font-semibold text-app-fg">Dashboard</h1>
           <p className="max-w-xl text-xs text-app-fg-muted">
-            Headline numbers for your reels, fresh competitor breakouts to recreate, and trends after each
-            sync.
+            Headline numbers for your reels, fresh niche finds, and competitor breakouts worth recreating —
+            refreshed every day.
           </p>
         </div>
         <DashboardUpdateReels
@@ -55,9 +55,16 @@ export default async function DashboardPage() {
         <div className="lg:col-span-2">
           <OwnReelMetricsDashboard clientSlug={clientSlug} orgSlug={orgSlug} />
         </div>
-        <div className="lg:col-span-1">
-          <DashboardHotReels
-            reels={trendingHot}
+        <div className="flex flex-col gap-4 lg:col-span-1">
+          <FreshFromNiche
+            reels={freshNicheReels}
+            clientSlug={clientSlug}
+            orgSlug={orgSlug}
+            disabled={syncDisabled}
+            disabledHint={syncDisabledHint}
+          />
+          <CompetitorWins
+            reels={competitorWinReels}
             clientSlug={clientSlug}
             orgSlug={orgSlug}
             disabled={syncDisabled}

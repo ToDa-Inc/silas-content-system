@@ -227,6 +227,8 @@ export type ScrapedReelRow = {
   outbreaker_ratio?: number | null;
   /** Whether ratio used milestone avg or fell back to lifetime account avg. */
   outbreaker_ratio_source?: "milestone_avg" | "account_avg_fallback" | null;
+  /** GET /dashboard/competitor-wins — views ÷ that competitor's account_avg_views. */
+  win_ratio?: number | null;
 };
 
 export type ScrapeQueueStats = {
@@ -252,7 +254,7 @@ export async function fetchCompetitors(): Promise<{
         ok: false,
         data: [],
         error:
-          "No creator (client) in your workspace — finish onboarding or add a row in Supabase clients.",
+          "No active creator in this workspace. Finish onboarding or pick a creator in the header.",
       };
     }
     const res = await fetch(`${base}/api/v1/clients/${clientSlug}/competitors`, {
@@ -288,7 +290,8 @@ export async function fetchClient(): Promise<{
       return {
         ok: false,
         data: null,
-        error: "No client in your workspace.",
+        error:
+          "No active creator in this workspace. Finish onboarding or pick a creator in the header.",
       };
     }
     const res = await fetch(`${base}/api/v1/clients/${clientSlug}`, {
@@ -327,7 +330,8 @@ export async function fetchBaseline(): Promise<{
       return {
         ok: false,
         data: null,
-        error: "No client in your workspace.",
+        error:
+          "No active creator in this workspace. Finish onboarding or pick a creator in the header.",
       };
     }
     const res = await fetch(`${base}/api/v1/clients/${clientSlug}/baseline`, {
@@ -366,7 +370,8 @@ export async function fetchOwnReels(): Promise<{
       return {
         ok: false,
         data: [],
-        error: "No client in your workspace.",
+        error:
+          "No active creator in this workspace. Finish onboarding or pick a creator in the header.",
       };
     }
     const res = await fetch(
@@ -410,7 +415,12 @@ export async function fetchIntelligenceStats(): Promise<{
   try {
     const { headers, clientSlug } = await getCachedServerApiContext();
     if (!clientSlug) {
-      return { ok: false, data: null, error: "No client in your workspace." };
+      return {
+        ok: false,
+        data: null,
+        error:
+          "No active creator in this workspace. Finish onboarding or pick a creator in the header.",
+      };
     }
     const res = await fetch(`${base}/api/v1/clients/${clientSlug}/stats`, {
       headers: { ...headers },
@@ -503,7 +513,12 @@ export async function fetchIntelligenceActivity(sinceIso?: string): Promise<{
   try {
     const { headers, clientSlug } = await getCachedServerApiContext();
     if (!clientSlug) {
-      return { ok: false, data: null, error: "No client in your workspace." };
+      return {
+        ok: false,
+        data: null,
+        error:
+          "No active creator in this workspace. Finish onboarding or pick a creator in the header.",
+      };
     }
     const q = sinceIso ? `?since=${encodeURIComponent(sinceIso)}` : "";
     const res = await fetch(`${base}/api/v1/clients/${clientSlug}/activity${q}`, {
@@ -552,7 +567,8 @@ export async function fetchScrapedReels(
       return {
         ok: false,
         data: [],
-        error: "No client in your workspace.",
+        error:
+          "No active creator in this workspace. Finish onboarding or pick a creator in the header.",
       };
     }
     const res = await fetch(`${base}/api/v1/clients/${clientSlug}/reels${q}`, {
@@ -576,6 +592,149 @@ export async function fetchScrapedReels(
   }
 }
 
+async function fetchDashboardLane(
+  path: "fresh-niche" | "competitor-wins",
+  days: number,
+  limit: number,
+): Promise<{ ok: boolean; data: ScrapedReelRow[]; error?: string }> {
+  const base = getContentApiBase();
+  try {
+    const { headers, clientSlug } = await getCachedServerApiContext();
+    if (!clientSlug) return { ok: false, data: [], error: "No active creator" };
+    const res = await fetch(
+      `${base}/api/v1/clients/${clientSlug}/dashboard/${path}?days=${days}&limit=${limit}`,
+      { headers: { ...headers }, cache: "no-store" },
+    );
+    if (!res.ok) return { ok: false, data: [], error: `${res.status} ${await res.text()}` };
+    return { ok: true, data: await res.json() };
+  } catch (e) {
+    return { ok: false, data: [], error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+/** GET /dashboard/fresh-niche — recent keyword-similarity reels, ranked by views. */
+export function fetchDashboardFreshNiche(days = 3, limit = 3) {
+  return fetchDashboardLane("fresh-niche", days, limit);
+}
+
+/** GET /dashboard/competitor-wins — recent competitor reels beating their account avg. */
+export function fetchDashboardCompetitorWins(days = 3, limit = 3) {
+  return fetchDashboardLane("competitor-wins", days, limit);
+}
+
+export type ReelsListSortBy =
+  | "posted_at"
+  | "views"
+  | "likes"
+  | "comments"
+  | "saves"
+  | "shares"
+  | "outlier_ratio"
+  | "similarity_score"
+  | "video_duration"
+  | "first_seen_at";
+
+export type ReelsListFilters = {
+  source?: string | null;
+  creator?: string | null;
+  competitorId?: string | null;
+  outlierOnly?: boolean;
+  ownReelsOnly?: boolean;
+  minViews?: number | null;
+  maxViews?: number | null;
+  minLikes?: number | null;
+  maxLikes?: number | null;
+  minComments?: number | null;
+  maxComments?: number | null;
+  postedAfter?: string | null;
+  postedBefore?: string | null;
+};
+
+export type ReelsListQuery = ReelsListFilters & {
+  sortBy?: ReelsListSortBy;
+  sortDir?: "asc" | "desc";
+  limit?: number;
+  offset?: number;
+  includeAnalysis?: boolean;
+};
+
+/**
+ * GET /clients/{slug}/reels with the full filter/sort/pagination contract.
+ * Returns rows + the server's matching-row total (from X-Total-Count) so the
+ * UI can show "Showing X of Y" and paginate honestly across the catalog.
+ *
+ * Kept as a separate function from `fetchScrapedReels` to avoid breaking
+ * callers that just want "give me the recent N" without thinking about pages.
+ */
+export async function fetchReelsList(query: ReelsListQuery = {}): Promise<{
+  ok: boolean;
+  data: ScrapedReelRow[];
+  total: number;
+  error?: string;
+}> {
+  const base = getContentApiBase();
+  const params = new URLSearchParams();
+  params.set("include_analysis", String(query.includeAnalysis ?? true));
+  params.set("limit", String(query.limit ?? 100));
+  if (query.offset && query.offset > 0) params.set("offset", String(query.offset));
+  if (query.sortBy) params.set("sort_by", query.sortBy);
+  if (query.sortDir) params.set("sort_dir", query.sortDir);
+  if (query.outlierOnly) params.set("outlier_only", "true");
+  if (query.ownReelsOnly) params.set("own_reels_only", "true");
+  if (query.source) params.set("source", query.source);
+  if (query.creator) params.set("creator", query.creator);
+  if (query.competitorId) params.set("competitor_id", query.competitorId);
+  if (query.minViews != null) params.set("min_views", String(query.minViews));
+  if (query.maxViews != null) params.set("max_views", String(query.maxViews));
+  if (query.minLikes != null) params.set("min_likes", String(query.minLikes));
+  if (query.maxLikes != null) params.set("max_likes", String(query.maxLikes));
+  if (query.minComments != null) params.set("min_comments", String(query.minComments));
+  if (query.maxComments != null) params.set("max_comments", String(query.maxComments));
+  if (query.postedAfter) params.set("posted_after", query.postedAfter);
+  if (query.postedBefore) params.set("posted_before", query.postedBefore);
+
+  try {
+    const { headers, clientSlug } = await getCachedServerApiContext();
+    if (!clientSlug) {
+      return {
+        ok: false,
+        data: [],
+        total: 0,
+        error:
+          "No active creator in this workspace. Finish onboarding or pick a creator in the header.",
+      };
+    }
+    const res = await fetch(
+      `${base}/api/v1/clients/${clientSlug}/reels?${params.toString()}`,
+      {
+        headers: { ...headers },
+        // Filter combinations explode the cache key; rely on the URL state
+        // change to refetch on filter changes and keep TTL low.
+        next: { revalidate: 15 },
+      },
+    );
+    if (!res.ok) {
+      return {
+        ok: false,
+        data: [],
+        total: 0,
+        error: `${res.status} ${await res.text()}`,
+      };
+    }
+    const data = (await res.json()) as ScrapedReelRow[];
+    const totalHeader = res.headers.get("x-total-count");
+    const total = totalHeader != null ? Number.parseInt(totalHeader, 10) : data.length;
+    return { ok: true, data, total: Number.isFinite(total) ? total : data.length };
+  } catch (e) {
+    return {
+      ok: false,
+      data: [],
+      total: 0,
+      error: e instanceof Error ? e.message : "fetch failed",
+    };
+  }
+}
+
 /** GET /api/v1/clients/{slug}/stats/outlier-count — cheap single COUNT query. */
 export async function fetchOutlierCount(): Promise<{
   ok: boolean;
@@ -585,7 +744,13 @@ export async function fetchOutlierCount(): Promise<{
   const base = getContentApiBase();
   try {
     const { headers, clientSlug } = await getCachedServerApiContext();
-    if (!clientSlug) return { ok: false, count: 0, error: "No client in your workspace." };
+    if (!clientSlug)
+      return {
+        ok: false,
+        count: 0,
+        error:
+          "No active creator in this workspace. Finish onboarding or pick a creator in the header.",
+      };
     const res = await fetch(`${base}/api/v1/clients/${clientSlug}/stats/outlier-count`, {
       headers: { ...headers },
       next: { revalidate: 30 },

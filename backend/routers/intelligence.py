@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from supabase import Client
 
 from core.cache import cache_delete, cache_get, cache_set
@@ -2194,8 +2194,27 @@ def list_niche_discovery_reels(
     return data
 
 
+# Whitelist of columns the API will sort on. Kept tight on purpose so we
+# never let a caller probe arbitrary columns. Computed columns (e.g.
+# comment_view_ratio, total_score) are NOT here — they need a join or
+# CASE expression and are deferred until there's real demand.
+_REELS_SORT_WHITELIST = (
+    "posted_at",
+    "views",
+    "likes",
+    "comments",
+    "saves",
+    "shares",
+    "outlier_ratio",
+    "similarity_score",
+    "video_duration",
+    "first_seen_at",
+)
+
+
 @router.get("/clients/{slug}/reels", response_model=list[ScrapedReelOut])
 def list_reels(
+    response: Response,
     slug: str,
     client_id: Annotated[str, Depends(resolve_client_id)],
     supabase: Annotated[Client, Depends(get_supabase)],
@@ -2212,24 +2231,93 @@ def list_reels(
         100,
         ge=1,
         le=1000,
-        description="Max reels to return. Defaults to 100 (most recent by posted_at).",
+        description="Page size (max rows returned). Combine with offset for pagination.",
     ),
+    offset: int = Query(0, ge=0, description="Skip N rows for pagination."),
     sort_by: str = Query(
         "posted_at",
-        description="Sort field: posted_at (default), views, outlier_ratio.",
+        description=(
+            "Sort field. Allowed: posted_at, views, likes, comments, saves, "
+            "shares, outlier_ratio, similarity_score, video_duration, first_seen_at."
+        ),
     ),
-    source: Optional[str] = Query(None, description="Filter by source: keyword_similarity, profile, baseline, etc."),
+    sort_dir: str = Query(
+        "desc",
+        description="Sort direction: 'asc' or 'desc' (default desc).",
+    ),
+    source: Optional[str] = Query(
+        None,
+        description="Filter by source: keyword_similarity, profile, baseline, etc.",
+    ),
+    creator: Optional[str] = Query(
+        None,
+        description="Filter by exact account_username (case-insensitive).",
+    ),
+    competitor_id: Optional[str] = Query(
+        None,
+        description="Filter to a single tracked competitor.",
+    ),
+    min_views: Optional[int] = Query(None, ge=0),
+    max_views: Optional[int] = Query(None, ge=0),
+    min_comments: Optional[int] = Query(None, ge=0),
+    max_comments: Optional[int] = Query(None, ge=0),
+    min_likes: Optional[int] = Query(None, ge=0),
+    max_likes: Optional[int] = Query(None, ge=0),
+    posted_after: Optional[str] = Query(
+        None,
+        description="ISO date/timestamp — reels posted on or after this point.",
+    ),
+    posted_before: Optional[str] = Query(
+        None,
+        description="ISO date/timestamp — reels posted on or before this point.",
+    ),
 ) -> list[dict]:
-    q = supabase.table("scraped_reels").select("*").eq("client_id", client_id)
+    """List a client's reels with filtering, sorting, and pagination.
+
+    Response carries `X-Total-Count` (matching filters, ignoring limit/offset)
+    so the UI can show "showing N of M" and paginate honestly. The body stays
+    a bare list for back-compat with existing callers.
+    """
+    base_filters = supabase.table("scraped_reels").select("*").eq("client_id", client_id)
     if own_reels_only:
-        q = q.is_("competitor_id", "null")
+        base_filters = base_filters.is_("competitor_id", "null")
     if outlier_only:
-        q = q.eq("is_outlier", True)
+        base_filters = base_filters.eq("is_outlier", True)
     if source:
-        q = q.eq("source", source)
-    # Sort order: posted_at desc by default so newest reels come first
-    _sort_col = sort_by if sort_by in ("posted_at", "views", "outlier_ratio") else "posted_at"
-    res = q.order(_sort_col, desc=True, nullsfirst=False).limit(limit).execute()
+        base_filters = base_filters.eq("source", source)
+    if competitor_id:
+        base_filters = base_filters.eq("competitor_id", competitor_id)
+    if creator:
+        # ilike with no wildcard = case-insensitive equality, matches Postgres
+        # citext semantics without needing a column type change.
+        base_filters = base_filters.ilike("account_username", creator)
+    if min_views is not None:
+        base_filters = base_filters.gte("views", min_views)
+    if max_views is not None:
+        base_filters = base_filters.lte("views", max_views)
+    if min_comments is not None:
+        base_filters = base_filters.gte("comments", min_comments)
+    if max_comments is not None:
+        base_filters = base_filters.lte("comments", max_comments)
+    if min_likes is not None:
+        base_filters = base_filters.gte("likes", min_likes)
+    if max_likes is not None:
+        base_filters = base_filters.lte("likes", max_likes)
+    if posted_after:
+        base_filters = base_filters.gte("posted_at", posted_after)
+    if posted_before:
+        base_filters = base_filters.lte("posted_at", posted_before)
+
+    sort_col = sort_by if sort_by in _REELS_SORT_WHITELIST else "posted_at"
+    desc = (sort_dir or "desc").lower() != "asc"
+
+    # Range over [offset, offset+limit) — supabase-py uses inclusive bounds.
+    page_end = offset + limit - 1
+    res = (
+        base_filters.order(sort_col, desc=desc, nullsfirst=False)
+        .range(offset, page_end)
+        .execute()
+    )
     data = res.data or []
     for row in data:
         enrich_engagement_metrics(row)
@@ -2240,6 +2328,48 @@ def list_reels(
         except Exception:
             # Table missing or RLS — return reels without analysis
             pass
+
+    # Total count (matching filters, ignoring limit/offset). Lightweight HEAD
+    # query — no row payload returned, only the count metadata.
+    total = len(data)
+    try:
+        count_q = supabase.table("scraped_reels").select("id", count="exact", head=True).eq(
+            "client_id", client_id
+        )
+        if own_reels_only:
+            count_q = count_q.is_("competitor_id", "null")
+        if outlier_only:
+            count_q = count_q.eq("is_outlier", True)
+        if source:
+            count_q = count_q.eq("source", source)
+        if competitor_id:
+            count_q = count_q.eq("competitor_id", competitor_id)
+        if creator:
+            count_q = count_q.ilike("account_username", creator)
+        if min_views is not None:
+            count_q = count_q.gte("views", min_views)
+        if max_views is not None:
+            count_q = count_q.lte("views", max_views)
+        if min_comments is not None:
+            count_q = count_q.gte("comments", min_comments)
+        if max_comments is not None:
+            count_q = count_q.lte("comments", max_comments)
+        if min_likes is not None:
+            count_q = count_q.gte("likes", min_likes)
+        if max_likes is not None:
+            count_q = count_q.lte("likes", max_likes)
+        if posted_after:
+            count_q = count_q.gte("posted_at", posted_after)
+        if posted_before:
+            count_q = count_q.lte("posted_at", posted_before)
+        count_res = count_q.execute()
+        total = int(count_res.count or 0)
+    except Exception:
+        # Count is best-effort — body is still authoritative.
+        pass
+    response.headers["X-Total-Count"] = str(total)
+    # Make the header readable from browser fetches.
+    response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
     return data
 
 
@@ -2615,3 +2745,119 @@ def scrape_client_reels(
         "competitors_considered": found["competitors_considered"],
         "details": details,
     }
+
+
+# ---------------------------------------------------------------------------
+# Dashboard "what dropped today" sections
+# ---------------------------------------------------------------------------
+# Two tiny surfaces that run off the daily scrape output:
+#   - fresh-niche: reels found via keyword search, ranked by raw views
+#   - competitor-wins: competitor reels outperforming that competitor's own avg
+# Intentionally simple — no milestone logic, no toggles, no fallbacks.
+
+_DASHBOARD_LOOKBACK_DAYS = 3
+_DASHBOARD_LIMIT = 3
+_COMPETITOR_WIN_MIN_RATIO = 1.5
+
+
+@router.get(
+    "/clients/{slug}/dashboard/fresh-niche",
+    response_model=list[ScrapedReelOut],
+)
+def dashboard_fresh_niche(
+    slug: str,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    days: int = Query(_DASHBOARD_LOOKBACK_DAYS, ge=1, le=14),
+    limit: int = Query(_DASHBOARD_LIMIT, ge=1, le=10),
+) -> list[dict]:
+    """Recent keyword-similarity reels, ranked by views.
+
+    Surfaces fresh content from random accounts in the niche — picked up by the
+    daily keyword_reel_similarity job. No competitor link, no ratio.
+    """
+    _ = slug
+    since_iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    try:
+        res = (
+            supabase.table("scraped_reels")
+            .select("*")
+            .eq("client_id", client_id)
+            .eq("source", "keyword_similarity")
+            .gte("posted_at", since_iso)
+            .order("views", desc=True)
+            .limit(limit)
+            .execute()
+        )
+    except Exception as e:
+        logger.warning("dashboard_fresh_niche: fetch failed: %s", e)
+        return []
+
+    rows = [dict(r) for r in (res.data or [])]
+    for r in rows:
+        enrich_engagement_metrics(r)
+        normalize_scraped_reel_row_for_api(r)
+    if rows:
+        try:
+            _attach_reel_analyses(supabase, client_id, rows)
+        except Exception:
+            pass
+    return rows
+
+
+@router.get(
+    "/clients/{slug}/dashboard/competitor-wins",
+    response_model=list[ScrapedReelOut],
+)
+def dashboard_competitor_wins(
+    slug: str,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    days: int = Query(_DASHBOARD_LOOKBACK_DAYS, ge=1, le=14),
+    limit: int = Query(_DASHBOARD_LIMIT, ge=1, le=10),
+    min_ratio: float = Query(_COMPETITOR_WIN_MIN_RATIO, ge=1.0, le=100.0),
+) -> list[dict]:
+    """Recent competitor reels outperforming their own account average.
+
+    Ratio = reel views / that competitor's stored account_avg_views. No milestone
+    math — just "this one is punching above its weight for this account".
+    """
+    _ = slug
+    since_iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    try:
+        res = (
+            supabase.table("scraped_reels")
+            .select("*")
+            .eq("client_id", client_id)
+            .not_.is_("competitor_id", "null")
+            .gte("posted_at", since_iso)
+            .execute()
+        )
+    except Exception as e:
+        logger.warning("dashboard_competitor_wins: fetch failed: %s", e)
+        return []
+
+    enriched: list[dict] = []
+    for row in res.data or []:
+        r = dict(row)
+        avg = _int_metric_val(r.get("account_avg_views"))
+        views = _int_metric_val(r.get("views"))
+        if avg <= 0 or views <= 0:
+            continue
+        ratio = round(views / float(avg), 4)
+        if ratio < min_ratio:
+            continue
+        r["win_ratio"] = ratio
+        enriched.append(r)
+
+    enriched.sort(key=lambda x: float(x.get("win_ratio") or 0), reverse=True)
+    top = enriched[:limit]
+    for r in top:
+        enrich_engagement_metrics(r)
+        normalize_scraped_reel_row_for_api(r)
+    if top:
+        try:
+            _attach_reel_analyses(supabase, client_id, top)
+        except Exception:
+            pass
+    return top

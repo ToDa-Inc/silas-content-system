@@ -11,7 +11,6 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
-  Legend,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -48,6 +47,7 @@ const MAX_SERIES = 8;
 
 type MetricKey = "views" | "likes" | "comments";
 type ChartKind = "line" | "area" | "bars";
+type YScale = "linear" | "log";
 /** Presets use the latest snapshot as the window end; custom uses calendar from/to (local day bounds). */
 type PresetTimeRange = "30d" | "90d" | "all";
 type TrendTimeRange = PresetTimeRange | "custom";
@@ -244,10 +244,141 @@ function formatAxisNumber(n: number): string {
   return String(Math.round(n));
 }
 
+/** IG CDN URLs 403 without auth; route through same-origin proxy so tokens survive. */
+function proxiedThumbSrc(raw: string | null | undefined): string {
+  const t = (raw || "").trim();
+  if (!t) return "";
+  try {
+    const h = new URL(t).hostname.toLowerCase();
+    if (h.endsWith(".cdninstagram.com") || h.endsWith(".fbcdn.net")) {
+      return `/api/thumbnail-proxy?url=${encodeURIComponent(t)}`;
+    }
+  } catch {
+    /* leave as-is */
+  }
+  return t;
+}
+
 type Props = {
   clientSlug: string;
   orgSlug: string;
 };
+
+type ReelPickerProps = {
+  series: OwnReelsMetricsSeries[];
+  labels: string[];
+  colors: readonly string[];
+  metric: MetricKey;
+  hidden: Set<string>;
+  onToggle: (reelId: string) => void;
+};
+
+function ReelPickerStrip({ series, labels, colors, metric, hidden, onToggle }: ReelPickerProps) {
+  if (series.length === 0) return null;
+  return (
+    <div className="mb-4 -mx-1 flex gap-2 overflow-x-auto px-1 pb-2">
+      {series.map((r, i) => {
+        const color = colors[i % colors.length];
+        const isHidden = hidden.has(r.reel_id);
+        const latest = latestMetricValue(r, metric);
+        return (
+          <button
+            key={r.reel_id}
+            type="button"
+            onClick={() => onToggle(r.reel_id)}
+            title={isHidden ? "Show this reel" : "Hide this reel"}
+            className={`group flex shrink-0 items-center gap-2 rounded-xl border bg-app-chip-bg px-2 py-1.5 text-left transition-colors hover:bg-app-chip-bg-hover ${
+              isHidden ? "opacity-40" : ""
+            }`}
+            style={{ borderColor: color, borderLeftWidth: 3 }}
+          >
+            <span className="relative h-9 w-9 shrink-0 overflow-hidden rounded-md bg-app-chip-bg-hover">
+              {r.thumbnail_url ? (
+                // eslint-disable-next-line @next/next/no-img-element -- IG via proxy
+                <img
+                  src={proxiedThumbSrc(r.thumbnail_url)}
+                  alt=""
+                  className="h-full w-full object-cover"
+                  loading="lazy"
+                  decoding="async"
+                  referrerPolicy="no-referrer"
+                />
+              ) : null}
+            </span>
+            <span className="flex min-w-0 flex-col">
+              <span className="max-w-[140px] truncate text-[11px] font-medium text-app-fg">
+                {labels[i]}
+              </span>
+              <span className="text-[10px] font-semibold text-app-fg-muted">
+                {formatAxisNumber(latest)} {metric}
+              </span>
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+type ThumbTooltipProps = {
+  active?: boolean;
+  payload?: Array<{ dataKey: string; value: number | string | null | undefined; color?: string }>;
+  series: OwnReelsMetricsSeries[];
+  dataKeys: string[];
+  labels: string[];
+  metric: MetricKey;
+  containerStyle: CSSProperties;
+  labelStyle: CSSProperties;
+};
+
+function ThumbnailTooltip({
+  active,
+  payload,
+  series,
+  dataKeys,
+  labels,
+  metric,
+  containerStyle,
+  labelStyle,
+}: ThumbTooltipProps) {
+  if (!active || !payload?.length) return null;
+  const rowT = (payload[0] as unknown as { payload?: { t?: string } })?.payload?.t;
+  return (
+    <div style={containerStyle}>
+      <div style={labelStyle}>{rowT ? formatTooltipWhen(rowT) : ""}</div>
+      <div className="flex flex-col gap-1.5">
+        {payload
+          .filter((p) => p.value != null && p.value !== "")
+          .map((p) => {
+            const i = dataKeys.indexOf(p.dataKey);
+            if (i < 0) return null;
+            const reel = series[i];
+            return (
+              <div key={p.dataKey} className="flex items-center gap-2">
+                <span className="relative h-7 w-7 shrink-0 overflow-hidden rounded" style={{ boxShadow: `inset 0 0 0 2px ${p.color}` }}>
+                  {reel?.thumbnail_url ? (
+                    // eslint-disable-next-line @next/next/no-img-element -- IG via proxy
+                    <img
+                      src={proxiedThumbSrc(reel.thumbnail_url)}
+                      alt=""
+                      className="h-full w-full object-cover"
+                      loading="lazy"
+                      decoding="async"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : null}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[11px]">{labels[i]}</span>
+                <span className="shrink-0 text-[11px] font-semibold" style={{ color: p.color }}>
+                  {formatAxisNumber(Number(p.value))} {metric}
+                </span>
+              </div>
+            );
+          })}
+      </div>
+    </div>
+  );
+}
 
 export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
   const { resolvedTheme } = useTheme();
@@ -258,6 +389,11 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
   const [customTo, setCustomTo] = useState("");
   const [raw, setRaw] = useState<OwnReelsMetricsSeries[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [hiddenReelIds, setHiddenReelIds] = useState<Set<string>>(new Set());
+  const [yScale, setYScale] = useState<YScale>("linear");
+  // True until the user interacts with the picker; lets us auto-default the
+  // top-4 visible state without ever overriding an explicit user choice.
+  const [autoHideApplied, setAutoHideApplied] = useState<boolean>(false);
   const canFetch = Boolean(clientSlug.trim() && orgSlug.trim());
   const [loading, setLoading] = useState(canFetch);
 
@@ -296,6 +432,33 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
       setCustomTo(d.to);
     }
   }, [timeRange, raw, customFrom, customTo]);
+
+  // Reset the auto-hide gate whenever a fresh dataset arrives so the top-4
+  // default re-applies after a client switch or manual reload.
+  useEffect(() => {
+    setAutoHideApplied(false);
+  }, [raw]);
+
+  // Prune stale hidden IDs (reels no longer in dataset).
+  useEffect(() => {
+    if (!raw) return;
+    setHiddenReelIds((prev) => {
+      if (prev.size === 0) return prev;
+      const valid = new Set(raw.map((r) => r.reel_id));
+      const next = new Set([...prev].filter((id) => valid.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [raw]);
+
+  const toggleReelVisibility = (reelId: string) => {
+    setAutoHideApplied(true); // user interacted — stop auto-managing
+    setHiddenReelIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(reelId)) next.delete(reelId);
+      else next.add(reelId);
+      return next;
+    });
+  };
 
   const isDark = resolvedTheme !== "light";
   const tickFill = isDark ? "#e4e4e7" : "#3f3f46";
@@ -342,6 +505,20 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
     () => buildMergedRows(series, metric),
     [series, metric],
   );
+
+  // Default: only top 4 by latest metric are visible. Picker still shows all
+  // MAX_SERIES so the user can toggle any of the quiet reels on. Applies once
+  // per dataset; any manual toggle disables auto-management.
+  const DEFAULT_VISIBLE = 4;
+  useEffect(() => {
+    if (autoHideApplied || series.length <= DEFAULT_VISIBLE) return;
+    const rankedIds = [...series]
+      .sort((a, b) => latestMetricValue(b, metric) - latestMetricValue(a, metric))
+      .map((r) => r.reel_id);
+    const hide = new Set(rankedIds.slice(DEFAULT_VISIBLE));
+    setHiddenReelIds(hide);
+    setAutoHideApplied(true);
+  }, [series, metric, autoHideApplied]);
 
   const barRows = useMemo(() => {
     return series.map((r, i) => ({
@@ -405,38 +582,73 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
     return m <= 0 ? 1 : Math.ceil(m * 1.12);
   };
 
+  // Recharts log scale silently drops any <=0 data point, which leaves gaps in
+  // long reels that were just scraped. Floor at 1 so every snapshot renders.
+  const yAxisScaleProps =
+    yScale === "log"
+      ? ({
+          scale: "log" as const,
+          domain: [1, "auto"] as [number, string],
+          allowDataOverflow: true,
+        } as const)
+      : ({
+          domain: [0, yDomainMax] as [number, (v: number) => number],
+        } as const);
+
   return (
     <div className="glass glass-strong rounded-2xl border border-app-card-border p-4 sm:p-6">
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-sm font-semibold text-app-fg">Trends over time</h2>
           <p className="text-[11px] text-app-fg-muted">
-            Lines carry each reel&apos;s last known value forward between syncs so trends stay readable ·
-            2+ syncs recommended · One snapshot → bar comparison · Bars = latest per reel · Presets end at
-            your newest sync; custom range uses calendar dates (snapshot timestamps in your timezone)
+            Tap a reel below to toggle it on the chart. Log scale helps when one reel dwarfs the rest.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {(
-            [
-              ["line", "Line"],
-              ["area", "Area"],
-              ["bars", "Bars"],
-            ] as const
-          ).map(([k, label]) => (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {/* Chart kind + Y-scale merged into a single compact segmented group. */}
+          <div
+            className="inline-flex overflow-hidden rounded-full border border-app-card-border bg-app-chip-bg"
+            role="group"
+            aria-label="Chart type"
+          >
+            {(
+              [
+                ["line", "Line"],
+                ["bars", "Bars"],
+              ] as const
+            ).map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setChartKind(k)}
+                className={
+                  chartKind === k
+                    ? "bg-app-accent px-3 py-1.5 text-[11px] font-semibold text-white dark:text-zinc-950"
+                    : "px-3 py-1.5 text-[11px] font-medium text-app-fg-secondary hover:bg-app-chip-bg-hover"
+                }
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {chartKind !== "bars" ? (
             <button
-              key={k}
               type="button"
-              onClick={() => setChartKind(k)}
+              onClick={() => setYScale(yScale === "log" ? "linear" : "log")}
+              title={
+                yScale === "log"
+                  ? "Log scale on — tap to switch to linear"
+                  : "Log scale off — tap to flatten big vs small reels onto one chart"
+              }
               className={
-                chartKind === k
-                  ? "rounded-full bg-app-accent px-3 py-1.5 text-xs font-semibold text-white dark:text-zinc-950"
-                  : "rounded-full border border-app-card-border bg-app-chip-bg px-3 py-1.5 text-xs font-medium text-app-fg-secondary hover:bg-app-chip-bg-hover"
+                yScale === "log"
+                  ? "rounded-full border border-app-accent/40 bg-app-accent/15 px-2.5 py-1.5 text-[11px] font-semibold text-app-accent"
+                  : "rounded-full border border-app-card-border bg-app-chip-bg px-2.5 py-1.5 text-[11px] font-medium text-app-fg-secondary hover:bg-app-chip-bg-hover"
               }
             >
-              {label}
+              Log
             </button>
-          ))}
+          ) : null}
         </div>
       </div>
 
@@ -457,43 +669,34 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
             </button>
           ))}
           <span className="hidden h-4 w-px shrink-0 bg-app-divider sm:block" aria-hidden />
-          {(
-            [
-              ["30d", "Last month"],
-              ["90d", "Last 3 months"],
-              ["all", "Historic"],
-            ] as const
-          ).map(([k, label]) => (
-            <button
-              key={k}
-              type="button"
-              onClick={() => setTimeRange(k)}
-              className={
-                timeRange === k
-                  ? "rounded-full border border-app-accent/40 bg-app-accent/15 px-3 py-1.5 text-xs font-semibold text-app-accent"
-                  : "rounded-full border border-app-card-border bg-app-chip-bg px-3 py-1.5 text-xs font-medium text-app-fg-secondary transition-colors hover:bg-app-chip-bg-hover"
-              }
-            >
-              {label}
-            </button>
-          ))}
-          <button
-            type="button"
-            onClick={() => setTimeRange("custom")}
-            className={
-              timeRange === "custom"
-                ? "rounded-full border border-app-accent/40 bg-app-accent/15 px-3 py-1.5 text-xs font-semibold text-app-accent"
-                : "rounded-full border border-app-card-border bg-app-chip-bg px-3 py-1.5 text-xs font-medium text-app-fg-secondary transition-colors hover:bg-app-chip-bg-hover"
-            }
+          {/* Time range — one segmented control replaces four standalone pills. */}
+          <div
+            className="inline-flex overflow-hidden rounded-full border border-app-card-border bg-app-chip-bg"
+            role="group"
+            aria-label="Time range"
           >
-            Custom range
-          </button>
-          <Link
-            href="/intelligence"
-            className="ml-auto rounded-full border border-app-card-border px-3 py-1.5 text-xs font-semibold text-app-accent hover:bg-app-chip-bg"
-          >
-            Intelligence
-          </Link>
+            {(
+              [
+                ["30d", "30d"],
+                ["90d", "90d"],
+                ["all", "All"],
+                ["custom", "Custom"],
+              ] as const
+            ).map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setTimeRange(k)}
+                className={
+                  timeRange === k
+                    ? "bg-app-accent/15 px-3 py-1.5 text-[11px] font-semibold text-app-accent"
+                    : "px-3 py-1.5 text-[11px] font-medium text-app-fg-secondary hover:bg-app-chip-bg-hover"
+                }
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
         {timeRange === "custom" && effectiveRaw?.length ? (
           <div
@@ -688,6 +891,14 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
               </Link>
             </p>
           ) : null}
+          <ReelPickerStrip
+            series={series}
+            labels={labels}
+            colors={lineColors}
+            metric={metric}
+            hidden={hiddenReelIds}
+            onToggle={toggleReelVisibility}
+          />
           <div className="h-[420px] w-full min-w-0">
             <ResponsiveContainer width="100%" height="100%">
               {chartKind === "line" ? (
@@ -709,31 +920,23 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
                     axisLine={{ stroke: axisLineStroke }}
                     tickFormatter={formatAxisNumber}
                     width={56}
-                    domain={[0, yDomainMax]}
+                    {...yAxisScaleProps}
                   />
                   <Tooltip
-                    contentStyle={tooltipContentStyle}
-                    labelStyle={tooltipLabelStyle}
-                    itemStyle={tooltipItemStyle}
-                    labelFormatter={(_label, payload) => {
-                      const t = payload?.[0]?.payload?.t as string | undefined;
-                      return t ? formatTooltipWhen(t) : "";
-                    }}
-                    formatter={(value: number | string) =>
-                      value != null && value !== ""
-                        ? [formatAxisNumber(Number(value)), metric]
-                        : ["—", metric]
+                    content={
+                      <ThumbnailTooltip
+                        series={series}
+                        dataKeys={dataKeys}
+                        labels={labels}
+                        metric={metric}
+                        containerStyle={tooltipContentStyle}
+                        labelStyle={tooltipLabelStyle}
+                      />
                     }
-                  />
-                  <Legend
-                    wrapperStyle={{ fontSize: 11, paddingTop: 8 }}
-                    formatter={(value) => {
-                      const i = dataKeys.indexOf(value);
-                      return i >= 0 ? labels[i] : value;
-                    }}
                   />
                   {dataKeys.map((key, i) => {
                     const c = lineColors[i % lineColors.length];
+                    const isHidden = hiddenReelIds.has(series[i]?.reel_id ?? "");
                     return (
                       <Line
                         key={key}
@@ -745,6 +948,7 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
                         dot={{ r: 2.5, fill: c, stroke: isDark ? "#18181b" : "#fff", strokeWidth: 1 }}
                         activeDot={{ r: 5, fill: c, stroke: isDark ? "#fafafa" : "#fff", strokeWidth: 2 }}
                         connectNulls
+                        hide={isHidden}
                       />
                     );
                   })}
@@ -791,41 +995,36 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
                     axisLine={{ stroke: axisLineStroke }}
                     tickFormatter={formatAxisNumber}
                     width={56}
-                    domain={[0, yDomainMax]}
+                    {...yAxisScaleProps}
                   />
                   <Tooltip
-                    contentStyle={tooltipContentStyle}
-                    labelStyle={tooltipLabelStyle}
-                    itemStyle={tooltipItemStyle}
-                    labelFormatter={(_label, payload) => {
-                      const t = payload?.[0]?.payload?.t as string | undefined;
-                      return t ? formatTooltipWhen(t) : "";
-                    }}
-                    formatter={(value: number | string) =>
-                      value != null && value !== ""
-                        ? [formatAxisNumber(Number(value)), metric]
-                        : ["—", metric]
+                    content={
+                      <ThumbnailTooltip
+                        series={series}
+                        dataKeys={dataKeys}
+                        labels={labels}
+                        metric={metric}
+                        containerStyle={tooltipContentStyle}
+                        labelStyle={tooltipLabelStyle}
+                      />
                     }
                   />
-                  <Legend
-                    wrapperStyle={{ fontSize: 11, paddingTop: 8 }}
-                    formatter={(value) => {
-                      const i = dataKeys.indexOf(value);
-                      return i >= 0 ? labels[i] : value;
-                    }}
-                  />
-                  {dataKeys.map((key, i) => (
-                    <Area
-                      key={key}
-                      type="monotone"
-                      dataKey={key}
-                      name={key}
-                      stroke={lineColors[i % lineColors.length]}
-                      strokeWidth={2.25}
-                      fill={`url(#area-grad-${key})`}
-                      connectNulls
-                    />
-                  ))}
+                  {dataKeys.map((key, i) => {
+                    const isHidden = hiddenReelIds.has(series[i]?.reel_id ?? "");
+                    return (
+                      <Area
+                        key={key}
+                        type="monotone"
+                        dataKey={key}
+                        name={key}
+                        stroke={lineColors[i % lineColors.length]}
+                        strokeWidth={2.25}
+                        fill={`url(#area-grad-${key})`}
+                        connectNulls
+                        hide={isHidden}
+                      />
+                    );
+                  })}
                 </AreaChart>
               )}
             </ResponsiveContainer>

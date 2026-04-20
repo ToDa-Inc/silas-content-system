@@ -12,6 +12,7 @@ The **repo root** `Dockerfile` builds the **Next.js** dashboard only. GitHub Act
 6. Point **GitHub Actions** secrets at this host:
    - `SYNC_ALL_URL` = `https://<api-service>/api/v1/cron/sync-all`
    - `NICHE_DISCOVERY_CRON_URL` = `https://<api-service>/api/v1/cron/keyword-reel-similarity` (or `…/niche-discovery`)
+   - Optional: `SCRAPED_REELS_REFRESH_URL` = `https://<api-service>/api/v1/cron/scraped-reels-refresh` (or omit and derive from `SYNC_ALL_URL`; workflow `cron-scraped-reels-refresh.yml` runs this daily)
 7. On the **dashboard** service, set `CONTENT_API_URL` / `NEXT_PUBLIC_CONTENT_API_URL` to this API’s public URL.
 
 ## Worker

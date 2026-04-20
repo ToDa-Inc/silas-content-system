@@ -1,7 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowDown,
   ArrowUp,
@@ -9,13 +16,14 @@ import {
   Clapperboard,
   Info,
   Search,
+  SlidersHorizontal,
   Sparkles,
   X,
 } from "lucide-react";
 import { ReelThumbnail } from "@/components/reel-thumbnail";
 import { AppSelect } from "@/components/ui/app-select";
 import { Tooltip } from "@/components/ui/tooltip";
-import type { ScrapedReelRow } from "@/lib/api";
+import type { ReelsListSortBy, ScrapedReelRow } from "@/lib/api";
 import { formatViewsToComments, viewsToCommentsRatio } from "@/lib/reel-comment-view";
 import {
   clientApiHeaders,
@@ -31,6 +39,90 @@ import { RecreateReelModal } from "../components/recreate-reel-modal";
 import { IntelligenceProgressBar } from "../components/intelligence-progress-bar";
 import { ReelAnalysisDetailModal } from "../components/reel-analysis-detail-modal";
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Page-local sort keys are columns the server can't sort on (joined from
+ * reel_analyses, or computed from base columns). They only ever apply as a
+ * secondary sort over the loaded page.
+ */
+type LocalSortKey = "total_score" | "comment_view_ratio";
+type AnySortKey = ReelsListSortBy | LocalSortKey;
+
+type AnalysisFilter = "all" | "analyzed" | "pending";
+
+/** Mirrors the URL state owned by the page-level Server Component. */
+type ServerState = {
+  sortBy: ReelsListSortBy;
+  sortDir: "asc" | "desc";
+  page: number;
+  pageSize: number;
+  creator: string;
+  outliersOnly: boolean;
+  source: string;
+  competitorId: string;
+  minViews: number | null;
+  maxViews: number | null;
+  minLikes: number | null;
+  maxLikes: number | null;
+  minComments: number | null;
+  maxComments: number | null;
+  postedAfter: string | null;
+  postedBefore: string | null;
+};
+
+type Props = {
+  rows: ScrapedReelRow[];
+  /** Total matching rows (across all pages) — from X-Total-Count. */
+  total: number;
+  clientSlug: string;
+  orgSlug: string;
+  serverState: ServerState;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Constants & small helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Sort keys the backend can ORDER BY directly. */
+const SERVER_SORT_KEYS: ReadonlySet<string> = new Set<ReelsListSortBy>([
+  "posted_at",
+  "views",
+  "likes",
+  "comments",
+  "saves",
+  "shares",
+  "outlier_ratio",
+  "similarity_score",
+  "video_duration",
+  "first_seen_at",
+]);
+
+const SORT_KEY_LABELS: Record<AnySortKey, string> = {
+  posted_at: "Posted",
+  views: "Views",
+  likes: "Likes",
+  comments: "Comments",
+  saves: "Saves",
+  shares: "Shares",
+  outlier_ratio: "Signal",
+  similarity_score: "Signal",
+  video_duration: "Duration",
+  first_seen_at: "First seen",
+  total_score: "Score",
+  comment_view_ratio: "C/V",
+};
+
+const PAGE_SIZE_OPTIONS = [20, 50, 100, 200] as const;
+const BULK_POLL_MS = 2500;
+const BULK_MAX_URLS = 20;
+const SEGMENT_MS = 20_000;
+const STALE_MS = 15 * 60 * 1000;
+/** Subtle styling for empty cells (`0` or `—`) so populated values pop. */
+const EMPTY_CELL_CLASS = "text-zinc-400 dark:text-app-fg-faint";
+
 function formatPosted(d: string | null | undefined): string {
   if (!d) return "—";
   try {
@@ -40,104 +132,72 @@ function formatPosted(d: string | null | undefined): string {
   }
 }
 
-type SortKey =
-  | "views"
-  | "likes"
-  | "comments"
-  | "saves"
-  | "shares"
-  | "comment_view_ratio"
-  | "video_duration"
-  | "outlier_ratio"
-  | "similarity_score"
-  | "posted_at"
-  | "total_score";
-type AnalysisFilter = "all" | "analyzed" | "pending";
+function startedAtIsStale(startedAt: string | null | undefined): boolean {
+  if (!startedAt) return false;
+  const t = Date.parse(startedAt);
+  if (Number.isNaN(t)) return false;
+  return Date.now() - t > STALE_MS;
+}
 
-type Props = {
-  rows: ScrapedReelRow[];
-  clientSlug: string;
-  orgSlug: string;
-};
-
-/** Rows eligible for bulk selection / re-analysis (must have a canonical post URL). */
 function rowHasPostUrl(row: ScrapedReelRow): boolean {
   return Boolean(row.post_url?.trim());
 }
 
-function compareForSort(a: ScrapedReelRow, b: ScrapedReelRow, key: SortKey): number {
+function isAnalyzable(row: ScrapedReelRow): boolean {
+  return Boolean(row.post_url?.trim() && !row.analysis);
+}
+
+/**
+ * Niche-keyword analyses (source = "keyword_similarity") write to a different
+ * payload shape than Silas scoring — the score columns end up null/0. Detect
+ * this combo so we render the row's actual content instead of a fake "0/50".
+ */
+function isNicheMatchOnly(row: ScrapedReelRow): boolean {
+  const a = row.analysis;
+  if (!a) return false;
+  const hasSilasScore =
+    a.weighted_total != null || (a.total_score != null && a.total_score > 0);
+  return row.source === "keyword_similarity" && !hasSilasScore;
+}
+
+/** Compares two rows for the given sort key (always ascending; caller flips). */
+function compareForSort(a: ScrapedReelRow, b: ScrapedReelRow, key: AnySortKey): number {
+  const num = (va: number | null | undefined, vb: number | null | undefined) => {
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    return va - vb;
+  };
   switch (key) {
-    case "views": {
-      const va = a.views;
-      const vb = b.views;
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      return va - vb;
-    }
-    case "likes": {
-      const va = a.likes;
-      const vb = b.likes;
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      return va - vb;
-    }
-    case "comments": {
-      const va = a.comments;
-      const vb = b.comments;
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      return va - vb;
-    }
-    case "saves": {
-      const va = a.saves;
-      const vb = b.saves;
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      return va - vb;
-    }
-    case "shares": {
-      const va = a.shares;
-      const vb = b.shares;
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      return va - vb;
-    }
+    case "views":
+      return num(a.views, b.views);
+    case "likes":
+      return num(a.likes, b.likes);
+    case "comments":
+      return num(a.comments, b.comments);
+    case "saves":
+      return num(a.saves, b.saves);
+    case "shares":
+      return num(a.shares, b.shares);
+    case "video_duration":
+      return num(a.video_duration, b.video_duration);
     case "comment_view_ratio": {
       const va = viewsToCommentsRatio(a);
       const vb = viewsToCommentsRatio(b);
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      return Number(va) - Number(vb);
-    }
-    case "video_duration": {
-      const va = a.video_duration;
-      const vb = b.video_duration;
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      return Number(va) - Number(vb);
+      return num(va == null ? null : Number(va), vb == null ? null : Number(vb));
     }
     case "outlier_ratio":
     case "similarity_score": {
-      // Unified "Signal" sort. Niche reels never have outlier_ratio and competitor
-      // reels never have similarity_score, but both signal "why this reel surfaced".
-      // Falling back per-row keeps niche matches from sinking when sorting Signal.
       const va = a.outlier_ratio ?? a.similarity_score ?? null;
       const vb = b.outlier_ratio ?? b.similarity_score ?? null;
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      return Number(va) - Number(vb);
+      return num(va, vb);
     }
-    case "posted_at": {
-      const ta = a.posted_at ? new Date(a.posted_at).getTime() : NaN;
-      const tb = b.posted_at ? new Date(b.posted_at).getTime() : NaN;
+    case "posted_at":
+    case "first_seen_at": {
+      const ka = key === "posted_at" ? a.posted_at : a.first_seen_at;
+      const kb = key === "posted_at" ? b.posted_at : b.first_seen_at;
+      const ta = ka ? new Date(ka).getTime() : NaN;
+      const tb = kb ? new Date(kb).getTime() : NaN;
       const na = Number.isNaN(ta);
       const nb = Number.isNaN(tb);
       if (na && nb) return 0;
@@ -158,55 +218,70 @@ function compareForSort(a: ScrapedReelRow, b: ScrapedReelRow, key: SortKey): num
   }
 }
 
-/**
- * Airtable-feel column header. Sort indicator is always rendered (faded when
- * inactive) so users can see at a glance which columns are sortable. The (i)
- * icon next to the label is what carries the explanatory tooltip — it stays
- * out of the way visually but invites a hover when a metric needs context.
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// SortHeader
+// ─────────────────────────────────────────────────────────────────────────────
+
 function SortHeader({
   label,
-  active,
-  dir,
+  primaryActive,
+  primaryDir,
+  secondaryActive,
+  secondaryDir,
   onClick,
   hint,
-  align = "left",
-  className,
+  serverSortable,
 }: {
   label: string;
-  active: boolean;
-  dir: "asc" | "desc";
-  onClick: () => void;
-  /** Tooltip body shown when the (i) icon is hovered/focused. */
+  primaryActive: boolean;
+  primaryDir: "asc" | "desc";
+  secondaryActive: boolean;
+  secondaryDir: "asc" | "desc";
+  onClick: (withShift: boolean) => void;
   hint?: string;
-  align?: "left" | "right";
-  className?: string;
+  /**
+   * False = column is page-local sort only (joined / computed). Header still
+   * works; we just skip the "primary indicator badge" since it can't drive
+   * the URL/server.
+   */
+  serverSortable: boolean;
 }) {
-  const ariaSort = active ? (dir === "desc" ? "descending" : "ascending") : "none";
+  const ariaSort = primaryActive
+    ? primaryDir === "desc"
+      ? "descending"
+      : "ascending"
+    : "none";
+  const showSecondary = secondaryActive && !primaryActive;
   return (
     <th
       aria-sort={ariaSort}
-      className={`py-3 pr-2 font-medium ${align === "right" ? "text-right" : ""} ${className ?? ""}`}
+      className="py-3 pr-2 font-medium"
     >
-      <span
-        className={`inline-flex items-center gap-1 ${align === "right" ? "justify-end" : ""}`}
-      >
+      <span className="inline-flex items-center gap-1">
         <button
           type="button"
-          onClick={onClick}
+          onClick={(e) => onClick(e.shiftKey)}
           className={`group inline-flex items-center gap-1 rounded text-left uppercase tracking-widest transition-colors ${
-            active
+            primaryActive || showSecondary
               ? "text-zinc-800 dark:text-app-fg"
               : "text-zinc-500 hover:text-zinc-700 dark:text-app-fg-subtle dark:hover:text-app-fg-muted"
           }`}
-          aria-label={`Sort by ${label}${active ? `, currently ${dir === "desc" ? "descending" : "ascending"}` : ""}`}
+          aria-label={`Sort by ${label}${
+            primaryActive ? `, currently ${primaryDir === "desc" ? "descending" : "ascending"}` : ""
+          }${secondaryActive ? `, also a secondary sort ${secondaryDir === "desc" ? "descending" : "ascending"}` : ""}. Shift+click to add as a secondary sort.`}
         >
           <span>{label}</span>
-          {active ? (
-            dir === "desc" ? (
+          {primaryActive ? (
+            primaryDir === "desc" ? (
               <ArrowDown className="h-3 w-3 shrink-0" aria-hidden />
             ) : (
               <ArrowUp className="h-3 w-3 shrink-0" aria-hidden />
+            )
+          ) : showSecondary ? (
+            secondaryDir === "desc" ? (
+              <ArrowDown className="h-3 w-3 shrink-0 opacity-60" aria-hidden />
+            ) : (
+              <ArrowUp className="h-3 w-3 shrink-0 opacity-60" aria-hidden />
             )
           ) : (
             <ChevronsUpDown
@@ -214,9 +289,23 @@ function SortHeader({
               aria-hidden
             />
           )}
+          {showSecondary ? (
+            <span
+              className="rounded bg-zinc-200 px-1 text-[8px] font-bold text-zinc-700 dark:bg-white/15 dark:text-app-fg-muted"
+              aria-hidden
+            >
+              2
+            </span>
+          ) : null}
         </button>
-        {hint ? (
-          <Tooltip content={hint}>
+        {hint || !serverSortable ? (
+          <Tooltip
+            content={
+              !serverSortable
+                ? `${hint ? hint + " " : ""}This column sorts the current page only.`
+                : (hint as string)
+            }
+          >
             <span
               className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded text-zinc-400 transition-colors hover:bg-zinc-200/80 hover:text-zinc-700 dark:text-app-fg-faint dark:hover:bg-white/10 dark:hover:text-app-fg-muted"
               tabIndex={0}
@@ -231,14 +320,17 @@ function SortHeader({
   );
 }
 
-/** Removable chip used in the active-filters strip above the table. */
+// ─────────────────────────────────────────────────────────────────────────────
+// FilterChip
+// ─────────────────────────────────────────────────────────────────────────────
+
 function FilterChip({
   label,
   value,
   onClear,
 }: {
   label: string;
-  value: string;
+  value: ReactNode;
   onClear: () => void;
 }) {
   return (
@@ -259,42 +351,61 @@ function FilterChip({
   );
 }
 
-/** Friendly labels for the active-filter chip strip. */
-const SORT_KEY_LABELS: Record<SortKey, string> = {
-  views: "Views",
-  likes: "Likes",
-  comments: "Comments",
-  saves: "Saves",
-  shares: "Shares",
-  comment_view_ratio: "C/V",
-  video_duration: "Duration",
-  outlier_ratio: "Signal",
-  similarity_score: "Signal",
-  posted_at: "Posted",
-  total_score: "Score",
+// ─────────────────────────────────────────────────────────────────────────────
+// Range filters popover
+// ─────────────────────────────────────────────────────────────────────────────
+
+type DraftRanges = {
+  minViews: string;
+  maxViews: string;
+  minLikes: string;
+  maxLikes: string;
+  minComments: string;
+  maxComments: string;
+  postedAfter: string;
+  postedBefore: string;
 };
 
-/** First-time analyze only: has post URL and no analysis row yet. */
-function isAnalyzable(row: ScrapedReelRow): boolean {
-  return Boolean(row.post_url?.trim() && !row.analysis);
+function emptyDraftFromState(s: ServerState): DraftRanges {
+  return {
+    minViews: s.minViews?.toString() ?? "",
+    maxViews: s.maxViews?.toString() ?? "",
+    minLikes: s.minLikes?.toString() ?? "",
+    maxLikes: s.maxLikes?.toString() ?? "",
+    minComments: s.minComments?.toString() ?? "",
+    maxComments: s.maxComments?.toString() ?? "",
+    postedAfter: s.postedAfter ?? "",
+    postedBefore: s.postedBefore ?? "",
+  };
 }
 
-/**
- * Niche-keyword analyses (source = "keyword_similarity") write to a different
- * payload shape than Silas scoring — the score columns end up null/0 in the DB.
- * Detect that combo so we can render the row's actual content (verdict, similarity)
- * instead of a misleading "0/50 · Weak" Silas display.
- */
-function isNicheMatchOnly(row: ScrapedReelRow): boolean {
-  const a = row.analysis;
-  if (!a) return false;
-  const hasSilasScore =
-    a.weighted_total != null || (a.total_score != null && a.total_score > 0);
-  return row.source === "keyword_similarity" && !hasSilasScore;
+function RangeInput({
+  value,
+  onChange,
+  placeholder,
+  type = "number",
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  type?: "number" | "date";
+}) {
+  return (
+    <input
+      type={type}
+      inputMode={type === "number" ? "numeric" : undefined}
+      min={type === "number" ? 0 : undefined}
+      value={value}
+      placeholder={placeholder}
+      onChange={(e) => onChange(e.target.value)}
+      className="h-8 w-full rounded-md border border-zinc-200/80 bg-white/90 px-2 text-xs text-zinc-900 shadow-sm transition-colors focus:border-zinc-300/90 focus:outline-none focus:ring-2 focus:ring-amber-500/30 dark:border-white/10 dark:bg-zinc-900/80 dark:text-app-fg dark:focus:ring-amber-400/25"
+    />
+  );
 }
 
-/** Subtle styling for empty cells (`0` or `—`) so populated values pop. */
-const EMPTY_CELL_CLASS = "text-zinc-400 dark:text-app-fg-faint";
+// ─────────────────────────────────────────────────────────────────────────────
+// Polling types (unchanged)
+// ─────────────────────────────────────────────────────────────────────────────
 
 type BulkJobPoll = {
   status: string;
@@ -315,29 +426,81 @@ type TrackedJobPoll = BulkJobPoll & {
   started_at?: string | null;
 };
 
-const BULK_POLL_MS = 2500;
-const BULK_MAX_URLS = 20;
-/** Matches bulk UI estimate: fill toward next step over ~20s, cap at ~88% of segment until server advances. */
-const SEGMENT_MS = 20_000;
-const STALE_MS = 15 * 60 * 1000;
-const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
+// ─────────────────────────────────────────────────────────────────────────────
+// Main component
+// ─────────────────────────────────────────────────────────────────────────────
 
-function startedAtIsStale(startedAt: string | null | undefined): boolean {
-  if (!startedAt) return false;
-  const t = Date.parse(startedAt);
-  if (Number.isNaN(t)) return false;
-  return Date.now() - t > STALE_MS;
-}
-
-export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
+export function IntelligenceReelsTable({
+  rows,
+  total,
+  clientSlug,
+  orgSlug,
+  serverState,
+}: Props) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  // ─── URL-state setter ────────────────────────────────────────────────────
+  // Given a sparse patch of search-params updates, rebuild the URL and push it.
+  // Centralizing here keeps every "change a server filter" call site short,
+  // and guarantees we always reset to page=1 unless explicitly preserved.
+  const pushFilters = useCallback(
+    (
+      patch: Record<string, string | number | null | undefined>,
+      opts: { keepPage?: boolean } = {},
+    ) => {
+      const next = new URLSearchParams(searchParams?.toString() ?? "");
+      for (const [k, v] of Object.entries(patch)) {
+        if (v == null || v === "") {
+          next.delete(k);
+        } else {
+          next.set(k, String(v));
+        }
+      }
+      if (!opts.keepPage && !("page" in patch)) {
+        next.delete("page");
+      }
+      const qs = next.toString();
+      router.push(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    },
+    [router, pathname, searchParams],
+  );
+
+  const resetServerFilters = useCallback(() => {
+    router.push(pathname, { scroll: false });
+  }, [router, pathname]);
+
+  // ─── Client-only state ───────────────────────────────────────────────────
   const [detailReelId, setDetailReelId] = useState<string | null>(null);
-  const [creatorFilter, setCreatorFilter] = useState("");
   const [analysisFilter, setAnalysisFilter] = useState<AnalysisFilter>("all");
   const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey | null>(null);
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+
+  /** Page-local secondary sort. Always applied AFTER the server-sorted page. */
+  const [secondarySort, setSecondarySort] = useState<{
+    key: AnySortKey;
+    dir: "asc" | "desc";
+  } | null>(null);
+
+  /** Page-local primary sort, used when the column isn't server-sortable. */
+  const [localPrimarySort, setLocalPrimarySort] = useState<{
+    key: LocalSortKey;
+    dir: "asc" | "desc";
+  } | null>(null);
+
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [draftRanges, setDraftRanges] = useState<DraftRanges>(() =>
+    emptyDraftFromState(serverState),
+  );
+
+  // Keep the draft in sync when the URL changes from the outside (back button,
+  // chip clear, etc).
+  useEffect(() => {
+    setDraftRanges(emptyDraftFromState(serverState));
+  }, [serverState]);
+
+  // Bulk / job state (unchanged from previous version).
   const [analyzeOpen, setAnalyzeOpen] = useState(false);
   const [analyzeInitialUrl, setAnalyzeInitialUrl] = useState<string | null>(null);
   const [analyzeSkipApify, setAnalyzeSkipApify] = useState(false);
@@ -345,42 +508,35 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [bulkMsg, setBulkMsg] = useState<string | null>(null);
   const [trackedJobId, setTrackedJobId] = useState<string | null>(null);
-  const [trackedJobType, setTrackedJobType] = useState<"reel_analyze_bulk" | "reel_analyze_url" | null>(
-    null,
-  );
+  const [trackedJobType, setTrackedJobType] = useState<
+    "reel_analyze_bulk" | "reel_analyze_url" | null
+  >(null);
   const [bulkExpectedTotal, setBulkExpectedTotal] = useState<number | null>(null);
   const [lastJob, setLastJob] = useState<TrackedJobPoll | null>(null);
   const [tick, setTick] = useState(0);
   const headerSelectRef = useRef<HTMLInputElement>(null);
   const segmentDoneRef = useRef<number>(-999);
-  /** Easing clock for the fake progress bar — state (not refs) so eslint allows use in render. */
   const [wallMs, setWallMs] = useState(0);
   const [segmentStartMs, setSegmentStartMs] = useState(0);
   const pollTerminalHandledRef = useRef(false);
   const prevTrackedJobIdRef = useRef<string | null>(null);
-  const [page, setPage] = useState(1);
-  /** 0 = show all rows (no pagination). */
-  const [pageSize, setPageSize] = useState<number>(50);
 
-  const creatorOptions = useMemo(() => {
-    const set = new Set<string>();
-    for (const r of rows) {
-      if (r.account_username?.trim()) set.add(r.account_username.trim());
-    }
-    return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
-  }, [rows]);
-
-  // Debounce raw input → query so the table doesn't re-sort on every keystroke.
+  // ─── Debounced text search (page-local) ─────────────────────────────────
   useEffect(() => {
     const id = setTimeout(() => setSearchQuery(searchInput.trim().toLowerCase()), 200);
     return () => clearTimeout(id);
   }, [searchInput]);
 
-  const filteredRows = useMemo(() => {
+  // ─── Client-side derivations ────────────────────────────────────────────
+  const creatorOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of rows) if (r.account_username?.trim()) set.add(r.account_username.trim());
+    if (serverState.creator) set.add(serverState.creator);
+    return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  }, [rows, serverState.creator]);
+
+  const displayRows = useMemo(() => {
     let out = rows;
-    if (creatorFilter) {
-      out = out.filter((r) => r.account_username === creatorFilter);
-    }
     if (analysisFilter === "analyzed") {
       out = out.filter((r) => Boolean(r.analysis));
     } else if (analysisFilter === "pending") {
@@ -395,56 +551,33 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
         return u.includes(q) || h.includes(q) || c.includes(q);
       });
     }
+    // Sort precedence: page-local primary (only for non-server columns) →
+    // server primary order (already applied by API) → page-local secondary.
+    // Array.sort is stable since ES2019, so applying secondary alone keeps
+    // the server order as the implicit tiebreaker.
+    if (localPrimarySort) {
+      const copy = [...out];
+      copy.sort((a, b) => {
+        const base = compareForSort(a, b, localPrimarySort.key);
+        return localPrimarySort.dir === "asc" ? base : -base;
+      });
+      out = copy;
+    }
+    if (secondarySort) {
+      const copy = [...out];
+      copy.sort((a, b) => {
+        const base = compareForSort(a, b, secondarySort.key);
+        return secondarySort.dir === "asc" ? base : -base;
+      });
+      out = copy;
+    }
     return out;
-  }, [rows, creatorFilter, analysisFilter, searchQuery]);
+  }, [rows, analysisFilter, searchQuery, localPrimarySort, secondarySort]);
 
-  const activeFilterCount =
-    (creatorFilter ? 1 : 0) +
-    (analysisFilter !== "all" ? 1 : 0) +
-    (searchQuery ? 1 : 0) +
-    (sortKey ? 1 : 0);
-
-  const clearAllFilters = () => {
-    setCreatorFilter("");
-    setAnalysisFilter("all");
-    setSearchInput("");
-    setSearchQuery("");
-    setSortKey(null);
-    setSortDir("desc");
-  };
-
-  const displayRows = useMemo(() => {
-    if (!sortKey) return filteredRows;
-    const copy = [...filteredRows];
-    copy.sort((a, b) => {
-      const base = compareForSort(a, b, sortKey);
-      return sortDir === "asc" ? base : -base;
-    });
-    return copy;
-  }, [filteredRows, sortKey, sortDir]);
-
-  const effectivePageSize =
-    pageSize === 0 ? Math.max(displayRows.length, 1) : pageSize;
-  const totalPages = Math.max(1, Math.ceil(displayRows.length / effectivePageSize));
-  const safePage = Math.min(page, totalPages);
-
-  const pageRows = useMemo(() => {
-    if (pageSize === 0) return displayRows;
-    const start = (safePage - 1) * effectivePageSize;
-    return displayRows.slice(start, start + effectivePageSize);
-  }, [displayRows, pageSize, safePage, effectivePageSize]);
-
-  useEffect(() => {
-    setPage(1);
-  }, [creatorFilter, analysisFilter, searchQuery, sortKey, sortDir]);
-
-  useEffect(() => {
-    if (page > totalPages) setPage(totalPages);
-  }, [page, totalPages]);
-
+  // ─── Bulk-selection helpers ─────────────────────────────────────────────
   const postUrlVisible = useMemo(
-    () => pageRows.filter((r) => rowHasPostUrl(r)),
-    [pageRows],
+    () => displayRows.filter((r) => rowHasPostUrl(r)),
+    [displayRows],
   );
 
   const selectedPostUrls = useMemo(() => {
@@ -457,7 +590,6 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
     return list;
   }, [rows, selected]);
 
-  /** Bulk LLM-only when every selected row with a link already has an analysis row. */
   const bulkSkipApify = useMemo(() => {
     const picked = rows.filter((r) => selected.has(r.id) && rowHasPostUrl(r));
     if (picked.length === 0) return false;
@@ -473,6 +605,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
     if (el) el.indeterminate = someVisibleSelected && !allVisibleSelected;
   }, [someVisibleSelected, allVisibleSelected]);
 
+  // ─── Job polling (unchanged) ────────────────────────────────────────────
   useEffect(() => {
     if (!trackedJobId) return;
     const w = Date.now();
@@ -620,26 +753,57 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
     };
   }, [trackedJobId, clientSlug, orgSlug, router]);
 
+  // ─── Sort handlers ──────────────────────────────────────────────────────
   /**
-   * Airtable-style 3-state cycle: none → desc → asc → none. Cycling back to
-   * "none" lets the user remove sort entirely (was impossible before — clicking
-   * the active column only flipped direction).
+   * Click on a header. Shift+click adds/cycles a secondary sort (page-local).
+   * Plain click sets primary: for server-sortable columns this pushes the new
+   * sort to the URL (server re-fetches); for non-server columns it sets a
+   * page-local primary so users can still re-order Score / C/V locally.
+   *
+   * Both primary tracks use a 3-state cycle (none → desc → asc → none) so a
+   * third click clears the sort entirely.
    */
-  function handleSort(key: SortKey) {
-    if (sortKey !== key) {
-      setSortKey(key);
-      // Higher value = more useful for almost every column here; default desc.
-      setSortDir("desc");
-      return;
-    }
-    if (sortDir === "desc") {
-      setSortDir("asc");
-    } else {
-      setSortKey(null);
-      setSortDir("desc");
-    }
-  }
+  const handleSort = useCallback(
+    (key: AnySortKey, withShift: boolean) => {
+      if (withShift) {
+        setSecondarySort((cur) => {
+          if (!cur || cur.key !== key) return { key, dir: "desc" };
+          if (cur.dir === "desc") return { key, dir: "asc" };
+          return null;
+        });
+        return;
+      }
+      // Primary click clears any secondary so users don't get surprised by
+      // a stale "page 2" sort still influencing the new primary.
+      setSecondarySort(null);
 
+      if (SERVER_SORT_KEYS.has(key)) {
+        setLocalPrimarySort(null);
+        const k = key as ReelsListSortBy;
+        if (serverState.sortBy === k) {
+          if (serverState.sortDir === "desc") {
+            pushFilters({ sort: k, dir: "asc", page: null });
+          } else {
+            // Cycle off → reset to default (posted_at desc).
+            pushFilters({ sort: null, dir: null, page: null });
+          }
+        } else {
+          pushFilters({ sort: k, dir: "desc", page: null });
+        }
+      } else {
+        // Page-local primary for joined/computed columns.
+        const local = key as LocalSortKey;
+        setLocalPrimarySort((cur) => {
+          if (!cur || cur.key !== local) return { key: local, dir: "desc" };
+          if (cur.dir === "desc") return { key: local, dir: "asc" };
+          return null;
+        });
+      }
+    },
+    [pushFilters, serverState.sortBy, serverState.sortDir],
+  );
+
+  // ─── Selection helpers ──────────────────────────────────────────────────
   function toggleRow(id: string) {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -648,7 +812,6 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
       return next;
     });
   }
-
   function toggleSelectAllVisible() {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -671,7 +834,6 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
       setBulkMsg("Select at least one reel that has a post link.");
       return;
     }
-
     setBulkMsg(null);
     const enq = await enqueueReelAnalyzeBulk(clientSlug, orgSlug, urls, {
       skip_apify: bulkSkipApify,
@@ -685,14 +847,52 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
     setTrackedJobId(enq.job_id);
   }
 
+  // ─── Range filter apply/clear ───────────────────────────────────────────
+  const applyRanges = useCallback(() => {
+    const toNum = (s: string) => {
+      const t = s.trim();
+      if (!t) return null;
+      const n = Number.parseInt(t, 10);
+      return Number.isFinite(n) && n >= 0 ? n : null;
+    };
+    pushFilters({
+      min_views: toNum(draftRanges.minViews),
+      max_views: toNum(draftRanges.maxViews),
+      min_likes: toNum(draftRanges.minLikes),
+      max_likes: toNum(draftRanges.maxLikes),
+      min_comments: toNum(draftRanges.minComments),
+      max_comments: toNum(draftRanges.maxComments),
+      posted_after: draftRanges.postedAfter || null,
+      posted_before: draftRanges.postedBefore || null,
+      page: null,
+    });
+    setFiltersOpen(false);
+  }, [draftRanges, pushFilters]);
+
+  const hasAnyDraftRange =
+    Object.values(draftRanges).some((v) => v.trim() !== "");
+
+  const clearDraftRanges = () => {
+    setDraftRanges({
+      minViews: "",
+      maxViews: "",
+      minLikes: "",
+      maxLikes: "",
+      minComments: "",
+      maxComments: "",
+      postedAfter: "",
+      postedBefore: "",
+    });
+  };
+
+  // ─── Progress bar derivations (unchanged) ───────────────────────────────
   const disableReelAnalysis = Boolean(trackedJobId);
-  const staleRunning =
-    Boolean(
-      trackedJobId &&
-        lastJob &&
-        (lastJob.status === "running" || lastJob.status === "queued") &&
-        startedAtIsStale(lastJob.started_at),
-    );
+  const staleRunning = Boolean(
+    trackedJobId &&
+      lastJob &&
+      (lastJob.status === "running" || lastJob.status === "queued") &&
+      startedAtIsStale(lastJob.started_at),
+  );
 
   const jt = lastJob?.job_type ?? trackedJobType ?? "";
   const prog = lastJob?.result?.progress;
@@ -720,7 +920,6 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
       floor + tEase * segSpan,
       done < totalSteps ? floor + segSpan : 99,
     );
-
   void tick;
 
   let progressLabel = "";
@@ -733,6 +932,70 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
     else if (jt === "reel_analyze_url") progressLabel = "Analyzing one reel (scrape + video)…";
     else progressLabel = "Bulk analysis running…";
   }
+
+  // ─── Pagination derivations ─────────────────────────────────────────────
+  const totalPages = Math.max(1, Math.ceil(total / serverState.pageSize));
+  const safePage = Math.min(serverState.page, totalPages);
+  const rangeStart = total === 0 ? 0 : (safePage - 1) * serverState.pageSize + 1;
+  const rangeEnd = Math.min(safePage * serverState.pageSize, total);
+
+  // ─── Active filter chip data ────────────────────────────────────────────
+  const sortChipText = (() => {
+    if (localPrimarySort) {
+      return `${SORT_KEY_LABELS[localPrimarySort.key]} ${localPrimarySort.dir === "desc" ? "↓" : "↑"} (page)`;
+    }
+    if (serverState.sortBy !== "posted_at" || serverState.sortDir !== "desc") {
+      return `${SORT_KEY_LABELS[serverState.sortBy]} ${serverState.sortDir === "desc" ? "↓" : "↑"}`;
+    }
+    return null;
+  })();
+
+  const fmtRange = (lo: number | null, hi: number | null, suffix = "") => {
+    if (lo != null && hi != null) return `${lo.toLocaleString()}–${hi.toLocaleString()}${suffix}`;
+    if (lo != null) return `≥ ${lo.toLocaleString()}${suffix}`;
+    if (hi != null) return `≤ ${hi.toLocaleString()}${suffix}`;
+    return null;
+  };
+
+  const viewsChip = fmtRange(serverState.minViews, serverState.maxViews);
+  const likesChip = fmtRange(serverState.minLikes, serverState.maxLikes);
+  const commentsChip = fmtRange(serverState.minComments, serverState.maxComments);
+  const postedChip = (() => {
+    if (serverState.postedAfter && serverState.postedBefore)
+      return `${serverState.postedAfter} → ${serverState.postedBefore}`;
+    if (serverState.postedAfter) return `from ${serverState.postedAfter}`;
+    if (serverState.postedBefore) return `until ${serverState.postedBefore}`;
+    return null;
+  })();
+
+  const serverFilterCount =
+    (serverState.creator ? 1 : 0) +
+    (viewsChip ? 1 : 0) +
+    (likesChip ? 1 : 0) +
+    (commentsChip ? 1 : 0) +
+    (postedChip ? 1 : 0);
+  const clientFilterCount =
+    (analysisFilter !== "all" ? 1 : 0) +
+    (searchQuery ? 1 : 0) +
+    (sortChipText ? 1 : 0) +
+    (secondarySort ? 1 : 0);
+  const activeFilterCount = serverFilterCount + clientFilterCount;
+
+  const clearAllFilters = () => {
+    setAnalysisFilter("all");
+    setSearchInput("");
+    setSearchQuery("");
+    setSecondarySort(null);
+    setLocalPrimarySort(null);
+    resetServerFilters();
+  };
+
+  // Page-size handler keeps us on a sensible page after the size changes.
+  const onPageSizeChange = (v: string) => {
+    const next = Number.parseInt(v, 10);
+    if (!Number.isFinite(next) || next <= 0) return;
+    pushFilters({ per: next, page: 1 });
+  };
 
   return (
     <>
@@ -760,15 +1023,13 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
           />
         ) : null}
 
-        {/* Single horizontal toolbar — every control is locked to h-9 so they
-            sit on one baseline. Analyze button uses ml-auto to anchor right
-            without needing a separate flex column. */}
+        {/* Primary toolbar — every control sits on h-9 baseline. */}
         <div className="flex flex-wrap items-center gap-2">
           <AppSelect
             ariaLabel="Filter by creator"
             triggerClassName="h-9 min-w-[160px] py-0"
-            value={creatorFilter}
-            onChange={setCreatorFilter}
+            value={serverState.creator}
+            onChange={(v) => pushFilters({ creator: v || null, page: null })}
             options={[
               { value: "", label: "All creators" },
               ...creatorOptions.map((u) => ({ value: u, label: `@${u}` })),
@@ -796,7 +1057,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
               onChange={(e) => setSearchInput(e.target.value)}
               placeholder="Search account, hook, caption…"
               className="h-full w-full bg-transparent px-2 text-sm placeholder:text-zinc-400 focus:outline-none dark:placeholder:text-app-fg-faint"
-              aria-label="Search reels by account, hook, or caption"
+              aria-label="Search reels by account, hook, or caption (current page)"
             />
             {searchInput ? (
               <button
@@ -812,6 +1073,142 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
               </button>
             ) : null}
           </div>
+
+          {/* Range Filters — single popover so the toolbar stays clean. */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setFiltersOpen((o) => !o)}
+              className={`inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-xs font-semibold transition-colors ${
+                serverFilterCount > 0
+                  ? "border-amber-500/50 bg-amber-500/15 text-amber-800 hover:bg-amber-500/25 dark:text-amber-200"
+                  : "border-zinc-200/80 bg-white/80 text-zinc-700 hover:bg-zinc-100 dark:border-white/10 dark:bg-zinc-900/80 dark:text-app-fg-secondary dark:hover:bg-white/[0.06]"
+              }`}
+              aria-haspopup="dialog"
+              aria-expanded={filtersOpen}
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              Filters
+              {serverFilterCount > 0 ? (
+                <span className="ml-0.5 rounded bg-amber-600/80 px-1 text-[10px] font-bold text-white dark:bg-amber-500/90">
+                  {serverFilterCount}
+                </span>
+              ) : null}
+            </button>
+
+            {filtersOpen ? (
+              <div
+                className="absolute right-0 top-full z-40 mt-2 w-[320px] rounded-xl border border-zinc-200/90 bg-white p-4 shadow-xl dark:border-white/12 dark:bg-zinc-900"
+                role="dialog"
+                aria-label="Range filters"
+              >
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-700 dark:text-app-fg-muted">
+                    Range filters
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setFiltersOpen(false)}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded text-zinc-400 hover:bg-zinc-200/80 hover:text-zinc-700 dark:hover:bg-white/10 dark:hover:text-app-fg"
+                    aria-label="Close filters"
+                  >
+                    <X className="h-3.5 w-3.5" aria-hidden />
+                  </button>
+                </div>
+
+                <div className="flex flex-col gap-3">
+                  {[
+                    {
+                      label: "Views",
+                      minKey: "minViews" as const,
+                      maxKey: "maxViews" as const,
+                    },
+                    {
+                      label: "Likes",
+                      minKey: "minLikes" as const,
+                      maxKey: "maxLikes" as const,
+                    },
+                    {
+                      label: "Comments",
+                      minKey: "minComments" as const,
+                      maxKey: "maxComments" as const,
+                    },
+                  ].map((row) => (
+                    <div key={row.label} className="flex flex-col gap-1">
+                      <label className="text-[10px] font-medium uppercase tracking-wider text-zinc-500 dark:text-app-fg-subtle">
+                        {row.label}
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <RangeInput
+                          value={draftRanges[row.minKey]}
+                          onChange={(v) =>
+                            setDraftRanges((d) => ({ ...d, [row.minKey]: v }))
+                          }
+                          placeholder="min"
+                        />
+                        <span className="text-zinc-400 dark:text-app-fg-faint" aria-hidden>
+                          –
+                        </span>
+                        <RangeInput
+                          value={draftRanges[row.maxKey]}
+                          onChange={(v) =>
+                            setDraftRanges((d) => ({ ...d, [row.maxKey]: v }))
+                          }
+                          placeholder="max"
+                        />
+                      </div>
+                    </div>
+                  ))}
+
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-medium uppercase tracking-wider text-zinc-500 dark:text-app-fg-subtle">
+                      Posted between
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <RangeInput
+                        type="date"
+                        value={draftRanges.postedAfter}
+                        onChange={(v) =>
+                          setDraftRanges((d) => ({ ...d, postedAfter: v }))
+                        }
+                        placeholder="from"
+                      />
+                      <span className="text-zinc-400 dark:text-app-fg-faint" aria-hidden>
+                        –
+                      </span>
+                      <RangeInput
+                        type="date"
+                        value={draftRanges.postedBefore}
+                        onChange={(v) =>
+                          setDraftRanges((d) => ({ ...d, postedBefore: v }))
+                        }
+                        placeholder="to"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-4 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={clearDraftRanges}
+                    disabled={!hasAnyDraftRange}
+                    className="text-[11px] font-medium text-zinc-500 transition-colors hover:text-zinc-700 disabled:cursor-not-allowed disabled:opacity-40 dark:text-app-fg-subtle dark:hover:text-app-fg"
+                  >
+                    Clear
+                  </button>
+                  <button
+                    type="button"
+                    onClick={applyRanges}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-amber-500 px-3 text-xs font-semibold text-white transition-colors hover:bg-amber-600"
+                  >
+                    Apply
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+
           <button
             type="button"
             disabled={disableReelAnalysis || selectedPostUrls.length === 0}
@@ -835,53 +1232,100 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
           </p>
         ) : null}
 
-        {(activeFilterCount > 0 || displayRows.length !== rows.length) ? (
-          <div className="flex flex-wrap items-center gap-2 text-[11px]">
-            <span className="text-zinc-500 dark:text-app-fg-subtle">
-              {displayRows.length === rows.length
-                ? `${rows.length} reel${rows.length === 1 ? "" : "s"}`
-                : `${displayRows.length} of ${rows.length} reel${rows.length === 1 ? "" : "s"}`}
-            </span>
-            {activeFilterCount > 0 ? (
+        {/* Result count + active-filter chip strip */}
+        <div className="flex flex-wrap items-center gap-2 text-[11px]">
+          <span className="text-zinc-500 dark:text-app-fg-subtle">
+            {total === 0
+              ? "No reels"
+              : displayRows.length === rows.length
+                ? `Showing ${rangeStart}–${rangeEnd} of ${total.toLocaleString()}`
+                : `Showing ${displayRows.length} of ${rows.length} on this page (${total.toLocaleString()} total)`}
+          </span>
+          {activeFilterCount > 0 ? (
+            <>
               <span className="text-zinc-300 dark:text-app-fg-faint" aria-hidden>
                 ·
               </span>
-            ) : null}
-            {creatorFilter ? (
-              <FilterChip
-                label="Creator"
-                value={`@${creatorFilter}`}
-                onClear={() => setCreatorFilter("")}
-              />
-            ) : null}
-            {analysisFilter !== "all" ? (
-              <FilterChip
-                label="Analysis"
-                value={analysisFilter === "analyzed" ? "Analyzed only" : "Not analyzed"}
-                onClear={() => setAnalysisFilter("all")}
-              />
-            ) : null}
-            {searchQuery ? (
-              <FilterChip
-                label="Search"
-                value={`"${searchQuery}"`}
-                onClear={() => {
-                  setSearchInput("");
-                  setSearchQuery("");
-                }}
-              />
-            ) : null}
-            {sortKey ? (
-              <FilterChip
-                label="Sort"
-                value={`${SORT_KEY_LABELS[sortKey]} ${sortDir === "desc" ? "↓" : "↑"}`}
-                onClear={() => {
-                  setSortKey(null);
-                  setSortDir("desc");
-                }}
-              />
-            ) : null}
-            {activeFilterCount > 0 ? (
+              {serverState.creator ? (
+                <FilterChip
+                  label="Creator"
+                  value={`@${serverState.creator}`}
+                  onClear={() => pushFilters({ creator: null, page: null })}
+                />
+              ) : null}
+              {viewsChip ? (
+                <FilterChip
+                  label="Views"
+                  value={viewsChip}
+                  onClear={() =>
+                    pushFilters({ min_views: null, max_views: null, page: null })
+                  }
+                />
+              ) : null}
+              {likesChip ? (
+                <FilterChip
+                  label="Likes"
+                  value={likesChip}
+                  onClear={() =>
+                    pushFilters({ min_likes: null, max_likes: null, page: null })
+                  }
+                />
+              ) : null}
+              {commentsChip ? (
+                <FilterChip
+                  label="Comments"
+                  value={commentsChip}
+                  onClear={() =>
+                    pushFilters({ min_comments: null, max_comments: null, page: null })
+                  }
+                />
+              ) : null}
+              {postedChip ? (
+                <FilterChip
+                  label="Posted"
+                  value={postedChip}
+                  onClear={() =>
+                    pushFilters({ posted_after: null, posted_before: null, page: null })
+                  }
+                />
+              ) : null}
+              {analysisFilter !== "all" ? (
+                <FilterChip
+                  label="Analysis"
+                  value={analysisFilter === "analyzed" ? "Analyzed only" : "Not analyzed"}
+                  onClear={() => setAnalysisFilter("all")}
+                />
+              ) : null}
+              {searchQuery ? (
+                <FilterChip
+                  label="Search"
+                  value={`"${searchQuery}"`}
+                  onClear={() => {
+                    setSearchInput("");
+                    setSearchQuery("");
+                  }}
+                />
+              ) : null}
+              {sortChipText ? (
+                <FilterChip
+                  label="Sort"
+                  value={sortChipText}
+                  onClear={() => {
+                    if (localPrimarySort) {
+                      setLocalPrimarySort(null);
+                    } else {
+                      pushFilters({ sort: null, dir: null, page: null });
+                    }
+                  }}
+                />
+              ) : null}
+              {secondarySort ? (
+                <FilterChip
+                  label="Then by"
+                  value={`${SORT_KEY_LABELS[secondarySort.key]} ${secondarySort.dir === "desc" ? "↓" : "↑"} (page)`}
+                  onClear={() => setSecondarySort(null)}
+                />
+              ) : null}
               <button
                 type="button"
                 onClick={clearAllFilters}
@@ -889,9 +1333,9 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
               >
                 Clear all
               </button>
-            ) : null}
-          </div>
-        ) : null}
+            </>
+          ) : null}
+        </div>
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-zinc-200/90 bg-zinc-50/90 dark:border-white/10 dark:bg-zinc-950/60">
@@ -916,81 +1360,129 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
               <SortHeader
                 label="Score"
                 hint="Silas score 0–100. Reels without a score haven't been analyzed yet — use Analyze to run one. Niche-match reels are scored on keyword similarity instead (see Signal)."
-                active={sortKey === "total_score"}
-                dir={sortDir}
-                onClick={() => handleSort("total_score")}
+                serverSortable={false}
+                primaryActive={localPrimarySort?.key === "total_score"}
+                primaryDir={localPrimarySort?.dir ?? "desc"}
+                secondaryActive={secondarySort?.key === "total_score"}
+                secondaryDir={secondarySort?.dir ?? "desc"}
+                onClick={(s) => handleSort("total_score", s)}
               />
               <SortHeader
                 label="Views"
-                active={sortKey === "views"}
-                dir={sortDir}
-                onClick={() => handleSort("views")}
+                serverSortable
+                primaryActive={!localPrimarySort && serverState.sortBy === "views"}
+                primaryDir={serverState.sortDir}
+                secondaryActive={secondarySort?.key === "views"}
+                secondaryDir={secondarySort?.dir ?? "desc"}
+                onClick={(s) => handleSort("views", s)}
               />
               <SortHeader
                 label="Signal"
                 hint="Why this reel surfaced. N× = beat the account's average by that multiple (competitor breakout). N% match = how closely it matches your niche keywords."
-                active={sortKey === "outlier_ratio" || sortKey === "similarity_score"}
-                dir={sortDir}
-                onClick={() => handleSort("outlier_ratio")}
+                serverSortable
+                primaryActive={
+                  !localPrimarySort &&
+                  (serverState.sortBy === "outlier_ratio" ||
+                    serverState.sortBy === "similarity_score")
+                }
+                primaryDir={serverState.sortDir}
+                secondaryActive={
+                  secondarySort?.key === "outlier_ratio" ||
+                  secondarySort?.key === "similarity_score"
+                }
+                secondaryDir={secondarySort?.dir ?? "desc"}
+                onClick={(s) => handleSort("outlier_ratio", s)}
               />
               <SortHeader
                 label="Comments"
-                active={sortKey === "comments"}
-                dir={sortDir}
-                onClick={() => handleSort("comments")}
+                serverSortable
+                primaryActive={!localPrimarySort && serverState.sortBy === "comments"}
+                primaryDir={serverState.sortDir}
+                secondaryActive={secondarySort?.key === "comments"}
+                secondaryDir={secondarySort?.dir ?? "desc"}
+                onClick={(s) => handleSort("comments", s)}
               />
               <SortHeader
                 label="C/V"
                 hint="Comments ÷ views — conversation rate. Higher % = more discussion per view."
-                active={sortKey === "comment_view_ratio"}
-                dir={sortDir}
-                onClick={() => handleSort("comment_view_ratio")}
+                serverSortable={false}
+                primaryActive={localPrimarySort?.key === "comment_view_ratio"}
+                primaryDir={localPrimarySort?.dir ?? "desc"}
+                secondaryActive={secondarySort?.key === "comment_view_ratio"}
+                secondaryDir={secondarySort?.dir ?? "desc"}
+                onClick={(s) => handleSort("comment_view_ratio", s)}
               />
               <SortHeader
                 label="Saves"
                 hint="From Instagram when exposed. Often empty — the platform doesn't always return saves."
-                active={sortKey === "saves"}
-                dir={sortDir}
-                onClick={() => handleSort("saves")}
+                serverSortable
+                primaryActive={!localPrimarySort && serverState.sortBy === "saves"}
+                primaryDir={serverState.sortDir}
+                secondaryActive={secondarySort?.key === "saves"}
+                secondaryDir={secondarySort?.dir ?? "desc"}
+                onClick={(s) => handleSort("saves", s)}
               />
               <SortHeader
                 label="Shares"
                 hint="Only when your Instagram data source includes share counts. May stay empty until your plan supports it."
-                active={sortKey === "shares"}
-                dir={sortDir}
-                onClick={() => handleSort("shares")}
+                serverSortable
+                primaryActive={!localPrimarySort && serverState.sortBy === "shares"}
+                primaryDir={serverState.sortDir}
+                secondaryActive={secondarySort?.key === "shares"}
+                secondaryDir={secondarySort?.dir ?? "desc"}
+                onClick={(s) => handleSort("shares", s)}
               />
               <SortHeader
                 label="Likes"
-                active={sortKey === "likes"}
-                dir={sortDir}
-                onClick={() => handleSort("likes")}
+                serverSortable
+                primaryActive={!localPrimarySort && serverState.sortBy === "likes"}
+                primaryDir={serverState.sortDir}
+                secondaryActive={secondarySort?.key === "likes"}
+                secondaryDir={secondarySort?.dir ?? "desc"}
+                onClick={(s) => handleSort("likes", s)}
               />
               <SortHeader
                 label="Dur."
                 hint="Length in seconds when Instagram returns duration (not all reels include it)."
-                active={sortKey === "video_duration"}
-                dir={sortDir}
-                onClick={() => handleSort("video_duration")}
+                serverSortable
+                primaryActive={!localPrimarySort && serverState.sortBy === "video_duration"}
+                primaryDir={serverState.sortDir}
+                secondaryActive={secondarySort?.key === "video_duration"}
+                secondaryDir={secondarySort?.dir ?? "desc"}
+                onClick={(s) => handleSort("video_duration", s)}
               />
               <SortHeader
                 label="Posted"
-                active={sortKey === "posted_at"}
-                dir={sortDir}
-                onClick={() => handleSort("posted_at")}
+                serverSortable
+                primaryActive={!localPrimarySort && serverState.sortBy === "posted_at"}
+                primaryDir={serverState.sortDir}
+                secondaryActive={secondarySort?.key === "posted_at"}
+                secondaryDir={secondarySort?.dir ?? "desc"}
+                onClick={(s) => handleSort("posted_at", s)}
               />
               <th className="py-3 pr-2 font-medium">Open / recreate</th>
             </tr>
           </thead>
           <tbody className="text-xs text-zinc-800 dark:text-app-fg-secondary">
-            {pageRows.map((row, i) => {
+            {displayRows.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={14}
+                  className="py-12 text-center text-sm text-zinc-500 dark:text-app-fg-muted"
+                >
+                  {total === 0
+                    ? "No reels match the current filters."
+                    : "No reels match on this page — try clearing the page-local search/analysis filter."}
+                </td>
+              </tr>
+            ) : null}
+            {displayRows.map((row, i) => {
               const a = row.analysis;
               const nicheMatch = isNicheMatchOnly(row);
               const silas = a && !nicheMatch ? formatSilasScoreSummary(a) : null;
               const canAnalyze = isAnalyzable(row);
               const hasPost = rowHasPostUrl(row);
-              const rowIndex =
-                pageSize === 0 ? i : (safePage - 1) * effectivePageSize + i;
+              const rowIndex = (safePage - 1) * serverState.pageSize + i;
               return (
                 <tr
                   key={row.id}
@@ -1033,10 +1525,6 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                   </td>
                   <td className="py-2.5 pr-2 align-middle">
                     {a && nicheMatch ? (
-                      // Niche match: don't repeat the "niche" tag (Account column
-                      // already shows it) and don't fake a Silas score. The Signal
-                      // column carries the actual % match — here we just expose
-                      // the analysis so users can drill in.
                       <Tooltip content="Niche-keyword analysis. Open it for the full match breakdown.">
                         <button
                           type="button"
@@ -1190,42 +1678,28 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
         </table>
       </div>
 
-      {displayRows.length > 0 ? (
+      {total > 0 ? (
         <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
           <p className="text-[11px] text-zinc-600 dark:text-app-fg-muted">
-            {pageSize === 0 ? (
-              <>Showing all {displayRows.length} reel{displayRows.length === 1 ? "" : "s"}</>
-            ) : (
-              <>
-                Showing {(safePage - 1) * effectivePageSize + 1}–
-                {Math.min(safePage * effectivePageSize, displayRows.length)} of {displayRows.length}
-              </>
-            )}
+            Showing {rangeStart}–{rangeEnd} of {total.toLocaleString()}
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <AppSelect
-              label="Per page"
-              value={pageSize === 0 ? "all" : String(pageSize)}
-              onChange={(v) => {
-                if (v === "all") {
-                  setPageSize(0);
-                  setPage(1);
-                } else {
-                  setPageSize(Number(v));
-                  setPage(1);
-                }
-              }}
-              options={[
-                ...PAGE_SIZE_OPTIONS.map((n) => ({ value: String(n), label: `${n} per page` })),
-                { value: "all", label: "Show all" },
-              ]}
+              ariaLabel="Rows per page"
+              triggerClassName="h-8 min-w-[120px] py-0 text-[11px]"
+              value={String(serverState.pageSize)}
+              onChange={onPageSizeChange}
+              options={PAGE_SIZE_OPTIONS.map((n) => ({
+                value: String(n),
+                label: `${n} per page`,
+              }))}
             />
-            {pageSize > 0 && totalPages > 1 ? (
+            {totalPages > 1 ? (
               <div className="flex items-center gap-1">
                 <button
                   type="button"
                   disabled={safePage <= 1}
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  onClick={() => pushFilters({ page: Math.max(1, safePage - 1) }, { keepPage: true })}
                   className="rounded-lg border border-zinc-300 px-2 py-1 text-[11px] font-medium text-zinc-700 transition-colors hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/15 dark:text-app-fg-secondary dark:hover:bg-white/[0.06]"
                 >
                   Previous
@@ -1236,7 +1710,7 @@ export function IntelligenceReelsTable({ rows, clientSlug, orgSlug }: Props) {
                 <button
                   type="button"
                   disabled={safePage >= totalPages}
-                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  onClick={() => pushFilters({ page: Math.min(totalPages, safePage + 1) }, { keepPage: true })}
                   className="rounded-lg border border-zinc-300 px-2 py-1 text-[11px] font-medium text-zinc-700 transition-colors hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/15 dark:text-app-fg-secondary dark:hover:bg-white/[0.06]"
                 >
                   Next

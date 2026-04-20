@@ -17,15 +17,22 @@ function formatClientLabel(slug: string): string {
     .join(" ");
 }
 
+/** Matches server `fetch*` early-exit copy when org/client headers are missing. */
+function isWorkspaceSetupError(message: string): boolean {
+  return /no active creator|finish onboarding|pick a creator/i.test(message);
+}
+
 export default async function IntelligencePage() {
   const { user, tenancy, clientSlug, orgSlug } = await getCachedServerApiContext();
+  const workspaceReady = Boolean(clientSlug.trim() && orgSlug.trim());
 
-  // fetchOutlierCount is a single COUNT query — replaces the previous full reels fetch
-  const [compRes, outlierRes, baselineRes] = await Promise.all([
-    fetchCompetitors(),
-    fetchOutlierCount(),
-    fetchBaseline(),
-  ]);
+  const [compRes, outlierRes, baselineRes] = workspaceReady
+    ? await Promise.all([fetchCompetitors(), fetchOutlierCount(), fetchBaseline()])
+    : [
+        { ok: true as const, data: [] as Awaited<ReturnType<typeof fetchCompetitors>>["data"] },
+        { ok: true as const, count: 0 },
+        { ok: true as const, data: null as Awaited<ReturnType<typeof fetchBaseline>>["data"] },
+      ];
 
   const competitors = compRes.ok ? compRes.data : [];
   const nOutliers = outlierRes.ok ? outlierRes.count : 0;
@@ -41,12 +48,13 @@ export default async function IntelligencePage() {
         : !clientSlug.trim()
           ? "Pick a creator in the top bar or finish onboarding."
           : null;
-  const loadError = !compRes.ok;
+  const loadError = workspaceReady && !compRes.ok;
   const loadErrorDetails = [
     compRes.ok ? null : compRes.error,
   ]
     .filter((s): s is string => Boolean(s && s.trim()))
     .join(" · ");
+  const workspaceSetupFailure = loadError && isWorkspaceSetupError(loadErrorDetails);
 
   return (
     <main className="mx-auto max-w-[1100px] px-4 py-8 md:px-8">
@@ -86,22 +94,38 @@ export default async function IntelligencePage() {
 
       {loadError ? (
         <div className="mb-6 space-y-2">
-          <p className="text-sm text-app-fg-muted">
-            Some data couldn&apos;t be loaded. Try refreshing in a moment.
-          </p>
-          {loadErrorDetails ? (
-            <p className="text-xs leading-relaxed text-app-fg-subtle">
-              <span className="font-medium text-app-fg-secondary">Details: </span>
-              <span className="break-words font-mono">{loadErrorDetails}</span>
-            </p>
-          ) : null}
-          {loadErrorDetails.includes("401") ||
-          loadErrorDetails.toLowerCase().includes("missing api key") ? (
-            <p className="text-xs leading-relaxed text-app-fg-muted">
-              We couldn&apos;t authorize this request. Try refreshing the page. If you just signed up, finish onboarding
-              first. Still stuck? Contact support — they can verify your workspace setup.
-            </p>
-          ) : null}
+          {workspaceSetupFailure ? (
+            <>
+              <p className="text-sm text-app-fg-muted">
+                This page needs an active creator in your workspace. Finish setup or choose one in the header.
+              </p>
+              <Link
+                href="/onboarding"
+                className="inline-flex rounded-lg bg-amber-500 px-4 py-2 text-xs font-bold text-zinc-950"
+              >
+                Continue setup
+              </Link>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-app-fg-muted">
+                Some data couldn&apos;t be loaded. Try refreshing in a moment.
+              </p>
+              {process.env.NODE_ENV === "development" && loadErrorDetails ? (
+                <p className="text-xs leading-relaxed text-app-fg-subtle">
+                  <span className="font-medium text-app-fg-secondary">Details: </span>
+                  <span className="break-words font-mono">{loadErrorDetails}</span>
+                </p>
+              ) : null}
+              {loadErrorDetails.includes("401") ||
+              loadErrorDetails.toLowerCase().includes("missing api key") ? (
+                <p className="text-xs leading-relaxed text-app-fg-muted">
+                  We couldn&apos;t authorize this request. Try signing out and back in, or finish onboarding if you just
+                  signed up.
+                </p>
+              ) : null}
+            </>
+          )}
         </div>
       ) : null}
 

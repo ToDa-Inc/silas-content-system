@@ -16,6 +16,7 @@ from core.config import Settings
 from core.database import get_supabase_for_settings
 from services.apify import enrich_reel_urls_direct
 from services.instagram_post_url import canonical_instagram_post_url
+from services.reel_thumbnail_url import reel_thumbnail_url_from_apify_item
 
 DEFAULT_MAX_AGE_DAYS = 60
 DEFAULT_BATCH_LIMIT = 500  # max reels refreshed per run (cost guard)
@@ -139,21 +140,34 @@ def run_scraped_reels_refresh(settings: Settings, job: Dict[str, Any]) -> None:
         fresh_views = _views(item)
         fresh_likes = max(0, int(item.get("likesCount") or 0))
         fresh_comments = int(item.get("commentsCount") or 0)
+        # Instagram CDN thumbnail URLs expire (~24h). Rewrite every refresh so
+        # dashboard cards don't show broken images the day after a scrape.
+        fresh_thumbnail = reel_thumbnail_url_from_apify_item(item) or None
 
         old_views = int(row.get("views") or 0)
         old_likes = int(row.get("likes") or 0)
         old_comments = int(row.get("comments") or 0)
 
         if fresh_views == old_views and fresh_likes == old_likes and fresh_comments == old_comments:
+            # Still refresh the thumbnail URL on no-metric-change days — the
+            # CDN token may have expired even if counts haven't moved.
+            if fresh_thumbnail:
+                supabase.table("scraped_reels").update({
+                    "thumbnail_url": fresh_thumbnail,
+                    "last_updated_at": now_iso,
+                }).eq("id", row["id"]).execute()
             unchanged += 1
             continue
 
-        supabase.table("scraped_reels").update({
+        update_patch: Dict[str, Any] = {
             "views": fresh_views,
             "likes": fresh_likes,
             "comments": fresh_comments,
             "last_updated_at": now_iso,
-        }).eq("id", row["id"]).execute()
+        }
+        if fresh_thumbnail:
+            update_patch["thumbnail_url"] = fresh_thumbnail
+        supabase.table("scraped_reels").update(update_patch).eq("id", row["id"]).execute()
 
         snapshots.append({
             "reel_id": row["id"],

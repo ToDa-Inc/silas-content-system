@@ -186,6 +186,54 @@ export async function fetchReplicateSuggestions(
   }
 }
 
+async function fetchDashboardLaneClient(
+  path: "fresh-niche" | "competitor-wins",
+  clientSlug: string,
+  orgSlug: string,
+  days: number,
+  limit: number,
+): Promise<{ ok: true; data: ScrapedReelRow[] } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/dashboard/${path}?days=${days}&limit=${limit}`,
+      { headers },
+    );
+    const json = (await res.json().catch(() => [])) as unknown;
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(
+          json as Record<string, unknown>,
+          `Request failed (${res.status})`,
+        ),
+      };
+    }
+    return { ok: true, data: Array.isArray(json) ? (json as ScrapedReelRow[]) : [] };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export function fetchDashboardFreshNicheClient(
+  clientSlug: string,
+  orgSlug: string,
+  days = 3,
+  limit = 3,
+) {
+  return fetchDashboardLaneClient("fresh-niche", clientSlug, orgSlug, days, limit);
+}
+
+export function fetchDashboardCompetitorWinsClient(
+  clientSlug: string,
+  orgSlug: string,
+  days = 3,
+  limit = 3,
+) {
+  return fetchDashboardLaneClient("competitor-wins", clientSlug, orgSlug, days, limit);
+}
+
 export type ActiveReelAnalysisJobResponse =
   | { active: false }
   | {

@@ -1,3 +1,4 @@
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { DashboardShell } from "@/components/dashboard/dashboard-shell";
 import { getCachedServerApiContext } from "@/lib/api";
@@ -9,6 +10,11 @@ export default async function DashboardLayout({
   children: React.ReactNode;
 }) {
   const ctx = await getCachedServerApiContext();
+  if (!ctx.user) {
+    const h = await headers();
+    const nextPath = h.get("x-middleware-pathname")?.trim() || "/dashboard";
+    redirect(`/login?next=${encodeURIComponent(nextPath.startsWith("/") ? nextPath : `/${nextPath}`)}`);
+  }
   if (ctx.user && !ctx.tenancy) {
     redirect("/onboarding");
   }

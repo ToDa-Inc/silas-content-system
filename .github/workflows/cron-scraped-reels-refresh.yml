@@ -1,0 +1,58 @@
+# Enqueues scraped_reels_refresh for every active client (re-fetch views/likes/comments
+# for reels still in the retention window; appends reel_snapshots).
+#
+# Secrets:
+#   CRON_SECRET — required; same as CRON_SECRET on the API service.
+#   SCRAPED_REELS_REFRESH_URL — optional full POST URL …/api/v1/cron/scraped-reels-refresh
+#   SYNC_ALL_URL — if SCRAPED_REELS_REFRESH_URL is unset, path is derived from sync-all.
+#
+# Schedules only run from the repository’s default branch.
+
+name: Cron scraped-reels-refresh
+
+on:
+  schedule:
+    # After sync-all (05:00 UTC) so new scrapes can land first; refresh is independent of sync timing.
+    - cron: "30 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  scraped-reels-refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST scraped-reels-refresh
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          SCRAPED_REELS_REFRESH_URL: ${{ secrets.SCRAPED_REELS_REFRESH_URL }}
+          SYNC_ALL_URL: ${{ secrets.SYNC_ALL_URL }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::Set Actions secret CRON_SECRET"
+            exit 1
+          fi
+
+          POST_URL="${SCRAPED_REELS_REFRESH_URL:-}"
+          if [ -z "$POST_URL" ]; then
+            if [ -z "${SYNC_ALL_URL:-}" ]; then
+              echo "::error::Set SCRAPED_REELS_REFRESH_URL or SYNC_ALL_URL"
+              exit 1
+            fi
+            _base="${SYNC_ALL_URL%/}"
+            POST_URL="${_base%/sync-all}/scraped-reels-refresh"
+            echo "::notice::SCRAPED_REELS_REFRESH_URL empty — using ${POST_URL}"
+          fi
+
+          case "$POST_URL" in
+            *scraped-reels-refresh*) ;;
+            *)
+              echo "::error::URL must include scraped-reels-refresh (got host-only?)"
+              exit 1
+              ;;
+          esac
+
+          curl -fsS --max-time 600 -X POST "$POST_URL" \
+            -H "X-Cron-Secret: ${CRON_SECRET}" \
+            -H "Content-Type: application/json" \
+            -w "\nHTTP %{http_code}\n"
