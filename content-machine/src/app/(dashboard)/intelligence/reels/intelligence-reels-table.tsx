@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type SyntheticEvent,
 } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
@@ -18,6 +19,8 @@ import {
   Search,
   SlidersHorizontal,
   Sparkles,
+  Target,
+  TrendingUp,
   X,
 } from "lucide-react";
 import { ReelThumbnail } from "@/components/reel-thumbnail";
@@ -252,70 +255,76 @@ function SortHeader({
       : "ascending"
     : "none";
   const showSecondary = secondaryActive && !primaryActive;
+  const hasInfo = Boolean(hint) || !serverSortable;
+  const tooltipText = !serverSortable
+    ? `${hint ? hint + " " : ""}This column sorts the current page only.`
+    : (hint as string);
+  // Stop bubbling on the Info trigger so clicking it never toggles sort. The
+  // Tooltip itself opens on hover/focus, not click — the icon stays a passive
+  // affordance that stays glued to the label without stealing the sort gesture.
+  const stopBubble = (e: SyntheticEvent) => e.stopPropagation();
   return (
-    <th
-      aria-sort={ariaSort}
-      className="py-3 pr-2 font-medium"
-    >
-      <span className="inline-flex items-center gap-1">
-        <button
-          type="button"
-          onClick={(e) => onClick(e.shiftKey)}
-          className={`group inline-flex items-center gap-1 rounded text-left uppercase tracking-widest transition-colors ${
-            primaryActive || showSecondary
-              ? "text-zinc-800 dark:text-app-fg"
-              : "text-zinc-500 hover:text-zinc-700 dark:text-app-fg-subtle dark:hover:text-app-fg-muted"
-          }`}
-          aria-label={`Sort by ${label}${
-            primaryActive ? `, currently ${primaryDir === "desc" ? "descending" : "ascending"}` : ""
-          }${secondaryActive ? `, also a secondary sort ${secondaryDir === "desc" ? "descending" : "ascending"}` : ""}. Shift+click to add as a secondary sort.`}
-        >
-          <span>{label}</span>
-          {primaryActive ? (
-            primaryDir === "desc" ? (
-              <ArrowDown className="h-3 w-3 shrink-0" aria-hidden />
-            ) : (
-              <ArrowUp className="h-3 w-3 shrink-0" aria-hidden />
-            )
-          ) : showSecondary ? (
-            secondaryDir === "desc" ? (
-              <ArrowDown className="h-3 w-3 shrink-0 opacity-60" aria-hidden />
-            ) : (
-              <ArrowUp className="h-3 w-3 shrink-0 opacity-60" aria-hidden />
-            )
-          ) : (
-            <ChevronsUpDown
-              className="h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-50"
-              aria-hidden
-            />
-          )}
-          {showSecondary ? (
+    <th aria-sort={ariaSort} className="py-3 pr-2 font-medium">
+      <button
+        type="button"
+        onClick={(e) => onClick(e.shiftKey)}
+        className={`group inline-flex items-center gap-0.5 rounded text-left uppercase tracking-widest transition-colors ${
+          primaryActive || showSecondary
+            ? "text-zinc-800 dark:text-app-fg"
+            : "text-zinc-500 hover:text-zinc-700 dark:text-app-fg-subtle dark:hover:text-app-fg-muted"
+        }`}
+        aria-label={`Sort by ${label}${
+          primaryActive ? `, currently ${primaryDir === "desc" ? "descending" : "ascending"}` : ""
+        }${secondaryActive ? `, also a secondary sort ${secondaryDir === "desc" ? "descending" : "ascending"}` : ""}. Shift+click to add as a secondary sort.`}
+      >
+        <span>{label}</span>
+        {hasInfo ? (
+          <Tooltip content={tooltipText}>
             <span
-              className="rounded bg-zinc-200 px-1 text-[8px] font-bold text-zinc-700 dark:bg-white/15 dark:text-app-fg-muted"
-              aria-hidden
-            >
-              2
-            </span>
-          ) : null}
-        </button>
-        {hint || !serverSortable ? (
-          <Tooltip
-            content={
-              !serverSortable
-                ? `${hint ? hint + " " : ""}This column sorts the current page only.`
-                : (hint as string)
-            }
-          >
-            <span
-              className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded text-zinc-400 transition-colors hover:bg-zinc-200/80 hover:text-zinc-700 dark:text-app-fg-faint dark:hover:bg-white/10 dark:hover:text-app-fg-muted"
+              role="img"
+              aria-label={`What is ${label}?`}
               tabIndex={0}
+              onClick={stopBubble}
+              onMouseDown={stopBubble}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }
+              }}
+              className="inline-flex cursor-help items-center text-zinc-400 transition-colors hover:text-zinc-700 dark:text-app-fg-faint dark:hover:text-app-fg-muted"
             >
               <Info className="h-3 w-3" aria-hidden />
-              <span className="sr-only">{`What is ${label}?`}</span>
             </span>
           </Tooltip>
         ) : null}
-      </span>
+        {primaryActive ? (
+          primaryDir === "desc" ? (
+            <ArrowDown className="ml-0.5 h-3 w-3 shrink-0" aria-hidden />
+          ) : (
+            <ArrowUp className="ml-0.5 h-3 w-3 shrink-0" aria-hidden />
+          )
+        ) : showSecondary ? (
+          secondaryDir === "desc" ? (
+            <ArrowDown className="ml-0.5 h-3 w-3 shrink-0 opacity-60" aria-hidden />
+          ) : (
+            <ArrowUp className="ml-0.5 h-3 w-3 shrink-0 opacity-60" aria-hidden />
+          )
+        ) : (
+          <ChevronsUpDown
+            className="ml-0.5 h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-50"
+            aria-hidden
+          />
+        )}
+        {showSecondary ? (
+          <span
+            className="ml-0.5 rounded bg-zinc-200 px-1 text-[8px] font-bold text-zinc-700 dark:bg-white/15 dark:text-app-fg-muted"
+            aria-hidden
+          >
+            2
+          </span>
+        ) : null}
+      </button>
     </th>
   );
 }
@@ -1378,7 +1387,7 @@ export function IntelligenceReelsTable({
               />
               <SortHeader
                 label="Signal"
-                hint="Why this reel surfaced. N× = beat the account's average by that multiple (competitor breakout). N% match = how closely it matches your niche keywords."
+                hint="Why this reel surfaced. ↗ N× = competitor breakout (beat the creator's own average by that multiple). ◎ N% = niche-keyword match score. Each row shows only one — they're independent signals."
                 serverSortable
                 primaryActive={
                   !localPrimarySort &&
@@ -1600,20 +1609,34 @@ export function IntelligenceReelsTable({
                   <td className="py-2.5 pr-2 align-middle tabular-nums">
                     {row.views != null ? row.views.toLocaleString() : "—"}
                   </td>
-                  <td
-                    className={
-                      row.is_outlier === true
-                        ? "py-2.5 pr-2 align-middle font-bold text-amber-600 dark:text-amber-400"
-                        : row.similarity_score != null && row.outlier_ratio == null
-                          ? "py-2.5 pr-2 align-middle font-bold text-purple-600 dark:text-purple-400"
-                          : "py-2.5 pr-2 align-middle text-zinc-400 dark:text-app-fg-faint"
-                    }
-                  >
-                    {row.outlier_ratio != null
-                      ? `${Number(row.outlier_ratio).toFixed(1)}×`
-                      : row.similarity_score != null
-                        ? `${row.similarity_score}% match`
-                        : "—"}
+                  <td className="py-2.5 pr-2 align-middle">
+                    {row.outlier_ratio != null ? (
+                      <Tooltip
+                        content={`Beat @${row.account_username}'s recent average by ${Number(
+                          row.outlier_ratio,
+                        ).toFixed(1)}×. This is a competitor breakout.`}
+                      >
+                        <span
+                          className={`inline-flex items-center gap-1 font-bold tabular-nums ${
+                            row.is_outlier === true
+                              ? "text-amber-600 dark:text-amber-400"
+                              : "text-zinc-600 dark:text-app-fg-secondary"
+                          }`}
+                        >
+                          <TrendingUp className="h-3 w-3 shrink-0" aria-hidden />
+                          {Number(row.outlier_ratio).toFixed(1)}×
+                        </span>
+                      </Tooltip>
+                    ) : row.similarity_score != null ? (
+                      <Tooltip content={`Matches your niche keywords by ${row.similarity_score}%.`}>
+                        <span className="inline-flex items-center gap-1 font-bold tabular-nums text-purple-600 dark:text-purple-400">
+                          <Target className="h-3 w-3 shrink-0" aria-hidden />
+                          {row.similarity_score}%
+                        </span>
+                      </Tooltip>
+                    ) : (
+                      <span className={EMPTY_CELL_CLASS}>—</span>
+                    )}
                   </td>
                   <td className="py-2.5 pr-2 align-middle tabular-nums">
                     {row.comments != null ? row.comments.toLocaleString() : "—"}

@@ -10,6 +10,7 @@ import { commentViewRatio, formatCommentViewPct } from "@/lib/reel-comment-view"
 import { formatSilasScoreSummary } from "@/lib/silas-score-display";
 import { AnalyzeReelModal } from "./analyze-reel-modal";
 import { ReelAnalysisDetailModal } from "./reel-analysis-detail-modal";
+import { ReelHistoryStrip } from "./reel-history-strip";
 
 type Sub = "hub" | "analysis" | "analyze";
 
@@ -177,6 +178,8 @@ export function ActivityReelHubModal({
               </dl>
             </div>
           </div>
+
+          <ReelHistoryStrip clientSlug={clientSlug} orgSlug={orgSlug} reelId={reel.id} />
 
           {/* Score pill */}
           {score ? (

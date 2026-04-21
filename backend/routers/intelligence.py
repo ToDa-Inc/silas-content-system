@@ -200,6 +200,109 @@ def _own_reel_meta(
     return m.get(str(reel_id))
 
 
+def _client_scraped_reel_meta(
+    supabase: Client, client_id: str, reel_id: str
+) -> Optional[Dict[str, Any]]:
+    """One scraped_reels row for this client (own or competitor)."""
+    rc = (
+        supabase.table("scraped_reels")
+        .select("id, post_url, thumbnail_url, hook_text, competitor_id")
+        .eq("client_id", client_id)
+        .eq("id", reel_id)
+        .limit(1)
+        .execute()
+    )
+    rows = rc.data or []
+    return rows[0] if rows else None
+
+
+def _parse_snapshot_scraped_at(raw: str) -> Optional[datetime]:
+    try:
+        dt = datetime.fromisoformat(str(raw).strip().replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
+def _metric_int_delta(
+    latest: MetricPoint, baseline: Optional[MetricPoint], field: str
+) -> Optional[int]:
+    if baseline is None:
+        return None
+    try:
+        a = getattr(latest, field)
+        b = getattr(baseline, field)
+        if a is None or b is None:
+            return None
+        return int(a) - int(b)
+    except (TypeError, ValueError):
+        return None
+
+
+def _snapshot_series_summary(points: List[MetricPoint]) -> Dict[str, Any]:
+    """Latest scrape time, count, and deltas vs nearest snapshot at/before 24h and 7d before latest."""
+    if not points:
+        return {
+            "latest_snapshot_at": None,
+            "snapshot_count": 0,
+            "views_delta_24h": None,
+            "views_delta_7d": None,
+            "likes_delta_24h": None,
+            "likes_delta_7d": None,
+            "comments_delta_24h": None,
+            "comments_delta_7d": None,
+        }
+
+    _MIN_SORT = datetime(1, 1, 1, tzinfo=timezone.utc)
+
+    def _sort_key(p: MetricPoint) -> datetime:
+        dt = _parse_snapshot_scraped_at(p.scraped_at)
+        return dt if dt is not None else _MIN_SORT
+
+    sorted_p = sorted(points, key=_sort_key)
+    last = sorted_p[-1]
+    latest_dt = _parse_snapshot_scraped_at(last.scraped_at)
+    if latest_dt is None:
+        return {
+            "latest_snapshot_at": last.scraped_at,
+            "snapshot_count": len(points),
+            "views_delta_24h": None,
+            "views_delta_7d": None,
+            "likes_delta_24h": None,
+            "likes_delta_7d": None,
+            "comments_delta_24h": None,
+            "comments_delta_7d": None,
+        }
+
+    def nearest_at_or_before(target: datetime) -> Optional[MetricPoint]:
+        best: Optional[MetricPoint] = None
+        for p in sorted_p:
+            dt = _parse_snapshot_scraped_at(p.scraped_at)
+            if dt is None:
+                continue
+            if dt <= target:
+                best = p
+            else:
+                break
+        return best
+
+    b24 = nearest_at_or_before(latest_dt - timedelta(hours=24))
+    b7 = nearest_at_or_before(latest_dt - timedelta(days=7))
+
+    return {
+        "latest_snapshot_at": last.scraped_at,
+        "snapshot_count": len(points),
+        "views_delta_24h": _metric_int_delta(last, b24, "views"),
+        "views_delta_7d": _metric_int_delta(last, b7, "views"),
+        "likes_delta_24h": _metric_int_delta(last, b24, "likes"),
+        "likes_delta_7d": _metric_int_delta(last, b7, "likes"),
+        "comments_delta_24h": _metric_int_delta(last, b24, "comments"),
+        "comments_delta_7d": _metric_int_delta(last, b7, "comments"),
+    }
+
+
 def _reel_reference_date(r: dict) -> Optional[datetime]:
     """Prefer post time, then first seen / row created — for rolling window filters (not last sync)."""
     for key in ("posted_at", "first_seen_at", "created_at"):
@@ -2610,6 +2713,7 @@ def list_own_reels_metrics(
         if not meta:
             continue
         points = points_by.get(str(rid), [])
+        summ = _snapshot_series_summary(points)
         series.append(
             ReelMetricsSeriesOut(
                 reel_id=str(meta["id"]),
@@ -2617,13 +2721,22 @@ def list_own_reels_metrics(
                 thumbnail_url=meta.get("thumbnail_url"),
                 hook_text=meta.get("hook_text"),
                 points=points,
+                competitor_id=None,
+                latest_snapshot_at=summ.get("latest_snapshot_at"),
+                snapshot_count=int(summ.get("snapshot_count") or 0),
+                views_delta_24h=summ.get("views_delta_24h"),
+                views_delta_7d=summ.get("views_delta_7d"),
+                likes_delta_24h=summ.get("likes_delta_24h"),
+                likes_delta_7d=summ.get("likes_delta_7d"),
+                comments_delta_24h=summ.get("comments_delta_24h"),
+                comments_delta_7d=summ.get("comments_delta_7d"),
             )
         )
     return ReelMetricsListOut(reels=series)
 
 
 @router.get("/clients/{slug}/reels/{reel_id}/metrics", response_model=ReelMetricsSeriesOut)
-def get_own_reel_metrics(
+def get_client_reel_metrics(
     slug: str,
     reel_id: str,
     client_id: Annotated[str, Depends(resolve_client_id)],
@@ -2631,18 +2744,30 @@ def get_own_reel_metrics(
     from_: Optional[str] = Query(None, alias="from", description="ISO8601 lower bound on scraped_at"),
     to: Optional[str] = Query(None, description="ISO8601 upper bound on scraped_at"),
 ) -> ReelMetricsSeriesOut:
-    """Snapshot time series for one own reel."""
+    """Snapshot time series for one scraped reel (own or competitor) belonging to this client."""
     from_dt, to_dt = _metrics_range_bounds(from_, to)
-    meta = _own_reel_meta(supabase, client_id, reel_id)
+    meta = _client_scraped_reel_meta(supabase, client_id, reel_id)
     if not meta:
-        raise HTTPException(status_code=404, detail="Own reel not found for this client")
+        raise HTTPException(status_code=404, detail="Reel not found for this client")
     points = _snapshot_points_for_reel(supabase, reel_id, from_dt, to_dt)
+    summary = _snapshot_series_summary(points)
+    cid = meta.get("competitor_id")
+    competitor_id = str(cid) if cid is not None else None
     return ReelMetricsSeriesOut(
         reel_id=str(meta["id"]),
         post_url=meta.get("post_url"),
         thumbnail_url=meta.get("thumbnail_url"),
         hook_text=meta.get("hook_text"),
         points=points,
+        competitor_id=competitor_id,
+        latest_snapshot_at=summary.get("latest_snapshot_at"),
+        snapshot_count=int(summary.get("snapshot_count") or 0),
+        views_delta_24h=summary.get("views_delta_24h"),
+        views_delta_7d=summary.get("views_delta_7d"),
+        likes_delta_24h=summary.get("likes_delta_24h"),
+        likes_delta_7d=summary.get("likes_delta_7d"),
+        comments_delta_24h=summary.get("comments_delta_24h"),
+        comments_delta_7d=summary.get("comments_delta_7d"),
     )
 
 

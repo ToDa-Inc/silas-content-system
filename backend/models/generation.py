@@ -151,6 +151,7 @@ class GenerationSessionOut(BaseModel):
     hashtags: Optional[List[str]] = None
     story_variants: Optional[List[str]] = None
     text_blocks: Optional[List[Dict[str, Any]]] = None
+    cover_text_options: Optional[List[str]] = None
     background_type: Optional[str] = None
     broll_clip_id: Optional[str] = None
     client_image_id: Optional[str] = None

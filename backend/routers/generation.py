@@ -42,6 +42,7 @@ from services.content_generation import (
     run_auto_video_idea,
     run_angle_generation,
     run_content_package,
+    run_cover_text_options,
     run_format_recommendation,
     run_pattern_synthesis,
     run_regenerate,
@@ -638,6 +639,20 @@ def generation_choose_angle(
         logger.exception("generation choose-angle failed")
         raise HTTPException(status_code=502, detail=str(e)) from e
 
+    cover_options: List[str] = []
+    try:
+        cover_options = run_cover_text_options(
+            settings,
+            client_row=client_row,
+            chosen_angle=chosen,
+            hooks=package["hooks"],
+            script=package["script"],
+            text_blocks=package.get("text_blocks"),
+        )
+    except Exception:
+        # Cover generation must never block content_ready — fall back to hooks in the UI.
+        logger.warning("cover_text_options generation failed; leaving null", exc_info=True)
+
     now = _now_iso()
     patch = {
         "chosen_angle_index": body.angle_index,
@@ -647,10 +662,66 @@ def generation_choose_angle(
         "hashtags": package["hashtags"],
         "story_variants": package["story_variants"],
         "text_blocks": package.get("text_blocks"),
+        "cover_text_options": cover_options or None,
         "status": "content_ready",
         "updated_at": now,
     }
     supabase.table("generation_sessions").update(patch).eq("id", session_id).execute()
+    return _row_to_out(_load_session(supabase, client_id, session_id))
+
+
+@router.post(
+    "/clients/{slug}/generate/sessions/{session_id}/regenerate-covers",
+    response_model=GenerationSessionOut,
+)
+def generation_regenerate_covers(
+    slug: str,
+    session_id: str,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict:
+    """Re-roll the AI cover headlines for a session without touching hooks/script/caption.
+
+    Cheap, dedicated endpoint so the cover prompt can iterate independently of the
+    heavy `run_content_package` call. Passes the previous options as anti-repeat context.
+    """
+    _ = slug
+    if not settings.openrouter_api_key:
+        raise HTTPException(status_code=503, detail="OPENROUTER_API_KEY not configured")
+
+    row = _load_session(supabase, client_id, session_id)
+    chosen = get_chosen_angle(row)
+    if not chosen:
+        raise HTTPException(status_code=400, detail="Choose an angle first.")
+
+    client_row = _load_client_for_generation(supabase, client_id)
+    hooks = [h for h in (row.get("hooks") or []) if isinstance(h, dict)]
+    script = str(row.get("script") or "")
+    previous = row.get("cover_text_options") if isinstance(row.get("cover_text_options"), list) else None
+    text_blocks = row.get("text_blocks") if isinstance(row.get("text_blocks"), list) else None
+
+    try:
+        covers = run_cover_text_options(
+            settings,
+            client_row=client_row,
+            chosen_angle=chosen,
+            hooks=hooks,
+            script=script,
+            previous=previous,
+            text_blocks=text_blocks,
+        )
+    except Exception as e:
+        logger.exception("regenerate-covers failed")
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+    if not covers:
+        raise HTTPException(status_code=502, detail="Model returned no usable cover options; retry.")
+
+    supabase.table("generation_sessions").update({
+        "cover_text_options": covers,
+        "updated_at": _now_iso(),
+    }).eq("id", session_id).execute()
     return _row_to_out(_load_session(supabase, client_id, session_id))
 
 

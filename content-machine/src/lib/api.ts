@@ -612,13 +612,18 @@ async function fetchDashboardLane(
   }
 }
 
+// Lane cards on the dashboard are scrollable now — pull a small page so the
+// user has something to actually scroll through. 12 lines comfortably fits the
+// card's min height and keeps payloads tiny.
+const DASHBOARD_LANE_LIMIT = 12;
+
 /** GET /dashboard/fresh-niche — recent keyword-similarity reels, ranked by views. */
-export function fetchDashboardFreshNiche(days = 3, limit = 3) {
+export function fetchDashboardFreshNiche(days = 3, limit = DASHBOARD_LANE_LIMIT) {
   return fetchDashboardLane("fresh-niche", days, limit);
 }
 
 /** GET /dashboard/competitor-wins — recent competitor reels beating their account avg. */
-export function fetchDashboardCompetitorWins(days = 3, limit = 3) {
+export function fetchDashboardCompetitorWins(days = 3, limit = DASHBOARD_LANE_LIMIT) {
   return fetchDashboardLane("competitor-wins", days, limit);
 }
 

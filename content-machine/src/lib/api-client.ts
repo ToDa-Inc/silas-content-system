@@ -2,6 +2,7 @@
 
 import type {
   OwnReelsMetricsResponse,
+  OwnReelsMetricsSeries,
   ReelAnalysisDetail,
 } from "@/lib/reel-types";
 import type { ScrapedReelRow } from "@/lib/api";
@@ -216,11 +217,15 @@ async function fetchDashboardLaneClient(
   }
 }
 
+// Mirror of api.ts DASHBOARD_LANE_LIMIT — kept inline to avoid a server-only
+// import leaking into the client bundle. Bump both together if you change one.
+const DASHBOARD_LANE_LIMIT = 12;
+
 export function fetchDashboardFreshNicheClient(
   clientSlug: string,
   orgSlug: string,
   days = 3,
-  limit = 3,
+  limit = DASHBOARD_LANE_LIMIT,
 ) {
   return fetchDashboardLaneClient("fresh-niche", clientSlug, orgSlug, days, limit);
 }
@@ -229,7 +234,7 @@ export function fetchDashboardCompetitorWinsClient(
   clientSlug: string,
   orgSlug: string,
   days = 3,
-  limit = 3,
+  limit = DASHBOARD_LANE_LIMIT,
 ) {
   return fetchDashboardLaneClient("competitor-wins", clientSlug, orgSlug, days, limit);
 }
@@ -306,6 +311,55 @@ export async function fetchOwnReelsMetrics(
   }
 }
 
+/** Single-reel snapshot series (own or competitor) + deltas for compact UI. */
+export async function fetchReelMetricsSeries(
+  clientSlug: string,
+  orgSlug: string,
+  reelId: string,
+  opts?: { from?: string; to?: string },
+): Promise<{ ok: true; data: OwnReelsMetricsSeries } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  const sp = new URLSearchParams();
+  if (opts?.from) sp.set("from", opts.from);
+  if (opts?.to) sp.set("to", opts.to);
+  const q = sp.toString();
+  const url = `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/reels/${encodeURIComponent(reelId)}/metrics${q ? `?${q}` : ""}`;
+  try {
+    const res = await contentApiFetch(url, { headers });
+    const json = (await res.json().catch(() => ({}))) as OwnReelsMetricsSeries & {
+      detail?: unknown;
+    };
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(json as Record<string, unknown>, `Request failed (${res.status})`),
+      };
+    }
+    return {
+      ok: true,
+      data: {
+        reel_id: String(json.reel_id ?? reelId),
+        post_url: json.post_url ?? null,
+        thumbnail_url: json.thumbnail_url ?? null,
+        hook_text: json.hook_text ?? null,
+        points: Array.isArray(json.points) ? json.points : [],
+        competitor_id: json.competitor_id ?? null,
+        latest_snapshot_at: json.latest_snapshot_at ?? null,
+        snapshot_count: typeof json.snapshot_count === "number" ? json.snapshot_count : 0,
+        views_delta_24h: json.views_delta_24h ?? null,
+        views_delta_7d: json.views_delta_7d ?? null,
+        likes_delta_24h: json.likes_delta_24h ?? null,
+        likes_delta_7d: json.likes_delta_7d ?? null,
+        comments_delta_24h: json.comments_delta_24h ?? null,
+        comments_delta_7d: json.comments_delta_7d ?? null,
+      },
+    };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
 export async function enqueueReelAnalyzeBulk(
   clientSlug: string,
   orgSlug: string,
@@ -364,6 +418,7 @@ export type GenerationSession = {
   hashtags?: string[] | null;
   story_variants?: string[] | null;
   text_blocks?: TextBlock[] | null;
+  cover_text_options?: string[] | null;
   background_type?: string | null;
   broll_clip_id?: string | null;
   client_image_id?: string | null;
@@ -649,6 +704,33 @@ export async function generationRegenerate(
     }
     if (!json || typeof json !== "object" || typeof (json as GenerationSession).id !== "string") {
       return { ok: false, error: "Invalid response from server after regenerate." };
+    }
+    return { ok: true, data: json as GenerationSession };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+/** Re-roll the AI cover headlines for a session without touching hooks/script/caption.
+ *  Cheap, dedicated endpoint — see backend run_cover_text_options. */
+export async function generationRegenerateCovers(
+  clientSlug: string,
+  orgSlug: string,
+  sessionId: string,
+): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/generate/sessions/${encodeURIComponent(sessionId)}/regenerate-covers`,
+      { method: "POST", headers },
+    );
+    const json = (await res.json().catch(() => ({}))) as GenerationSession & { detail?: unknown };
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
+    }
+    if (!json || typeof json !== "object" || typeof (json as GenerationSession).id !== "string") {
+      return { ok: false, error: "Invalid response from server after regenerate-covers." };
     }
     return { ok: true, data: json as GenerationSession };
   } catch (e) {

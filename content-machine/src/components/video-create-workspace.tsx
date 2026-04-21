@@ -37,6 +37,7 @@ import {
   generationGenerateThumbnail,
   generationGetSession,
   generationRegenerate,
+  generationRegenerateCovers,
   patchCreateSession,
   type BrollClipRow,
   type CarouselSlide,
@@ -535,6 +536,9 @@ function bgSourceFromSession(t: string | null | undefined): BgSource {
 
 function ReelCoverSection({
   hooks,
+  coverOptions,
+  coverRegenBusy,
+  onRegenerateCovers,
   images,
   thumbnailUrl,
   thumbnailBusy,
@@ -549,6 +553,11 @@ function ReelCoverSection({
   step,
 }: {
   hooks: Array<{ text?: string }>;
+  /** AI-written cover headlines (cover_text_options on the session). When present these
+   *  drive the chips; otherwise we fall back to spoken-line hooks for legacy sessions. */
+  coverOptions: string[];
+  coverRegenBusy: boolean;
+  onRegenerateCovers: () => void;
   images: ClientImageRow[];
   thumbnailUrl: string | null;
   thumbnailBusy: boolean;
@@ -562,6 +571,10 @@ function ReelCoverSection({
   onComposeFromImage: () => void;
   step: number;
 }) {
+  const usingCoverOptions = coverOptions.length > 0;
+  const chipItems: string[] = usingCoverOptions
+    ? coverOptions
+    : hooks.map((h) => h?.text ?? "").filter(Boolean);
   return (
     <div className="glass rounded-2xl border border-app-divider/80 p-5 md:p-6">
       <StepHeader n={step} label="Reel cover" done={Boolean(thumbnailUrl)}>
@@ -631,15 +644,31 @@ function ReelCoverSection({
               : "Pick a client photo and we overlay the hook in the same editorial style."}
           </p>
 
-          {hooks.length > 0 && (
+          {chipItems.length > 0 && (
             <div>
-              <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">
-                Pick a hook as headline
-              </p>
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">
+                  {usingCoverOptions ? "Pick a cover headline" : "Pick a hook as headline"}
+                </p>
+                {usingCoverOptions && (
+                  <button
+                    type="button"
+                    onClick={onRegenerateCovers}
+                    disabled={coverRegenBusy}
+                    className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-semibold text-app-fg-muted hover:text-app-fg disabled:opacity-50"
+                    title="Generate fresh cover headlines"
+                  >
+                    {coverRegenBusy ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-3 w-3" />
+                    )}
+                    {coverRegenBusy ? "Regenerating…" : "Regenerate"}
+                  </button>
+                )}
+              </div>
               <div className="flex flex-wrap gap-1.5">
-                {hooks.map((h, i) => {
-                  const txt = h?.text ?? "";
-                  if (!txt) return null;
+                {chipItems.map((txt, i) => {
                   const active = coverText === txt;
                   return (
                     <button
@@ -860,6 +889,7 @@ export function VideoCreateWorkspace({
   const [coverText, setCoverText] = useState("");
   const [coverMode, setCoverMode] = useState<CoverMode>("ai");
   const [coverImageId, setCoverImageId] = useState("");
+  const [coverRegenBusy, setCoverRegenBusy] = useState(false);
   const [regenBusy, setRegenBusy] = useState(false);
   /**
    * Active source tab for the Visual card. Defaults to whatever's already set on the
@@ -925,7 +955,9 @@ export function VideoCreateWorkspace({
         show(sRes.error, "error");
       } else {
         applySession(sRes.data);
-        setCoverText("");
+        // Pre-select the first AI-written cover headline so users land on a real
+        // cover-style line; falls back to "" (custom textarea) for legacy sessions.
+        setCoverText(sRes.data.cover_text_options?.[0] ?? "");
       }
       if (bRes.ok) setClips(bRes.data);
       if (iRes.ok) setImages(iRes.data);
@@ -1157,6 +1189,26 @@ export function VideoCreateWorkspace({
     }
   }, [clientSlug, orgSlug, session, show, pollRenderJob]);
 
+  const onRegenerateCovers = useCallback(async () => {
+    const cs = clientSlug.trim();
+    const os = orgSlug.trim();
+    if (!session || !cs || !os) return;
+    setCoverRegenBusy(true);
+    try {
+      const res = await generationRegenerateCovers(cs, os, session.id);
+      if (!res.ok) {
+        show(res.error, "error");
+        return;
+      }
+      applySession(res.data);
+      // Land on the first fresh option so the user sees the new copy immediately.
+      setCoverText(res.data.cover_text_options?.[0] ?? "");
+      show("Cover headlines refreshed.", "success");
+    } finally {
+      setCoverRegenBusy(false);
+    }
+  }, [applySession, clientSlug, orgSlug, session, show]);
+
   const onGenerateThumbnail = useCallback(async () => {
     const cs = clientSlug.trim();
     const os = orgSlug.trim();
@@ -1329,6 +1381,7 @@ export function VideoCreateWorkspace({
   }
 
   const hooks = (Array.isArray(session.hooks) ? session.hooks : []) as Array<{ text?: string }>;
+  const coverOptions = (Array.isArray(session.cover_text_options) ? session.cover_text_options : []) as string[];
   const captionFull = `${session.caption_body ?? ""}${
     Array.isArray(session.hashtags) && session.hashtags.length ? `\n\n${session.hashtags.join(" ")}` : ""
   }`.trim();
@@ -1384,6 +1437,9 @@ export function VideoCreateWorkspace({
 
         <ReelCoverSection
           hooks={hooks}
+          coverOptions={coverOptions}
+          coverRegenBusy={coverRegenBusy}
+          onRegenerateCovers={onRegenerateCovers}
           images={images}
           thumbnailUrl={thumbnailUrl}
           thumbnailBusy={thumbnailBusy}
@@ -1900,6 +1956,9 @@ export function VideoCreateWorkspace({
       {/* ── Step 3: Reel cover ── */}
       <ReelCoverSection
         hooks={hooks}
+        coverOptions={coverOptions}
+        coverRegenBusy={coverRegenBusy}
+        onRegenerateCovers={onRegenerateCovers}
         images={images}
         thumbnailUrl={thumbnailUrl}
         thumbnailBusy={thumbnailBusy}

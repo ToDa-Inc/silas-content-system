@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { ChevronDown, ChevronUp, Loader2, X } from "lucide-react";
 import { fetchReelAnalysisDetail } from "@/lib/api-client";
+import { ReelHistoryStrip } from "./reel-history-strip";
 import { inlineMd } from "@/lib/inline-markdown";
 import { formatSilasScoreSummary } from "@/lib/silas-score-display";
 import type { ReelAnalysisDetail } from "@/lib/reel-types";
@@ -205,6 +206,8 @@ export function ReelAnalysisDetailModal({ open, onClose, reelId, clientSlug, org
           </button>
         </div>
 
+        <ReelHistoryStrip clientSlug={clientSlug} orgSlug={orgSlug} reelId={reelId} />
+
         {loading ? (
           <div className="flex items-center gap-2 py-8 text-sm text-zinc-600 dark:text-app-fg-muted">
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
@@ -254,6 +257,12 @@ export function ReelAnalysisDetailModal({ open, onClose, reelId, clientSlug, org
                 ) : null}
                 {ks.what_the_video_is_about ? (
                   <Section title="What this reel is about">{inlineMd(ks.what_the_video_is_about)}</Section>
+                ) : null}
+                {ks.why_it_fits ? (
+                  <Section title="Why it fits">{inlineMd(ks.why_it_fits)}</Section>
+                ) : null}
+                {ks.why_it_doesnt_fit ? (
+                  <Section title="Why it doesn't fit">{inlineMd(ks.why_it_doesnt_fit)}</Section>
                 ) : null}
                 {ks.what_matches ? (
                   <Section title="What matches your niche">{inlineMd(ks.what_matches)}</Section>

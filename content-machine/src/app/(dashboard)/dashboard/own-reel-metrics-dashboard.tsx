@@ -3,7 +3,7 @@
 import type { CSSProperties } from "react";
 import Link from "next/link";
 import { useTheme } from "next-themes";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -262,6 +262,8 @@ function proxiedThumbSrc(raw: string | null | undefined): string {
 type Props = {
   clientSlug: string;
   orgSlug: string;
+  /** When set (e.g. from `/dashboard?focusReel=`), isolate this reel on first load. */
+  focusReelId?: string;
 };
 
 type ReelPickerProps = {
@@ -380,8 +382,9 @@ function ThumbnailTooltip({
   );
 }
 
-export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
+export function OwnReelMetricsDashboard({ clientSlug, orgSlug, focusReelId }: Props) {
   const { resolvedTheme } = useTheme();
+  const appliedFocusKey = useRef<string | null>(null);
   const [metric, setMetric] = useState<MetricKey>("views");
   const [chartKind, setChartKind] = useState<ChartKind>("line");
   const [timeRange, setTimeRange] = useState<TrendTimeRange>("all");
@@ -422,6 +425,23 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug }: Props) {
       cancelled = true;
     };
   }, [canFetch, clientSlug, orgSlug]);
+
+  useEffect(() => {
+    appliedFocusKey.current = null;
+  }, [clientSlug, orgSlug, focusReelId]);
+
+  useEffect(() => {
+    const fid = focusReelId?.trim();
+    if (!raw?.length || !fid) return;
+    const match = raw.some((r) => r.reel_id === fid);
+    if (!match) return;
+    const key = `${clientSlug}:${orgSlug}:${fid}`;
+    if (appliedFocusKey.current === key) return;
+    appliedFocusKey.current = key;
+    const all = new Set(raw.map((r) => r.reel_id));
+    setHiddenReelIds(new Set([...all].filter((id) => id !== fid)));
+    setAutoHideApplied(true);
+  }, [raw, focusReelId, clientSlug, orgSlug]);
 
   useEffect(() => {
     if (timeRange !== "custom" || !raw?.length) return;

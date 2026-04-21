@@ -9,7 +9,18 @@ import { DashboardKpiStrip } from "./dashboard-kpi-strip";
 import { DashboardUpdateReels } from "./dashboard-update-reels";
 import { OwnReelMetricsDashboard } from "./own-reel-metrics-dashboard";
 
-export default async function DashboardPage() {
+type DashboardSearchParams = { focusReel?: string | string[] };
+
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams?: Promise<DashboardSearchParams>;
+}) {
+  const sp = searchParams ? await searchParams : {};
+  const rawFocus = sp.focusReel;
+  const focusReel =
+    typeof rawFocus === "string" ? rawFocus.trim() : Array.isArray(rawFocus) ? String(rawFocus[0] ?? "").trim() : "";
+
   const { clientSlug, orgSlug, user, tenancy } = await getCachedServerApiContext();
   const syncDisabled = !clientSlug.trim() || !orgSlug.trim();
   const syncDisabledHint =
@@ -53,7 +64,11 @@ export default async function DashboardPage() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
-          <OwnReelMetricsDashboard clientSlug={clientSlug} orgSlug={orgSlug} />
+          <OwnReelMetricsDashboard
+            clientSlug={clientSlug}
+            orgSlug={orgSlug}
+            focusReelId={focusReel || undefined}
+          />
         </div>
         <div className="flex flex-col gap-4 lg:col-span-1">
           <FreshFromNiche

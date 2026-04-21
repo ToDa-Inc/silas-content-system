@@ -14,6 +14,16 @@ export type OwnReelsMetricsSeries = {
   thumbnail_url?: string | null;
   hook_text?: string | null;
   points: OwnReelsMetricPoint[];
+  /** Present on GET …/reels/{reel_id}/metrics and list; null = own reel. */
+  competitor_id?: string | null;
+  latest_snapshot_at?: string | null;
+  snapshot_count?: number;
+  views_delta_24h?: number | null;
+  views_delta_7d?: number | null;
+  likes_delta_24h?: number | null;
+  likes_delta_7d?: number | null;
+  comments_delta_24h?: number | null;
+  comments_delta_7d?: number | null;
 };
 
 export type OwnReelsMetricsResponse = {
@@ -76,10 +86,12 @@ export type ReelAnalysisDetail = {
       verdict?: string | null;
       similarity_score?: number | null;
       matched_keywords?: string[] | null;
+      what_the_video_is_about?: string | null;
+      why_it_fits?: string | null;
+      why_it_doesnt_fit?: string | null;
       what_matches?: string | null;
       what_differs?: string | null;
       adaptation_angle?: string | null;
-      what_the_video_is_about?: string | null;
       video_analyzed?: boolean | null;
     } | null;
   } | null;

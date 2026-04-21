@@ -34,9 +34,9 @@ from services.similarity_discovery_keywords import (
 
 MAX_ITEMS_PER_KEYWORD = 80
 MAX_SCORE_SAFETY_CAP = 200  # hard ceiling to prevent runaway jobs — not a quality filter
-SIMILARITY_THRESHOLD = 70
-DEFAULT_DAYS = 30
-DEFAULT_SEARCH_WINDOW = "last-1-month"
+SIMILARITY_THRESHOLD = 85
+DEFAULT_DAYS = 2
+DEFAULT_SEARCH_WINDOW = "last-2-days"
 DEFAULT_MIN_VIEWS_PER_DAY = 2000.0  # views/day floor — raised since we score everything that passes
 
 # Apify / model cost telemetry (USD).
@@ -101,42 +101,44 @@ def _owner_username(item: dict) -> str:
 
 
 def _build_similarity_prompt(analysis_brief: str, username: str, caption: str) -> str:
-    return f"""You are analyzing whether an Instagram reel is useful content inspiration for a specific coaching creator.
+    return f"""You are scoring whether an Instagram reel belongs on THIS creator's channel — same audience, same niche, same voice, same kind of reel they actually make. Not whether the reel shares a few keywords.
 
-Watch the full video carefully. The caption is provided as context but the VIDEO is your primary source — captions are often random, promotional, or unrelated to what is actually said and shown.
+Watch the full video carefully. The VIDEO is your primary source. The caption is secondary context — captions are often promotional, ironic, or unrelated to what is shown.
 
-CLIENT DNA BRIEF:
+CLIENT BRIEF (the only source of truth for niche, audience, tone, and the kind of reels the creator actually makes):
 {analysis_brief}
 
 ---
 
 REEL TO EVALUATE:
 Account: @{username}
-Caption (for context only): "{caption[:400]}"
+Caption (context only): "{caption[:400]}"
 
 ---
 
-Based on what you SEE AND HEAR in the video, score how useful this reel is as content inspiration for the client.
+ONE DECISION:
+Could this creator post a reel like this on their own feed tomorrow — for their own audience — without changing who they are or what they're known for?
 
-SCORING CRITERIA — a high score requires BOTH:
-1. Same topic territory (workplace dynamics, difficult conversations, assertiveness, toxic environments, etc.)
-2. Same content intent: TEACHING, COACHING, or EMPOWERING the viewer — NOT pure entertainment, comedy skits, or passive venting
+To answer YES, the reel must pass BOTH:
+1) AUDIENCE + NICHE: speaks to the same audience and sits in the same niche/problem space the brief describes. Anything outside that niche is off-shelf, no matter how well-produced.
+2) INTENT + FORMAT: same intent the creator has (e.g. teaching, coaching, sharing perspective, demoing — whatever the brief says) AND a format the creator could realistically replicate given how they make reels. Performance formats the creator does not use (acted skits, sketches, dramatic monologues, parody, news clips, sports highlights, music edits) fail this check even if the topic is right.
 
-AUTOMATIC LOW SCORE (≤ 30) — regardless of topic — if the reel is:
-- A comedy skit or parody making fun of workplace situations (sarcastic/relatable entertainment)
-- A rant or venting video with no actionable angle
-- About sexual harassment or inappropriate boss behaviour (different problem space)
-- A job-search or career-switching video (leaving the situation, not navigating it)
-- Motivational fluff with no specific actionable insight
+CALIBRATION — read these as patterns, then map to the brief:
+- YES: A creator in the same niche as the brief, delivering value the same way the brief describes (teaching, demoing, sharing perspective). Same audience, same kind of reel — you could swap it onto the client's feed and it would feel native.
+- NO — Same topic, wrong format: an acted skit / dramatic scene / sketch about the brief's topic. Surface keywords match, but it's performance for an entertainment audience, not the kind of reel this creator makes.
+- NO — Adjacent profession: someone from a neighbouring profession (e.g. a clinical specialist where the brief is a coach, or vice versa) explaining theory in their own frame. Same shelf in a bookstore, different practitioner, different viewer contract.
+- NO — Wrong shelf: any topic outside the niche the brief defines, regardless of production quality. Don't reach for "but it could relate to…".
+- NO — Empty calories: pure venting, generic motivation, meme energy, or "relatable" content with no specific takeaway the creator's audience would actually use.
 
-Score 0-100:
-- 85-100: Same audience, same problem, same coaching intent — direct adaptation target
-- 65-84: Clear overlap in topic AND coaching intent, slightly different angle
-- 40-64: Right topic but wrong intent (entertainment) OR right intent but different audience
-- 0-39:  Wrong audience, wrong intent, or fundamentally different problem
+SCORING (0–100), strict and calibrated:
+- 85–100: True match. Same niche, same audience, same intent, replicable format. You'd be comfortable saying "this is the kind of reel the creator makes."
+- 60–84: Topic or surface overlap, but wrong audience, wrong intent, or wrong format. NOT a match for this pipeline. Borderline cases live here, not at 85+.
+- 0–59: Wrong niche, wrong audience, or off-shelf entirely.
 
-Respond in JSON (no markdown, no backticks):
-{{"similarity_score": <0-100>, "what_the_video_is_about": "<1 sentence: topic AND format/intent>", "what_matches": "<what overlaps with client niche>", "what_differs": "<what doesn't fit>", "adaptation_angle": "<one specific idea the client could use>", "verdict": "high_match|partial_match|no_match"}}"""
+VERDICT: "match" only if similarity_score >= 85 AND both checks above clearly pass. Otherwise "no_match".
+
+Respond in JSON only (no markdown, no code fences):
+{{"similarity_score": <0-100>, "verdict": "match|no_match", "what_the_video_is_about": "<one sentence: topic + format + intent>", "why_it_fits": "<one sentence; empty string if no_match>", "why_it_doesnt_fit": "<one sentence; empty string if match>"}}"""
 
 
 _MAX_VIDEO_BYTES = 15 * 1024 * 1024  # 15 MB — Gemini multimodal limit
@@ -391,9 +393,8 @@ def _upsert_keyword_similarity_analysis(
         "similarity_score": parsed.get("similarity_score"),
         "verdict": parsed.get("verdict"),
         "what_the_video_is_about": parsed.get("what_the_video_is_about"),
-        "what_matches": parsed.get("what_matches"),
-        "what_differs": parsed.get("what_differs"),
-        "adaptation_angle": parsed.get("adaptation_angle"),
+        "why_it_fits": parsed.get("why_it_fits"),
+        "why_it_doesnt_fit": parsed.get("why_it_doesnt_fit"),
         "video_analyzed": video_analyzed,
         "matched_keywords": matched_keywords,
     }
@@ -419,8 +420,8 @@ def _upsert_keyword_similarity_analysis(
                 "model_used": model,
                 "video_analyzed": video_analyzed,
                 "analyzed_at": now,
-                "content_angle": (str(parsed.get("verdict") or "")[:500] or None),
-                "why_it_worked": (str(parsed.get("adaptation_angle") or "")[:8000] or None),
+                "content_angle": (str(parsed.get("what_the_video_is_about") or "")[:500] or None),
+                "why_it_worked": (str(parsed.get("why_it_fits") or "")[:8000] or None),
             }
         ).eq("id", rid).execute()
     else:
@@ -436,8 +437,8 @@ def _upsert_keyword_similarity_analysis(
                 "model_used": model,
                 "video_analyzed": video_analyzed,
                 "analyzed_at": now,
-                "content_angle": (str(parsed.get("verdict") or "")[:500] or None),
-                "why_it_worked": (str(parsed.get("adaptation_angle") or "")[:8000] or None),
+                "content_angle": (str(parsed.get("what_the_video_is_about") or "")[:500] or None),
+                "why_it_worked": (str(parsed.get("why_it_fits") or "")[:8000] or None),
             }
         ).execute()
 
@@ -722,16 +723,19 @@ def run_keyword_reel_similarity(settings: Settings, job: Dict[str, Any]) -> None
                 prompt,
                 video_path=tmp_path,
             )
-            score = int(result.get("similarity_score") or 0)
-            verdict = result.get("verdict") or ""
-            what_matches = result.get("what_matches") or ""
-            what_differs = result.get("what_differs") or ""
-            adaptation_angle = result.get("adaptation_angle") or ""
+            try:
+                raw_score = int(round(float(result.get("similarity_score") or 0)))
+            except (TypeError, ValueError):
+                raw_score = 0
+            score = max(0, min(100, raw_score))
+            verdict = "match" if score >= threshold else "no_match"
+            why_it_fits = (result.get("why_it_fits") or "") if verdict == "match" else ""
+            why_it_doesnt_fit = (result.get("why_it_doesnt_fit") or "") if verdict == "no_match" else ""
             video_summary = result.get("what_the_video_is_about") or ""
         except Exception:
             score = 0
             verdict = "error"
-            what_matches = what_differs = adaptation_angle = video_summary = ""
+            why_it_fits = why_it_doesnt_fit = video_summary = ""
             used_video = False
         finally:
             if tmp_path and tmp_path.is_file():
@@ -743,16 +747,14 @@ def run_keyword_reel_similarity(settings: Settings, job: Dict[str, Any]) -> None
             "verdict": verdict,
             "video_analyzed": used_video,
             "what_the_video_is_about": video_summary,
-            "what_matches": what_matches,
-            "what_differs": what_differs,
-            "adaptation_angle": adaptation_angle,
+            "why_it_fits": why_it_fits,
+            "why_it_doesnt_fit": why_it_doesnt_fit,
             "gemini_parsed": {
                 "similarity_score": score,
                 "verdict": verdict,
                 "what_the_video_is_about": video_summary,
-                "what_matches": what_matches,
-                "what_differs": what_differs,
-                "adaptation_angle": adaptation_angle,
+                "why_it_fits": why_it_fits,
+                "why_it_doesnt_fit": why_it_doesnt_fit,
             },
         })
         progress["scored"] = len(scored)
@@ -791,14 +793,19 @@ def run_keyword_reel_similarity(settings: Settings, job: Dict[str, Any]) -> None
             "username": r["username"],
             "score": r["similarity_score"],
             "verdict": r["verdict"],
-            "adaptation_angle": r["adaptation_angle"],
+            "why_it_fits": r.get("why_it_fits") or "",
             "cv_ratio": r["cv_ratio"],
             "posted_at": r.get("posted_at", ""),
         }
         for r in sorted(scored, key=lambda x: x["similarity_score"], reverse=True)
         if r["similarity_score"] >= threshold
     ]
-    _complete_job(supabase, job_id, progress)
+    saved = int(progress.get("upserted") or 0)
+    summary_msg = (
+        f"Scored {len(scored)} reels, saved {saved} at threshold {threshold}"
+        + ("." if saved else " — nothing met the bar this run.")
+    )
+    _complete_job(supabase, job_id, progress, summary_msg)
 
 
 def _complete_job(

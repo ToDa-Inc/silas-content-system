@@ -125,13 +125,23 @@ class MetricPoint(BaseModel):
 
 
 class ReelMetricsSeriesOut(BaseModel):
-    """GET …/reels/{reel_id}/metrics — own reel time series."""
+    """GET …/reels/{reel_id}/metrics — time series for any scraped reel belonging to the client."""
 
     reel_id: str
     post_url: Optional[str] = None
     thumbnail_url: Optional[str] = None
     hook_text: Optional[str] = None
     points: List[MetricPoint] = Field(default_factory=list)
+    competitor_id: Optional[str] = None
+    """NULL = client's own reel; set when reel is from a tracked competitor."""
+    latest_snapshot_at: Optional[str] = None
+    snapshot_count: int = 0
+    views_delta_24h: Optional[int] = None
+    views_delta_7d: Optional[int] = None
+    likes_delta_24h: Optional[int] = None
+    likes_delta_7d: Optional[int] = None
+    comments_delta_24h: Optional[int] = None
+    comments_delta_7d: Optional[int] = None
 
 
 class ReelMetricsListOut(BaseModel):

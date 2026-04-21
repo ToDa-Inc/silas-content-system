@@ -78,8 +78,8 @@ function fetchLane(
   days: number,
 ) {
   return kind === "fresh-niche"
-    ? fetchDashboardFreshNicheClient(clientSlug, orgSlug, days, 3)
-    : fetchDashboardCompetitorWinsClient(clientSlug, orgSlug, days, 3);
+    ? fetchDashboardFreshNicheClient(clientSlug, orgSlug, days)
+    : fetchDashboardCompetitorWinsClient(clientSlug, orgSlug, days);
 }
 
 function isoDaysAgo(days: number): string {
@@ -122,7 +122,7 @@ function DashboardDailyLane({
     };
   }, [range, clientSlug, orgSlug, config.kind]);
 
-  const list = reels.slice(0, 3);
+  const list = reels;
   const activeDays = RANGE_OPTIONS.find((r) => r.key === range)?.days ?? 3;
 
   return (
@@ -163,7 +163,12 @@ function DashboardDailyLane({
           ) : null}
         </div>
 
-        <div className="flex flex-1 flex-col overflow-hidden">
+        {/*
+          Body scrolls vertically when more than ~5 rows arrive. max-h caps
+          growth so the card stays compact in the dashboard column; flex-1
+          still expands the empty/error states to center their copy.
+        */}
+        <div className="flex flex-1 flex-col overflow-y-auto overscroll-contain max-h-80">
           {error ? (
             <div className="flex flex-1 items-center justify-center px-4 py-6 text-center">
               <p className="text-xs text-app-callout-warning-fg">{error}</p>
@@ -173,7 +178,7 @@ function DashboardDailyLane({
               <p className="text-xs text-app-fg-muted">{config.emptyCopy}</p>
             </div>
           ) : (
-            <ul className="flex-1 divide-y divide-app-divider">
+            <ul className="divide-y divide-app-divider">
               {list.map((reel) => {
                 const badge = config.badgeFor(reel);
                 return (

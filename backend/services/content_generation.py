@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Literal, Optional, Sequence
 
 from core.config import Settings
@@ -14,7 +15,8 @@ from services.reel_metrics import enrich_engagement_metrics
 
 logger = logging.getLogger(__name__)
 
-GENERATION_PROMPT_VERSION = "silas_gen_v4_2026_04_11"
+GENERATION_PROMPT_VERSION = "silas_gen_v5_2026_04_21"
+COVER_PROMPT_VERSION = "silas_covers_v1_2026_04_21"
 
 GermanPolishMode = Literal["none", "full", "script", "caption", "stories"]
 
@@ -551,6 +553,309 @@ def _normalize_text_blocks(raw: Any) -> Optional[List[Dict[str, Any]]]:
     return out if out else None
 
 
+# ── Cover text generator ────────────────────────────────────────────────────────
+# Produces 5–8 short, scroll-stopping cover headlines for the 9:16 reel cover PNG.
+# Independent from `run_content_package`: own LLM call, own temperature, own retry.
+# Persisted on the session as `cover_text_options` (see migration phase19).
+
+_SYSTEM_COVER_JSON = (
+    "You are an elite-level direct-response copywriter for Instagram reel covers "
+    "(thumbnail/title text). Reply with a single valid JSON object only "
+    "(no markdown fences, no commentary)."
+)
+
+# Broad emoji range — strict enough to reject decoration on covers.
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"   # symbols & pictographs, supplemental, etc.
+    "\U00002600-\U000027BF"   # misc symbols + dingbats
+    "\U0001F000-\U0001F02F"   # mahjong/dominoes
+    "\U0001F0A0-\U0001F0FF"   # playing cards
+    "\u2190-\u21FF"           # arrows (↓ ← → etc. — banned on covers, allowed on tb CTAs)
+    "]"
+)
+
+
+def _extract_script_summary(script: str, max_chars: int = 600) -> str:
+    """Pick the strongest beats from the script for cover-prompt context.
+
+    Covers ride on the reel's promise + payoff, not the line-by-line teaching. So we
+    prefer ``## Hook`` and ``## Conclusion`` if present (the script structure that
+    `run_content_package` instructs the model to use). Falls back to the first
+    ~max_chars of the script body.
+    """
+    s = (script or "").strip()
+    if not s:
+        return ""
+    parts: List[str] = []
+    for heading in ("## Hook", "## Conclusion"):
+        idx = s.find(heading)
+        if idx == -1:
+            continue
+        body = s[idx + len(heading):]
+        nxt = body.find("\n## ")
+        body = body[:nxt] if nxt != -1 else body
+        body = body.strip()
+        if body:
+            parts.append(f"{heading}\n{body}")
+    joined = "\n\n".join(parts) if parts else s
+    return joined[:max_chars].strip()
+
+
+def _extract_text_block_seeds(
+    text_blocks: Optional[Sequence[Dict[str, Any]]],
+    *,
+    max_items: int = 3,
+    max_words: int = 12,
+) -> List[str]:
+    """Pull non-CTA on-screen overlays as extra cover-prompt context.
+
+    The first overlay in a `text_overlay`/`b_roll_reel` package is usually a punchy,
+    cover-quality line (e.g. "Kompetent, aber im Meeting unsichtbar?"). Feeding it
+    to the cover model as inspiration — separately from the spoken hooks — lifts
+    the floor of generated covers without coupling the two systems.
+
+    - Drops CTA blocks (those are caption-push / comment-keyword lines, not covers).
+    - Strips emojis (covers ban them; we don't want the model copying decoration).
+    - Drops anything longer than ``max_words`` words (overlays can be long beats).
+    - Returns up to ``max_items`` distinct seeds, preserving order.
+    """
+    if not text_blocks:
+        return []
+    seen: set[str] = set()
+    out: List[str] = []
+    for tb in text_blocks:
+        if not isinstance(tb, dict) or tb.get("isCTA"):
+            continue
+        text = str(tb.get("text") or "").strip()
+        if not text:
+            continue
+        cleaned = _EMOJI_RE.sub("", text).strip()
+        cleaned = re.sub(r"\s{2,}", " ", cleaned)
+        if not cleaned or len(re.findall(r"\w+", cleaned)) > max_words:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(cleaned)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _normalize_cover_options(raw: Any, *, hooks: List[Dict[str, Any]]) -> List[str]:
+    """Enforce the cover prompt's hard rules deterministically.
+
+    Drops anything that violates: ≤10 words, ≤2 lines, no emojis, not a substring
+    of any hook (catches the "shortened hook" failure mode), distinct openers
+    (≤3 leading words shared with another kept option).
+    """
+    if not isinstance(raw, list):
+        return []
+
+    hook_texts_lc = [
+        str(h.get("text") or "").strip().lower()
+        for h in hooks
+        if isinstance(h, dict) and str(h.get("text") or "").strip()
+    ]
+
+    def _word_key(s: str, n: int) -> str:
+        return " ".join(re.findall(r"\w+", s.lower())[:n])
+
+    seen_norm: set[str] = set()
+    seen_openers: set[str] = set()
+    out: List[str] = []
+    for item in raw:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        if _EMOJI_RE.search(text):
+            continue
+        if text.count("\n") > 1:
+            continue
+        if len(re.findall(r"\w+", text)) > 10:
+            continue
+        norm = re.sub(r"[\s\W]+", " ", text.lower()).strip()
+        if not norm or norm in seen_norm:
+            continue
+        if any(norm and norm in h for h in hook_texts_lc):
+            continue
+        opener = _word_key(text, 4)
+        if opener and opener in seen_openers:
+            continue
+        seen_norm.add(norm)
+        if opener:
+            seen_openers.add(opener)
+        out.append(text)
+        if len(out) >= 8:
+            break
+    return out
+
+
+def _build_cover_user_prompt(
+    *,
+    client_row: Dict[str, Any],
+    chosen_angle: Dict[str, Any],
+    hooks: List[Dict[str, Any]],
+    script: Optional[str],
+    feedback: Optional[str],
+    previous: Optional[List[str]],
+    text_blocks: Optional[Sequence[Dict[str, Any]]] = None,
+) -> str:
+    lang = _lang_instruction(str(client_row.get("language") or "de"))
+    dna = client_row.get("client_dna") if isinstance(client_row.get("client_dna"), dict) else {}
+    gen_brief = str(dna.get("generation_brief") or "").strip()
+    voice_brief = str(dna.get("voice_brief") or "").strip()
+    if not gen_brief:
+        icp = client_row.get("icp") if isinstance(client_row.get("icp"), dict) else {}
+        gen_brief = json.dumps(icp, ensure_ascii=False, default=str)[:4000] if icp else "(no ICP brief on file)"
+
+    hooks_block = "\n".join(
+        f"- {str(h.get('text') or '').strip()}"
+        for h in hooks[:5]
+        if isinstance(h, dict) and str(h.get("text") or "").strip()
+    ) or "- (no hooks yet — derive purely from the chosen angle)"
+
+    tb_seeds = _extract_text_block_seeds(text_blocks)
+    tb_block = (
+        "\n".join(f"- {seed}" for seed in tb_seeds)
+        if tb_seeds
+        else "- (none for this format)"
+    )
+
+    script_summary = _extract_script_summary(str(script or ""))
+    if not script_summary:
+        script_summary = str(chosen_angle.get("mechanism_note") or "").strip() or "(no script yet)"
+
+    user = (
+        f"{lang}\n\n"
+        "You are an elite-level direct response copywriter specialized in high-converting\n"
+        "Instagram cover headlines (thumbnail/title texts) for Reels.\n\n"
+        f"Your task is to create short, scroll-stopping cover texts in the voice of "
+        f"{client_row.get('name', 'the creator')}.\n\n"
+        "OBJECTIVE — the cover text must:\n"
+        "- stop the scroll instantly\n"
+        "- be understood in under 1 second\n"
+        "- create curiosity or emotional tension\n"
+        "- feel highly relevant to one specific person\n"
+        "- make people want to click the Reel\n\n"
+        "CONTEXT INPUT:\n"
+        "Hooks of the Reel (the same reel has these alternative opening lines — the cover\n"
+        "must work for ANY of them and may NOT paraphrase, prefix, or shorten any of them):\n"
+        f"{hooks_block}\n\n"
+        "IN-VIDEO OVERLAY SEEDS (short on-screen text the editor already approved for this\n"
+        "reel — useful as tone/length reference; do NOT copy them verbatim and do NOT paste\n"
+        "their emojis. Treat them as inspiration for cover-style brevity and tension):\n"
+        f"{tb_block}\n\n"
+        "Topic (chosen angle):\n"
+        f"- Title: {str(chosen_angle.get('title') or '').strip()}\n"
+        f"- Situation: {str(chosen_angle.get('situation') or '').strip()}\n"
+        f"- Emotional trigger: {str(chosen_angle.get('emotional_trigger') or '').strip()}\n\n"
+        "What the reel actually delivers (payoff for the viewer, not a beat-by-beat summary):\n"
+        f"{script_summary}\n\n"
+        "Target Audience (ICP):\n"
+        f"{gen_brief[:6000]}\n\n"
+        f"CLIENT_VOICE_BRIEF (match this voice):\n{voice_brief[:4000] or '(none on file)'}\n\n"
+        "CORE PRINCIPLE:\n"
+        "The cover text is NOT the hook. It is a distilled, punchy, emotionally loaded\n"
+        "headline — simpler, faster, more direct than the hook; built for scanning.\n\n"
+        "STYLE & TONE:\n"
+        "- Clear, direct, grounded.\n"
+        "- Slightly provocative, but real.\n"
+        "- No fluff, no buzzwords. Sounds like truth, not marketing.\n"
+        "- Emotionally precise.\n\n"
+        "FORMAT RULES (HARD):\n"
+        "- Max 3–8 words per line, max 2 lines, ≤10 words total per option.\n"
+        "- No full sentences required. No emojis. Minimal punctuation.\n\n"
+        "PATTERNS TO USE (not exhaustive):\n"
+        "- \"If you …\", \"Why you …\", \"The moment you …\",\n"
+        "- \"The problem isn't …\", \"You think … but …\", \"This is where you lose …\".\n\n"
+        "PSYCHOLOGICAL TRIGGERS: feeling overlooked, not being taken seriously, inner\n"
+        "conflict, unfair dynamics, self-doubt, hidden truth.\n\n"
+        "AVOID: generic phrases, empty motivation, long explanations, complicated wording.\n\n"
+        "VARIATION (HARD):\n"
+        "- Generate exactly 8 options.\n"
+        "- Each takes a different angle and triggers a different emotional response.\n"
+        "- No two options may share more than 3 leading words.\n"
+        "- No option may be a paraphrase, prefix, or shortened form of any hook above.\n\n"
+        "FINAL CHECK (apply to every option before returning):\n"
+        "\"Would I instantly understand this — and feel personally called out?\" If not, rewrite.\n\n"
+        'OUTPUT (HARD): Return exactly this JSON shape, nothing else:\n'
+        '{"covers": [string, string, string, string, string, string, string, string]}\n'
+    )
+    if previous:
+        user += (
+            "\nPREVIOUS_OPTIONS (do not repeat these verbatim — produce fresh ones):\n"
+            + json.dumps(previous, ensure_ascii=False)[:3000]
+            + "\n"
+        )
+    if feedback and feedback.strip():
+        user += f"\nFEEDBACK_FROM_HUMAN:\n{feedback.strip()[:2000]}\n"
+    return user
+
+
+def run_cover_text_options(
+    settings: Settings,
+    *,
+    client_row: Dict[str, Any],
+    chosen_angle: Dict[str, Any],
+    hooks: List[Dict[str, Any]],
+    script: Optional[str] = None,
+    feedback: Optional[str] = None,
+    previous: Optional[List[str]] = None,
+    text_blocks: Optional[Sequence[Dict[str, Any]]] = None,
+) -> List[str]:
+    """Generate 5–8 normalized cover headlines for the chosen angle.
+
+    Single LLM call at temperature 0.7. If fewer than 5 options survive the
+    normalizer, retries once at 0.85 with explicit feedback. Returns whatever
+    survives (may be < 8); never raises on model output — only raises on
+    transport / config errors from `chat_json_completion`.
+    """
+    user = _build_cover_user_prompt(
+        client_row=client_row,
+        chosen_angle=chosen_angle,
+        hooks=hooks,
+        script=script,
+        feedback=feedback,
+        previous=previous,
+        text_blocks=text_blocks,
+    )
+    data = chat_json_completion(
+        settings.openrouter_api_key,
+        settings.openrouter_model,
+        system=_SYSTEM_COVER_JSON,
+        user=user,
+        max_tokens=1024,
+        temperature=0.7,
+    )
+    options = _normalize_cover_options(data.get("covers"), hooks=hooks)
+    if len(options) >= 5:
+        return options
+
+    retry_user = user + (
+        "\n\nPREVIOUS_ATTEMPT_FAILED: too many options were duplicates, hook-paraphrases, "
+        "or violated the format rules. Generate 8 fresh, more varied options that pass "
+        "every HARD rule above.\n"
+    )
+    try:
+        retry_data = chat_json_completion(
+            settings.openrouter_api_key,
+            settings.openrouter_model,
+            system=_SYSTEM_COVER_JSON,
+            user=retry_user,
+            max_tokens=1024,
+            temperature=0.85,
+        )
+        retry_options = _normalize_cover_options(retry_data.get("covers"), hooks=hooks)
+        if len(retry_options) > len(options):
+            return retry_options
+    except Exception:
+        logger.warning("cover options retry failed; returning best-effort first attempt", exc_info=True)
+    return options
+
+
 def run_content_package(
     settings: Settings,
     *,
@@ -584,11 +889,41 @@ def run_content_package(
     tb_rules = ""
     if _wants_text_blocks(source_format_key):
         tb_rules = (
-            "\ntext_blocks (on-screen overlays, not the talking-head script):\n"
-            "- Exactly 4 items: 3 content + 1 CTA (last isCTA=true).\n"
-            "- Max 7 words per line; emojis (❌ ✅ 🔥 👇) where fitting.\n"
-            "- CTA: \"👇 Schreib 'KEYWORD' für …\" matching the offer.\n"
-            "- Derive from CHOSEN_ANGLE_JSON — not a script summary.\n"
+            "\ntext_blocks (on-screen overlays inside the reel — NOT the talking-head script):\n"
+            "These are the only words the viewer sees on screen. The renderer plays them in\n"
+            "order, ~2.5s each, on top of the visual. Treat them as a tight 4-beat overlay\n"
+            "for the SAME reel — one cohesive scroll-stopper, not 4 alternative posts.\n"
+            "\n"
+            "STRUCTURE (HARD):\n"
+            "- Exactly 4 items.\n"
+            "- Item 1 = HOOK beat: the pattern interrupt / curiosity-opener. 1 line.\n"
+            "- Items 2–3 = SUBLINE beats: deepen the tension or name the hidden truth.\n"
+            "  Do NOT explain or resolve — keep the loop open.\n"
+            "- Item 4 = CTA: isCTA=true. Pushes the viewer to the next surface.\n"
+            "- Max 7 words per item. No full sentences required.\n"
+            "- Emojis only where they carry meaning (❌ ✅ 🔥 👇 ↓). No decoration.\n"
+            "\n"
+            "VOICE & TRIGGERS (CHOSEN_ANGLE_JSON.emotional_trigger anchors this):\n"
+            "- ICP-internal-thought voice. The viewer must think \"that is exactly me\".\n"
+            "- Pattern-interrupt openers: \"The reason you …\", \"You think it's X — but it's Y\",\n"
+            "  \"No one tells you this, but …\", \"This is where you lose …\", \"The moment you …\".\n"
+            "- Psychological triggers to draw from: self-doubt, feeling overlooked, hidden\n"
+            "  power dynamics, identity conflict (competent but silent), unfair dynamics.\n"
+            "- Slightly provocative, never manipulative. Truth > comfort. No buzzwords.\n"
+            "- Derive content from CHOSEN_ANGLE_JSON.situation + emotional_trigger; do NOT\n"
+            "  summarize the script line by line.\n"
+            "\n"
+            "CTA (item 4) — pick the style that fits OFFER_DOCUMENTATION:\n"
+            "- If OFFER_DOCUMENTATION clearly names a lead-magnet keyword (webinar, training,\n"
+            "  freebie, etc.) → comment-keyword CTA in the output language, e.g.\n"
+            "  \"👇 Schreib 'KEYWORD' für …\".\n"
+            "- Otherwise → caption-push CTA in the output language, e.g.\n"
+            "  \"Mehr dazu in der Caption ↓\", \"Der Teil, den niemand sagt ↓\",\n"
+            "  \"Wenn du das kennst, lies die Caption ↓\".\n"
+            "- Never generic \"read more\" / \"swipe up\" / marketing-speak.\n"
+            "\n"
+            "FINAL CHECK before returning text_blocks:\n"
+            "\"Would this stop the scroll for ONE specific person in the ICP?\" If not, rewrite.\n"
         )
     adapt_block = ""
     if adapt_single_reference_reel:
