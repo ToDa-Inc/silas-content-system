@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-PROMPT_VERSION = "silas_v2_2026_03_27"
+PROMPT_VERSION = "silas_v2_3_carousel_2026_04"
 
 # ---------------------------------------------------------------------------
 # Weight map: criterion → multiplier applied to the 1-10 raw score.
@@ -313,8 +313,14 @@ def build_reel_analysis_prompt(
     niche_context: str | None = None,
     text_reanalyze: bool = False,
     prior_full_text: str | None = None,
+    is_carousel: bool = False,
 ) -> str:
-    """Build the full analysis prompt with reel metadata and optional niche context."""
+    """Build the full analysis prompt with reel metadata and optional niche context.
+
+    When ``is_carousel`` is true the post is an Instagram carousel (Sidecar) which
+    has no public view counter — the prompt is patched to use likes/comments as the
+    only performance signal and to expect a multi-slide static-image format.
+    """
     cap = (caption or "")[:500]
     ctx = niche_context or _FALLBACK_NICHE_CONTEXT
 
@@ -326,6 +332,44 @@ def build_reel_analysis_prompt(
         .replace("{caption}", cap)
         .replace("{niche_context}", ctx)
     )
+
+    if is_carousel:
+        t = t.replace(
+            "You are Silas — a senior content strategist who has studied thousands of viral Instagram Reels in the education, coaching, and expert-creator space. Your job is to watch a reel and diagnose exactly WHY it works (or doesn't), so the findings can be turned into repeatable content blueprints.",
+            "You are Silas — a senior content strategist who has studied thousands of viral Instagram CAROUSELS in the education, coaching, and expert-creator space. Your job is to read a multi-slide carousel post and diagnose exactly WHY it works (or doesn't), so the findings can be turned into repeatable content blueprints.",
+        )
+        t = t.replace(
+            "- Account: @{owner}\n- Views: {views}  |  Likes: {likes}  |  Comments: {comments}",
+            "- Account: @{owner}\n- Format: CAROUSEL (multi-slide, static images — no view counter on Instagram)\n- Likes: {likes}  |  Comments: {comments}",
+        ).replace("{owner}", owner).replace("{likes}", likes).replace("{comments}", comments)
+        t = t.replace(
+            "These numbers are context only. Your scores must be based on what you SEE and HEAR in the video, not on the metrics above. A reel with 1M views can still have a weak hook. A reel with 5k views can be a perfect blueprint. Score the content, not the numbers.",
+            "These numbers are context only. Carousels have no public view count, so judge performance by likes and comments relative to typical posts from this account. Score the CONTENT (slide structure, hook, copywriting, value), not the numbers.",
+        )
+        t = t.replace(
+            "Watch the entire video carefully. Pay attention to:\n- The first 2 seconds (what you see AND hear before you can think)\n- Text overlays (content, size, timing, readability)\n- Spoken words or voiceover (tone, pacing, conviction)\n- Visual structure (cuts, transitions, scene changes)\n- Music/audio (does it support or distract from the pacing?)\n- The caption below the video (value, structure, CTA)",
+            "Read the carousel slide-by-slide. Pay attention to:\n- The cover slide (slide 1) — does it stop the scroll like a hook does in a reel?\n- Slide-to-slide structure (does each slide reward the swipe?)\n- Text density and readability per slide\n- The progression: setup → tension → payoff / CTA\n- The caption below the carousel (value, structure, CTA)",
+        )
+        t = t.replace(
+            "1. HOOK STRENGTH (0–2 seconds) — Weight: x2\nDoes the reel stop the scroll within the first 2 seconds?",
+            "1. HOOK STRENGTH (cover slide) — Weight: x2\nDoes slide 1 stop the scroll the same way a reel hook would in 2 seconds?",
+        )
+        t = t.replace(
+            "Evidence: [describe exactly what happens in the first 2 seconds — text, visual, audio]",
+            "Evidence: [describe exactly what slide 1 shows — text, visual, layout]",
+        )
+        t = t.replace(
+            "- Type: [talking head / text overlay / skit / voiceover / b-roll with text / other]",
+            "- Type: carousel (multi-slide static images)",
+        )
+        t = t.replace(
+            "- Audio role: [how music/sound supports or hinders the pacing]\n",
+            "",
+        )
+        t = t.replace(
+            "- Duration feel: [snappy <10s / medium 10-30s / long 30-60s]",
+            "- Slide count feel: [tight 3-5 / medium 6-8 / long 9-10]",
+        )
 
     if text_reanalyze:
         prior = (prior_full_text or "").strip()

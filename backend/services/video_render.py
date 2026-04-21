@@ -16,11 +16,12 @@ from core.database import get_supabase_for_settings
 from services.format_classifier import canonicalize_stored_format_key
 
 RENDERS_BUCKET = "renders"
-# carousel: multi-slide composition not built yet — use static-slide (single BG) until then.
+# Carousels are NOT rendered as MP4 — they are delivered as N PNG slides via the
+# /carousel-slides/zip endpoint (see routers/creation.py). Only formats that have
+# a matching Remotion composition belong here.
 _COMPOSITION_MAP = {
     "text_overlay": "static-slide",
     "b_roll_reel": "captioned-broll",
-    "carousel": "static-slide",
 }
 
 

@@ -224,6 +224,49 @@ def compose_thumbnail_from_image(
     return out.getvalue()
 
 
+def generate_slide_image(
+    *,
+    text: str,
+    idx: int,
+    total: int,
+    freepik_key: str = "",
+    style: str = "",
+    client_image_bytes: bytes | None = None,
+    target_w: int = 1080,
+    target_h: int = 1920,
+) -> bytes:
+    """Render one carousel slide as a 9:16 PNG.
+
+    Two modes (mutually exclusive):
+    - ``client_image_bytes`` provided → uses :func:`compose_thumbnail_from_image` (same editorial
+      wash as a client-image cover) and overlays ``text``.
+    - Otherwise → calls :func:`generate_thumbnail_freepik_pillow` to generate a fresh background
+      and overlays ``text``. Requires ``freepik_key``.
+
+    ``idx`` / ``total`` are reserved for future per-slide styling (e.g. cover vs body vs CTA);
+    today they are forwarded as a hint into ``angle_context``.
+    """
+    if client_image_bytes is not None:
+        return compose_thumbnail_from_image(
+            client_image_bytes,
+            text,
+            target_w=target_w,
+            target_h=target_h,
+            wash=True,
+        )
+    if not freepik_key:
+        raise RuntimeError("generate_slide_image: freepik_key required when no client_image_bytes")
+    role = "cover" if idx == 0 else ("cta" if idx == total - 1 else "body")
+    ctx_parts = [p for p in (style.strip(), f"slide {idx + 1}/{total} ({role})") if p]
+    return generate_thumbnail_freepik_pillow(
+        freepik_key,
+        text,
+        angle_context=", ".join(ctx_parts),
+        target_w=target_w,
+        target_h=target_h,
+    )
+
+
 def _resize_cover(img: "Image.Image", w: int, h: int) -> "Image.Image":
     """Resize + center-crop to (w, h) keeping original colours."""
     img = img.convert("RGB")

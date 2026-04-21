@@ -23,6 +23,10 @@ import { PostPreviewModal } from "@/components/post-preview-modal";
 import {
   brollDelete,
   brollList,
+  carouselSlideRegenerate,
+  carouselSlidesGenerate,
+  carouselSlidesPatch,
+  carouselSlidesZipUrl,
   clientImagesList,
   creationGenerateBackground,
   creationRenderVideo,
@@ -35,6 +39,7 @@ import {
   generationRegenerate,
   patchCreateSession,
   type BrollClipRow,
+  type CarouselSlide,
   type ClientImageRow,
   type GenerationSession,
   type TextBlock,
@@ -306,6 +311,185 @@ function ClientImagesPicker({
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+function CarouselSection({
+  clientSlug,
+  sessionId,
+  slides,
+  images,
+  busy,
+  generating,
+  count,
+  onCountChange,
+  onGenerateAll,
+  onRegenerateOne,
+  onTextEdit,
+}: {
+  clientSlug: string;
+  sessionId: string;
+  slides: CarouselSlide[];
+  images: ClientImageRow[];
+  busy: boolean;
+  generating: boolean;
+  count: number;
+  onCountChange: (n: number) => void;
+  onGenerateAll: () => void | Promise<void>;
+  onRegenerateOne: (
+    idx: number,
+    text: string,
+    source: "ai" | "client_image",
+    clientImageId?: string,
+  ) => void | Promise<void>;
+  onTextEdit: (idx: number, text: string) => void;
+}) {
+  const [pickerOpenForIdx, setPickerOpenForIdx] = useState<number | null>(null);
+  const zipUrl = slides.length > 0 ? carouselSlidesZipUrl(clientSlug, sessionId) : null;
+  const slideCountLabel = `${slides.length} slide${slides.length === 1 ? "" : "s"}`;
+
+  return (
+    <div className="space-y-4">
+      <div className="glass rounded-2xl border border-app-divider/80 p-5 md:p-6">
+        <StepHeader n={1} label="Carousel slides" done={slides.length > 0} />
+
+        <div className="mb-4 flex flex-wrap items-end gap-4">
+          <div className="flex flex-col gap-1.5">
+            <label className="text-[11px] font-semibold text-app-fg-muted">
+              Slide count
+              <span className="ml-1 font-normal">(3–10)</span>
+            </label>
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={3}
+                max={10}
+                step={1}
+                value={count}
+                onChange={(e) => onCountChange(Number(e.target.value))}
+                className="w-44 accent-amber-500"
+                disabled={generating}
+              />
+              <span className="min-w-[2ch] text-sm font-bold text-app-fg">{count}</span>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            disabled={generating || busy}
+            onClick={() => void onGenerateAll()}
+            className="inline-flex items-center gap-2 rounded-xl bg-amber-500/15 px-4 py-2 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-50"
+          >
+            {generating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+            {generating ? "Generating…" : slides.length > 0 ? "Regenerate all slides" : "Generate slides"}
+          </button>
+
+          {zipUrl && (
+            <a
+              href={zipUrl}
+              download={`carousel_${sessionId}.zip`}
+              className="ml-auto inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 text-xs font-bold text-zinc-950 shadow-md shadow-emerald-900/25 hover:opacity-90"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Download all (.zip)
+            </a>
+          )}
+        </div>
+
+        {slides.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-app-divider/60 py-8 text-center text-xs text-app-fg-subtle">
+            No slides yet — pick a count and hit Generate slides. Slide&nbsp;1 becomes your Instagram cover automatically.
+          </p>
+        ) : (
+          <>
+            <p className="mb-3 text-[11px] text-app-fg-muted">
+              {slideCountLabel} · 9:16 PNGs · Slide&nbsp;1 is the IG cover. Edit text inline; hit{" "}
+              <span className="font-semibold">Re-render</span> to redraw the image with new text or a different source.
+            </p>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+              {slides.map((s) => {
+                const isPickerOpen = pickerOpenForIdx === s.idx;
+                return (
+                  <div
+                    key={s.idx}
+                    className="flex flex-col gap-2 rounded-xl border border-app-divider bg-app-chip-bg/30 p-2"
+                  >
+                    <div
+                      className="overflow-hidden rounded-lg border border-app-divider bg-black/10"
+                      style={{ aspectRatio: "9/16" }}
+                    >
+                      {s.image_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={s.image_url}
+                          alt={`Slide ${s.idx + 1}`}
+                          className="block h-full w-full object-cover"
+                        />
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-[10px] text-app-fg-subtle">
+                          (no image)
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-semibold uppercase tracking-wider text-app-fg-muted">
+                        Slide {s.idx + 1}
+                        {s.idx === 0 && (
+                          <span className="ml-1 rounded bg-amber-500/20 px-1 text-amber-700 dark:text-amber-400">
+                            cover
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                    <textarea
+                      value={s.text}
+                      onChange={(e) => onTextEdit(s.idx, e.target.value)}
+                      rows={3}
+                      className="glass-inset w-full resize-y rounded-lg px-2 py-1.5 text-[11px] leading-snug text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+                    />
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() =>
+                          void onRegenerateOne(s.idx, s.text || "", "ai")
+                        }
+                        className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg border border-app-divider px-2 py-1 text-[10px] font-semibold text-app-fg-muted hover:text-app-fg disabled:opacity-40"
+                      >
+                        <RefreshCw className="h-3 w-3" /> Re-render
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy || images.length === 0}
+                        onClick={() => setPickerOpenForIdx(isPickerOpen ? null : s.idx)}
+                        className="inline-flex items-center justify-center gap-1 rounded-lg border border-app-divider px-2 py-1 text-[10px] font-semibold text-app-fg-muted hover:text-app-fg disabled:opacity-40"
+                        title={images.length === 0 ? "No client images uploaded" : "Use a client image"}
+                      >
+                        <ImageIcon className="h-3 w-3" />
+                      </button>
+                    </div>
+                    {isPickerOpen && (
+                      <div className="mt-1 rounded-lg border border-app-divider/60 bg-app-chip-bg/40 p-1.5">
+                        <ClientImagesPicker
+                          images={images}
+                          selectedImageId=""
+                          busy={busy}
+                          onPick={(id) => {
+                            setPickerOpenForIdx(null);
+                            void onRegenerateOne(s.idx, s.text || "", "client_image", id);
+                          }}
+                          emptyHint="No client images yet."
+                        />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -685,6 +869,17 @@ export function VideoCreateWorkspace({
    */
   const [bgSource, setBgSource] = useState<BgSource | null>(null);
   const bgSourceUserPickedRef = useRef(false);
+  const [carouselCount, setCarouselCount] = useState(6);
+  const [carouselGenBusy, setCarouselGenBusy] = useState(false);
+  const [carouselSlideBusy, setCarouselSlideBusy] = useState(false);
+  const [carouselDraft, setCarouselDraft] = useState<CarouselSlide[]>([]);
+  const carouselDraftDirty = useRef(false);
+  const carouselDraftRef = useRef<CarouselSlide[]>([]);
+  const carouselSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    carouselDraftRef.current = carouselDraft;
+  }, [carouselDraft]);
 
   // Hold the latest parent callback in a ref so it never invalidates effects/callbacks.
   // (Parents typically pass an inline `onSessionUpdated`, which would otherwise loop.)
@@ -700,6 +895,16 @@ export function VideoCreateWorkspace({
     setSelectedClipId(s.broll_clip_id ?? "");
     setSelectedImageId(s.client_image_id ?? "");
     if (s.thumbnail_url) setThumbnailUrl(s.thumbnail_url);
+    if (Array.isArray(s.carousel_slides)) {
+      const sorted = [...s.carousel_slides].sort((a, b) => a.idx - b.idx);
+      // Server is source of truth unless the user is mid-edit on the same slide set.
+      if (!carouselDraftDirty.current) {
+        setCarouselDraft(sorted.map((sl) => ({ ...sl })));
+        if (sorted.length > 0) setCarouselCount(sorted.length);
+      }
+    } else if (!carouselDraftDirty.current) {
+      setCarouselDraft([]);
+    }
     onSessionUpdatedRef.current?.(s);
   }, []);
 
@@ -737,14 +942,14 @@ export function VideoCreateWorkspace({
     const raw = session?.source_format_key ?? null;
     return canonicalFormatKey(raw) ?? raw ?? (session?.source_type === "url_adapt" ? "text_overlay" : null);
   }, [session]);
-
   /** Full-deliverable preview modal — opened from the recap card's "Preview post"
    *  button. Replaces the previous in-place "Show more" caption toggle, which only
    *  surfaced when the caption overflowed its 3-line clamp (and so was invisible
    *  for short captions, even though users still wanted a single "see the whole
    *  post" surface with the playable video next to it). */
   const [previewOpen, setPreviewOpen] = useState(false);
-  const isTextOverlay = fk === "text_overlay" || fk === "carousel";
+  const isTextOverlay = fk === "text_overlay";
+  const isCarousel = fk === "carousel";
   const isBroll = fk === "b_roll_reel";
   const isTalkingHead = fk === "talking_head";
 
@@ -1011,6 +1216,90 @@ export function VideoCreateWorkspace({
     [applySession, clientSlug, orgSlug, session, show],
   );
 
+  const onGenerateCarouselSlides = useCallback(async () => {
+    const cs = clientSlug.trim();
+    const os = orgSlug.trim();
+    if (!session || !cs || !os) return;
+    setCarouselGenBusy(true);
+    try {
+      const res = await carouselSlidesGenerate(cs, os, session.id, carouselCount);
+      if (!res.ok) {
+        show(res.error, "error");
+        return;
+      }
+      carouselDraftDirty.current = false;
+      applySession(res.data);
+      show("Slides generated.", "success");
+    } finally {
+      setCarouselGenBusy(false);
+    }
+  }, [applySession, carouselCount, clientSlug, orgSlug, session, show]);
+
+  const onRegenerateCarouselSlide = useCallback(
+    async (
+      idx: number,
+      text: string,
+      source: "ai" | "client_image",
+      clientImageId?: string,
+    ) => {
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!session || !cs || !os) return;
+      setCarouselSlideBusy(true);
+      try {
+        const res = await carouselSlideRegenerate(cs, os, session.id, {
+          idx,
+          text,
+          image_source: source,
+          client_image_id: clientImageId,
+        });
+        if (!res.ok) {
+          show(res.error, "error");
+          return;
+        }
+        carouselDraftDirty.current = false;
+        applySession(res.data);
+        show(`Slide ${idx + 1} updated.`, "success");
+      } finally {
+        setCarouselSlideBusy(false);
+      }
+    },
+    [applySession, clientSlug, orgSlug, session, show],
+  );
+
+  const onCarouselTextEdit = useCallback(
+    (idx: number, text: string) => {
+      setCarouselDraft((prev) =>
+        prev.map((s) => (s.idx === idx ? { ...s, text } : s)),
+      );
+      carouselDraftDirty.current = true;
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!session || !cs || !os) return;
+      if (carouselSaveTimer.current) clearTimeout(carouselSaveTimer.current);
+      carouselSaveTimer.current = setTimeout(() => {
+        void (async () => {
+          // Snapshot current draft after the debounce window so we always send the latest text.
+          const latest = carouselDraftRef.current;
+          const res = await carouselSlidesPatch(cs, os, session.id, latest);
+          if (!res.ok) {
+            show(res.error, "error");
+            return;
+          }
+          carouselDraftDirty.current = false;
+          applySession(res.data);
+        })();
+      }, 600);
+    },
+    [applySession, clientSlug, orgSlug, session, show],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (carouselSaveTimer.current) clearTimeout(carouselSaveTimer.current);
+    };
+  }, []);
+
   const copyText = useCallback(
     async (label: string, text: string) => {
       try {
@@ -1132,7 +1421,48 @@ export function VideoCreateWorkspace({
     );
   }
 
-  // ────────────────── visual formats: text_overlay / carousel / b_roll_reel ──────────────────
+  // ─────────────────────────────── carousel flow (PNG slides → ZIP) ───────────────────────────────
+  if (isCarousel) {
+    return (
+      <div className="space-y-4">
+        <CarouselSection
+          clientSlug={clientSlug}
+          sessionId={session.id}
+          slides={carouselDraft}
+          images={images}
+          busy={carouselSlideBusy || loading}
+          generating={carouselGenBusy}
+          count={carouselCount}
+          onCountChange={setCarouselCount}
+          onGenerateAll={onGenerateCarouselSlides}
+          onRegenerateOne={onRegenerateCarouselSlide}
+          onTextEdit={onCarouselTextEdit}
+        />
+
+        <CaptionSection
+          caption={session.caption_body ?? ""}
+          hashtags={session.hashtags ?? []}
+          onCopy={() => void copyText("caption + hashtags", captionFull)}
+          regenInline={
+            <RegenInline
+              scope="caption"
+              busy={regenBusy}
+              onRegen={async (s, fb) => onRegenSection(s, fb)}
+              placeholder="Different angle, shorter, …"
+            />
+          }
+        />
+
+        <AiContextSection
+          hooks={hooks}
+          regenHooks={(fb) => onRegenSection("hooks", fb)}
+          busy={regenBusy}
+        />
+      </div>
+    );
+  }
+
+  // ────────────────── visual formats: text_overlay / b_roll_reel ──────────────────
   if (!isTextOverlay && !isBroll) {
     return (
       <div className="glass rounded-2xl border border-app-divider/80 p-5 md:p-6">
@@ -1268,6 +1598,33 @@ export function VideoCreateWorkspace({
             </button>
           </div>
           <div className="space-y-2">
+            {/* Hook row — `hooks[0].text` is what `build_remotion_props` (video_render.py)
+                burns in for the first ~3s of the reel, so it's effectively the opening
+                on-screen text block. Rendered inline as the first list item (read-only,
+                amber-tinted) so the user sees the full opener + body sequence in one
+                place; full edit/alternatives live in the bottom "AI working with" panel. */}
+            {hooks[0]?.text ? (
+              <div className="flex items-center gap-2">
+                <div
+                  className="glass-inset flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/[0.06] px-3 py-2"
+                  title="Hook · burned into the first ~3s of the reel"
+                >
+                  <span className="shrink-0 rounded-md bg-amber-500/20 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400">
+                    Hook · 3s
+                  </span>
+                  <p className="min-w-0 flex-1 truncate text-sm font-semibold text-app-fg">
+                    {hooks[0].text}
+                  </p>
+                </div>
+                <RegenInline
+                  scope="hooks"
+                  busy={regenBusy}
+                  onRegen={async (s, fb) => onRegenSection(s, fb)}
+                  placeholder="More direct, shorter, …"
+                />
+              </div>
+            ) : null}
+
             {textDraft.map((b, i) => (
               <div key={i} className="flex items-center gap-2">
                 <input
@@ -1306,7 +1663,7 @@ export function VideoCreateWorkspace({
                 </button>
               </div>
             ))}
-            {textDraft.length === 0 && (
+            {textDraft.length === 0 && !hooks[0]?.text && (
               <p className="rounded-xl border border-dashed border-app-divider/60 py-4 text-center text-xs text-app-fg-subtle">
                 No text blocks yet — click Add block above, or hit Regenerate.
               </p>

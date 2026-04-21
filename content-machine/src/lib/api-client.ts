@@ -372,11 +372,19 @@ export type GenerationSession = {
   thumbnail_url?: string | null;
   render_status?: string | null;
   render_error?: string | null;
+  carousel_slides?: CarouselSlide[] | null;
   status: string;
   feedback?: string | null;
   prompt_version?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+};
+
+export type CarouselSlide = {
+  idx: number;
+  text: string;
+  image_url?: string | null;
+  prompt?: string | null;
 };
 
 export type BackgroundJobRow = {
@@ -397,6 +405,10 @@ export type FormatDigestSummary = {
   avg_save_rate?: number | null;
   avg_share_rate?: number | null;
   avg_duration_s?: number | null;
+  /** Carousel-only: mean of scraped_reels.outlier_likes_ratio (likes vs account avg). */
+  avg_outlier_likes_ratio?: number | null;
+  /** Carousel-only: fallback ranking metric when likes outlier is null. */
+  avg_outlier_comments_ratio?: number | null;
   computed_at?: string | null;
 };
 
@@ -1104,6 +1116,124 @@ export async function generationComposeThumbnail(
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
   }
+}
+
+// ── Carousel slides ────────────────────────────────────────────────────────
+
+export async function carouselSlidesGenerate(
+  clientSlug: string,
+  orgSlug: string,
+  sessionId: string,
+  count: number,
+  style?: string,
+): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/create/sessions/${encodeURIComponent(
+        sessionId,
+      )}/carousel-slides/generate`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ count, style: style ?? null }),
+      },
+    );
+    const json = (await res.json().catch(() => ({}))) as GenerationSession & { detail?: unknown };
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`),
+      };
+    }
+    return { ok: true, data: json as GenerationSession };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function carouselSlideRegenerate(
+  clientSlug: string,
+  orgSlug: string,
+  sessionId: string,
+  args: {
+    idx: number;
+    text?: string;
+    prompt?: string;
+    image_source?: "ai" | "client_image";
+    client_image_id?: string;
+  },
+): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/create/sessions/${encodeURIComponent(
+        sessionId,
+      )}/carousel-slides/regenerate`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          idx: args.idx,
+          text: args.text ?? null,
+          prompt: args.prompt ?? null,
+          image_source: args.image_source ?? "ai",
+          client_image_id: args.client_image_id ?? null,
+        }),
+      },
+    );
+    const json = (await res.json().catch(() => ({}))) as GenerationSession & { detail?: unknown };
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`),
+      };
+    }
+    return { ok: true, data: json as GenerationSession };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function carouselSlidesPatch(
+  clientSlug: string,
+  orgSlug: string,
+  sessionId: string,
+  slides: CarouselSlide[],
+): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/create/sessions/${encodeURIComponent(
+        sessionId,
+      )}/carousel-slides`,
+      {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ slides }),
+      },
+    );
+    const json = (await res.json().catch(() => ({}))) as GenerationSession & { detail?: unknown };
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`),
+      };
+    }
+    return { ok: true, data: json as GenerationSession };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export function carouselSlidesZipUrl(clientSlug: string, sessionId: string): string {
+  const base = getContentApiBase();
+  return `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/create/sessions/${encodeURIComponent(
+    sessionId,
+  )}/carousel-slides/zip`;
 }
 
 export { getContentApiBase };

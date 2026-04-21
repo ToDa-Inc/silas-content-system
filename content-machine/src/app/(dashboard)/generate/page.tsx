@@ -664,6 +664,9 @@ export default function GeneratePage() {
   });
   const [composerInput, setComposerInput] = useState(urlFromUrl?.trim() ?? "");
   const [formatPreset, setFormatPreset] = useState<FormatPreset>("auto");
+  /** Target production format for "Recreate a reel" — no default; user must pick.
+   * `auto` keeps the source reel's original format. */
+  const [recreateFormat, setRecreateFormat] = useState<FormatPreset | null>(null);
   const [extraInstruction, setExtraInstruction] = useState("");
   const [focusNoteOpen, setFocusNoteOpen] = useState(false);
   const [formatDigests, setFormatDigests] = useState<FormatDigestSummary[]>([]);
@@ -835,10 +838,15 @@ export default function GeneratePage() {
           show("That doesn't look like an Instagram reel URL.", "error");
           return;
         }
+        if (!recreateFormat) {
+          show("Pick a target format to recreate the reel as.", "error");
+          return;
+        }
         body = {
           source_type: "url_adapt",
           url: raw,
           extra_instruction: extra,
+          format_key: recreateFormat === "auto" ? undefined : recreateFormat,
         };
       } else if (raw.length > 0) {
         // Idea mode + text → idea_match (auto resolves format from niche data).
@@ -903,6 +911,7 @@ export default function GeneratePage() {
     extraInstruction,
     formatPreset,
     mode,
+    recreateFormat,
     refreshContext,
     show,
   ]);
@@ -1131,9 +1140,56 @@ export default function GeneratePage() {
                       <p className="mt-2 text-[11px] leading-relaxed text-app-fg-muted">
                         We&apos;ll fetch the reel, learn what made it work, then propose a faithful{" "}
                         <span className="font-medium text-app-fg-secondary">Blueprint</span> angle (same
-                        structure, your client&apos;s voice) plus four variants.
+                        idea, your client&apos;s voice) plus four variants in the format you pick below.
                       </p>
                     )}
+                  </div>
+
+                  {/* ── Recreate-as format picker ──
+                      Required: lets the user pick the production format the source reel
+                      should be rebuilt as. "Auto" keeps the source reel's original format
+                      (legacy behavior); the others tell the LLM to keep the CORE IDEA but
+                      rebuild the FORMAT RECIPE for that target. */}
+                  <div>
+                    <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-app-fg-subtle">
+                      Recreate as <span className="font-normal text-app-fg-muted">(required)</span>
+                    </p>
+                    <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Target format">
+                      {(
+                        [
+                          { key: "auto" as const, label: "Auto", hint: "Keep source reel's original format" },
+                          { key: "text_overlay" as const, label: "Text overlay", hint: "Static visuals + on-screen text blocks" },
+                          { key: "talking_head" as const, label: "Talking head", hint: "You speak to camera the whole reel" },
+                          { key: "carousel" as const, label: "Carousel", hint: "Swipeable PNG slides (not a video)" },
+                        ] as const
+                      ).map(({ key, label, hint }) => {
+                        const active = recreateFormat === key;
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            role="radio"
+                            aria-checked={active}
+                            title={hint}
+                            onClick={() => setRecreateFormat(key)}
+                            className={`rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${
+                              active
+                                ? "border-amber-500/50 bg-amber-500/10 text-app-fg"
+                                : "border-app-divider bg-app-chip-bg/40 text-app-fg-muted hover:bg-app-chip-bg/70"
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className="mt-2 text-[11px] leading-relaxed text-app-fg-muted">
+                      {recreateFormat && recreateFormat !== "auto"
+                        ? "We'll keep the source reel's idea + viewer payoff, but rebuild beats and on-screen language for this format."
+                        : recreateFormat === "auto"
+                        ? "We'll mirror the source reel's original production format."
+                        : "Pick a target format — Auto keeps the source's, the others re-format the same idea."}
+                    </p>
                   </div>
 
                   <div className="rounded-xl border border-app-divider bg-app-chip-bg/25 p-4">
@@ -1251,7 +1307,7 @@ export default function GeneratePage() {
               <div className="flex flex-col items-end gap-2">
                 <button
                   type="button"
-                  disabled={loading || !clientSlug}
+                  disabled={loading || !clientSlug || (mode === "recreate" && !recreateFormat)}
                   onClick={() => void onStart()}
                   className="inline-flex items-center justify-center gap-2 rounded-xl bg-amber-500 px-5 py-2.5 text-sm font-bold text-zinc-950 shadow-md shadow-amber-900/20 transition-opacity hover:opacity-95 disabled:opacity-50"
                 >
@@ -1260,7 +1316,11 @@ export default function GeneratePage() {
                   ) : (
                     <Sparkles className="size-4" />
                   )}
-                  {loading ? "Running models…" : "Generate angles"}
+                  {loading
+                    ? "Running models…"
+                    : mode === "recreate" && !recreateFormat
+                    ? "Pick a target format"
+                    : "Generate angles"}
                 </button>
                 {mode === "recreate" ? (
                   <p className="text-right text-xs text-app-fg-muted">

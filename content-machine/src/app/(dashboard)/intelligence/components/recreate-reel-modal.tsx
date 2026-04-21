@@ -17,6 +17,17 @@ type Props = {
   disabledHint?: string | null;
 };
 
+/** Target production format the user wants to recreate the source reel as.
+ * `auto` keeps the legacy behavior (use the source reel's original format). */
+type RecreateFormatChoice = "auto" | "text_overlay" | "talking_head" | "carousel";
+
+const RECREATE_FORMAT_OPTIONS: ReadonlyArray<{ key: RecreateFormatChoice; label: string; hint: string }> = [
+  { key: "auto", label: "Auto", hint: "Keep source reel's original format" },
+  { key: "text_overlay", label: "Text overlay", hint: "Static visuals + on-screen text blocks" },
+  { key: "talking_head", label: "Talking head", hint: "You speak to camera the whole reel" },
+  { key: "carousel", label: "Carousel", hint: "Swipeable PNG slides (not a video)" },
+];
+
 function isLikelyInstagramReelUrl(s: string): boolean {
   const t = s.trim().toLowerCase();
   return (
@@ -39,6 +50,7 @@ export function RecreateReelModal({
   disabledHint,
 }: Props) {
   const [extraInstruction, setExtraInstruction] = useState("");
+  const [formatChoice, setFormatChoice] = useState<RecreateFormatChoice | null>(null);
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -58,6 +70,7 @@ export function RecreateReelModal({
   useEffect(() => {
     if (!open) {
       setExtraInstruction("");
+      setFormatChoice(null);
       setMsg(null);
       setPhase(null);
       setSessionId(null);
@@ -122,6 +135,10 @@ export function RecreateReelModal({
       setMsg("This reel has no valid Instagram link.");
       return;
     }
+    if (!formatChoice) {
+      setMsg("Pick a target format to recreate the reel as.");
+      return;
+    }
 
     setBusy(true);
     setMsg(null);
@@ -133,6 +150,7 @@ export function RecreateReelModal({
         source_type: "url_adapt",
         url,
         extra_instruction: extraInstruction.trim() || undefined,
+        format_key: formatChoice === "auto" ? undefined : formatChoice,
       });
       clearPhaseTimer();
       setPhase(null);
@@ -177,8 +195,9 @@ export function RecreateReelModal({
               Adapt this reel for your client
             </h2>
             <p className="mt-1 text-[11px] leading-relaxed text-app-fg-subtle">
-              Same format and core video idea as the competitor reel; examples, setting, and copy rewritten for your
-              client. You pick one of five angles on Generate, then get script and caption.
+              Same core video idea as the competitor reel — pick the production format you want
+              (or Auto to keep the source's). Examples, setting, and copy rewritten for your client.
+              You pick one of five angles on Generate, then get script and caption.
             </p>
           </div>
           <button
@@ -218,6 +237,42 @@ export function RecreateReelModal({
 
         {!sessionId ? (
           <>
+            <div className="mt-4">
+              <p className="mb-1.5 block text-xs font-semibold text-app-fg">
+                Recreate as <span className="font-normal text-app-fg-muted">(required)</span>
+              </p>
+              <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Target format">
+                {RECREATE_FORMAT_OPTIONS.map(({ key, label, hint }) => {
+                  const active = formatChoice === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      title={hint}
+                      disabled={busy}
+                      onClick={() => setFormatChoice(key)}
+                      className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition-colors disabled:opacity-50 ${
+                        active
+                          ? "border-amber-500/55 bg-amber-500/10 text-app-fg"
+                          : "border-zinc-200/90 bg-white text-zinc-700 hover:border-zinc-300 dark:border-white/10 dark:bg-zinc-900/60 dark:text-app-fg-muted dark:hover:border-white/20"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-1.5 text-[10px] leading-relaxed text-app-fg-subtle">
+                {formatChoice && formatChoice !== "auto"
+                  ? "We'll keep the source reel's idea + viewer payoff, but rebuild beats and on-screen language for this format."
+                  : formatChoice === "auto"
+                  ? "We'll mirror the source reel's original production format."
+                  : "Pick a target format — Auto keeps the source reel's format, the others re-format the same idea."}
+              </p>
+            </div>
+
             <label htmlFor="recreate-extra" className="mt-4 block text-xs font-semibold text-app-fg">
               Extra focus <span className="font-normal text-app-fg-muted">(optional)</span>
             </label>
@@ -233,12 +288,16 @@ export function RecreateReelModal({
 
             <button
               type="button"
-              disabled={busy || !postUrl || disabled}
+              disabled={busy || !postUrl || disabled || !formatChoice}
               onClick={() => void submit()}
               className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 py-2.5 text-sm font-bold text-zinc-950 disabled:opacity-50"
             >
               {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Sparkles className="h-4 w-4" aria-hidden />}
-              {busy ? "Creating session…" : "Start adaptation"}
+              {busy
+                ? "Creating session…"
+                : !formatChoice
+                ? "Pick a target format above"
+                : "Start adaptation"}
             </button>
           </>
         ) : (

@@ -88,6 +88,48 @@ class ComposeThumbnailBody(BaseModel):
     wash: bool = True
 
 
+class CarouselSlide(BaseModel):
+    """One slide in a generation_sessions.carousel_slides JSONB array."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    idx: int = Field(..., ge=0, le=9)
+    text: str = Field("", max_length=600)
+    image_url: Optional[str] = None
+    prompt: Optional[str] = Field(None, max_length=2000)
+
+
+class GenerateCarouselSlidesBody(BaseModel):
+    """POST …/create/sessions/{id}/carousel-slides/generate"""
+
+    count: int = Field(6, ge=3, le=10)
+    style: Optional[str] = Field(
+        None,
+        max_length=200,
+        description="Optional editorial style hint forwarded to the image generator.",
+    )
+
+
+class RegenerateCarouselSlideBody(BaseModel):
+    """POST …/create/sessions/{id}/carousel-slides/regenerate — one slide at a time."""
+
+    idx: int = Field(..., ge=0, le=9)
+    text: Optional[str] = Field(None, max_length=600)
+    prompt: Optional[str] = Field(
+        None,
+        max_length=2000,
+        description="Optional steering note forwarded to the image generator.",
+    )
+    image_source: Literal["ai", "client_image"] = "ai"
+    client_image_id: Optional[str] = Field(None, min_length=1, max_length=64)
+
+
+class PatchCarouselSlidesBody(BaseModel):
+    """PATCH …/create/sessions/{id}/carousel-slides — manual text-only edits."""
+
+    slides: List[CarouselSlide] = Field(..., min_length=1, max_length=10)
+
+
 class GenerationSessionOut(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -117,6 +159,7 @@ class GenerationSessionOut(BaseModel):
     render_status: Optional[str] = None
     render_error: Optional[str] = None
     thumbnail_url: Optional[str] = None
+    carousel_slides: Optional[List[CarouselSlide]] = None
     status: str
     feedback: Optional[str] = None
     prompt_version: Optional[str] = None

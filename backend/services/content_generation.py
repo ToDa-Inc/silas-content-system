@@ -369,8 +369,10 @@ def run_angle_generation(
     synthesized_patterns: Dict[str, Any],
     extra_instruction: Optional[str],
     adapt_single_reference_reel: bool = False,
+    target_format_key: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     lang = _lang_instruction(str(client_row.get("language") or "de"))
+    target_block = _target_format_block(target_format_key) if adapt_single_reference_reel else ""
     if adapt_single_reference_reel:
         task = (
             "TASK: PATTERNS_JSON was built from ONE source reel (competitor URL or pasted script) we are adapting. "
@@ -398,6 +400,7 @@ def run_angle_generation(
         )
     user = (
         f"{lang}\n\n"
+        f"{target_block}"
         f"{task}"
         "Output JSON: {\"angles\": [ {...}, ... ]} with exactly 5 objects in the order above. Each object:\n"
         "{\n"
@@ -474,12 +477,64 @@ def _normalize_stories(raw: Any) -> List[str]:
 
 
 _VISUAL_FORMAT_KEYS = frozenset({"text_overlay", "b_roll_reel", "carousel"})
+# text_blocks are on-screen overlay copy for the MP4 render pipeline. Carousels
+# render as N PNG slides instead, so they do NOT request text_blocks here.
+_TEXT_BLOCK_FORMAT_KEYS = frozenset({"text_overlay", "b_roll_reel"})
 
 
 def _wants_text_blocks(source_format_key: Optional[str]) -> bool:
     raw = (source_format_key or "").strip()
     key = canonicalize_stored_format_key(raw) or raw
-    return key in _VISUAL_FORMAT_KEYS
+    return key in _TEXT_BLOCK_FORMAT_KEYS
+
+
+# Human-readable descriptions of each target format used to steer the LLM when
+# the user wants to RECREATE a source reel in a DIFFERENT production format than
+# the original. These are intentionally concrete (camera/edit + on-screen text
+# behaviour) so the model rebuilds the FORMAT RECIPE rather than just relabeling.
+_TARGET_FORMAT_DESCRIPTIONS: Dict[str, str] = {
+    "text_overlay": (
+        "Text-overlay reel: short B-roll or static visuals with bold on-screen text "
+        "blocks that carry the message. No talking head. Pace driven by 3–4 punchy "
+        "text beats + a CTA. The viewer reads + watches; the script is mostly the "
+        "voice-over / silent narrative, while the text_blocks are the spine."
+    ),
+    "talking_head": (
+        "Talking-head reel: a single person speaking directly to camera the whole time. "
+        "No on-screen text blocks, no B-roll cutaways. Structure the script in clear "
+        "spoken sections (## Hook / ## Insight / ## CTA) the creator will read aloud."
+    ),
+    "carousel": (
+        "Instagram carousel (NOT a video): 3–10 swipeable PNG slides. Slide 1 is the "
+        "cover/hook, last slide is the CTA. Each slide carries one short idea. The "
+        "'script' here is really the slide-by-slide outline; visual rhythm is swipe-paced, "
+        "not video-paced."
+    ),
+    "b_roll_reel": (
+        "B-roll reel: a single looping stock/B-roll clip behind on-screen text blocks. "
+        "No talking head, no scene changes. Tight 3–4 text beats + CTA, paced to the loop."
+    ),
+}
+
+
+def _target_format_block(target_format_key: Optional[str]) -> str:
+    """Render an instruction block telling the LLM the user wants to RE-FORMAT the
+    source reel into a different production format. Empty string when no override."""
+    raw = (target_format_key or "").strip()
+    key = canonicalize_stored_format_key(raw) or raw
+    desc = _TARGET_FORMAT_DESCRIPTIONS.get(key)
+    if not desc:
+        return ""
+    return (
+        "TARGET_FORMAT_OVERRIDE (non-negotiable):\n"
+        f"The user wants to recreate the source reel as a `{key}`, even if the "
+        "source uses a different production format. Preserve the CORE IDEA / viewer "
+        "payoff from the source, but REBUILD the FORMAT RECIPE for this target:\n"
+        f"  {desc}\n"
+        "All format-specific fields (format_insights.dominant_type, hook_patterns, "
+        "value_delivery_formats, beat structure) must describe the TARGET format, "
+        "not the source's original format.\n\n"
+    )
 
 
 def _normalize_text_blocks(raw: Any) -> Optional[List[Dict[str, Any]]]:
@@ -714,12 +769,25 @@ def run_adaptation_synthesis(
     *,
     client_row: Dict[str, Any],
     packed_analysis: Dict[str, Any],
+    target_format_key: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Build synthesized_patterns from a single source reel (url_adapt mode)."""
+    """Build synthesized_patterns from a single source reel (url_adapt mode).
+
+    When ``target_format_key`` is provided the user explicitly wants to recreate the
+    reel in a DIFFERENT production format than the source. The CORE IDEA / payoff
+    is preserved but the FORMAT RECIPE in the synthesized patterns is rebuilt for
+    the requested target (talking_head / text_overlay / carousel / b_roll_reel).
+    """
     lang = _lang_instruction(str(client_row.get("language") or "de"))
+    target_block = _target_format_block(target_format_key)
+    # When the user explicitly overrides the target format we drop the
+    # "same format" instruction so the LLM rebuilds the FORMAT RECIPE for the new
+    # target instead of mirroring the source's production format.
+    same_format_note = "" if target_block else "same format and "
     user = (
         f"{lang}\n\n"
-        "TASK: This reel is the sole TEMPLATE to adapt for the client below — same format and creative idea, "
+        f"{target_block}"
+        f"TASK: This reel is the sole TEMPLATE to adapt for the client below — {same_format_note}same creative idea, "
         "rewritten for the client's world (language, ICP, offer). Separate three layers in your reasoning "
         "(reflect this in the JSON fields):\n"
         "(1) FORMAT RECIPE: production type (e.g. talking head, B-roll + on-screen text, carousel-style beats), "
@@ -879,6 +947,70 @@ def run_auto_video_idea(
     if len(idea) < 20:
         raise ValueError("Model returned an empty or too-short idea; retry.")
     return {"idea": idea, "suggested_format_key": ck, "reasoning": reasoning}
+
+
+def run_carousel_slide_texts(
+    settings: Settings,
+    *,
+    client_row: Dict[str, Any],
+    chosen_angle: Dict[str, Any],
+    hook_text: str,
+    count: int = 6,
+    feedback: Optional[str] = None,
+) -> List[str]:
+    """LLM: ``count`` slide lines for a carousel post (slide 1 = hook, last = CTA).
+
+    Each entry is plain text (no markdown). Slides are intentionally tight (1-2 lines, ~80 chars)
+    so they read as a poster, not a paragraph.
+    """
+    n = max(3, min(10, int(count or 6)))
+    lang = _lang_instruction(str(client_row.get("language") or "de"))
+    fb = f"\n\nFEEDBACK_FROM_HUMAN:\n{feedback.strip()[:2000]}\n" if feedback and feedback.strip() else ""
+    user = (
+        f"{lang}\n\n"
+        f"TASK: Write a single Instagram carousel ({n} slides). Each slide is a STANDALONE poster "
+        "panel — short, visual, scroll-rewarding.\n\n"
+        "Output JSON only:\n"
+        '{"slides": [string, string, ...]}\n\n'
+        "Rules:\n"
+        f"- Exactly {n} slides, in order.\n"
+        "- Slide 1 is the COVER / hook — must work as a thumbnail without context. "
+        "Use the provided HOOK_TEXT as the slide-1 base; rewrite only if it does not fit a poster.\n"
+        f"- Slides 2..{n - 1} deliver the value: one idea per slide, no walls of text. "
+        "Mix formats: question, contrast, list item, mini-script, mini-framework.\n"
+        f"- Slide {n} is the CTA: explicit next action (comment keyword, save, follow) aligned with the offer.\n"
+        "- Each slide: max ~16 words, max ~2 short lines. No hashtags. No emojis on slide 1; "
+        "max 1 emoji on other slides if it adds meaning.\n"
+        "- Plain text only (no markdown).\n\n"
+        f"HOOK_TEXT (slide 1 seed): {hook_text[:200]!r}\n\n"
+        f"CHOSEN_ANGLE_JSON:\n{json.dumps(chosen_angle, ensure_ascii=False)[:8000]}\n\n"
+        f"CLIENT_CONTEXT:\n{_pack_client_row_for_llm(client_row)[:80_000]}"
+        f"{fb}"
+    )
+    data = chat_json_completion(
+        settings.openrouter_api_key,
+        settings.openrouter_model,
+        system=_SYSTEM_JSON,
+        user=user,
+        max_tokens=2048,
+        temperature=0.5,
+    )
+    raw = data.get("slides")
+    if not isinstance(raw, list):
+        raise ValueError("LLM returned no 'slides' array.")
+    out: List[str] = []
+    for s in raw:
+        if isinstance(s, str):
+            t = s.strip()
+        elif isinstance(s, dict):
+            t = str(s.get("text") or "").strip()
+        else:
+            continue
+        if t:
+            out.append(t[:600])
+    if len(out) < 3:
+        raise ValueError(f"LLM returned only {len(out)} slides (need ≥3).")
+    return out[:n]
 
 
 def get_chosen_angle(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:

@@ -384,6 +384,21 @@ def generation_start(
                 raise HTTPException(status_code=400, detail="Valid Instagram reel URL required")
             url_key = canonical_instagram_post_url(raw_u)
             source_url = url_key
+            # Optional user override: which production format the user wants to recreate
+            # the reel as. When set, the synthesis + angles are steered toward that target
+            # format instead of mirroring the source reel's original format.
+            user_target_fk_raw = (body.format_key or "").strip()
+            user_target_fk: Optional[str] = None
+            if user_target_fk_raw:
+                ck_user = canonicalize_stored_format_key(user_target_fk_raw) or user_target_fk_raw
+                if ck_user not in ("text_overlay", "talking_head", "carousel", "b_roll_reel"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "format_key must be one of: text_overlay, talking_head, carousel, b_roll_reel"
+                        ),
+                    )
+                user_target_fk = ck_user
             one = _load_analysis_with_meta(supabase, client_id, url_key)
             if not one:
                 sr = (
@@ -419,7 +434,10 @@ def generation_start(
                 raise HTTPException(status_code=400, detail="Could not load analysis for this URL")
             packed = compact_analysis_for_prompt(one, reel_meta=one.get("_reel_meta"))
             patterns = run_adaptation_synthesis(
-                settings, client_row=client_row, packed_analysis=packed
+                settings,
+                client_row=client_row,
+                packed_analysis=packed,
+                target_format_key=user_target_fk,
             )
             if not isinstance(patterns, dict):
                 patterns = {}
@@ -434,20 +452,26 @@ def generation_start(
                 synthesized_patterns=patterns,
                 extra_instruction=extra_adapt,
                 adapt_single_reference_reel=True,
+                target_format_key=user_target_fk,
             )
             if one.get("id"):
                 analysis_ids.append(str(one["id"]))
             if one.get("reel_id"):
                 reel_ids.append(str(one["reel_id"]))
             # Create / Remotion need a visual format key; url_adapt historically left this NULL.
-            nf = str(one.get("normalized_format") or "").strip()
-            ck = canonicalize_stored_format_key(nf) or nf
-            if ck in ("text_overlay", "b_roll_reel", "carousel"):
-                source_format_key = ck
-            elif ck == "talking_head":
-                source_format_key = "text_overlay"
+            # When the user explicitly picked a target format, honour it; otherwise fall
+            # back to the source reel's normalized format (legacy auto-detection).
+            if user_target_fk:
+                source_format_key = user_target_fk
             else:
-                source_format_key = "text_overlay"
+                nf = str(one.get("normalized_format") or "").strip()
+                ck = canonicalize_stored_format_key(nf) or nf
+                if ck in ("text_overlay", "b_roll_reel", "carousel"):
+                    source_format_key = ck
+                elif ck == "talking_head":
+                    source_format_key = "text_overlay"
+                else:
+                    source_format_key = "text_overlay"
 
         elif st == "script_adapt":
             raw_script = (body.source_script or "").strip()

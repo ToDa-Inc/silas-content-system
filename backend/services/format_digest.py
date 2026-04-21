@@ -161,11 +161,26 @@ def _llm_synthesize_format_digest(
     winners_compact: List[Dict[str, Any]],
     losers_compact: List[Dict[str, Any]],
     niche_benchmarks: Dict[str, Any],
+    is_carousel: bool = False,
 ) -> Dict[str, Any]:
-    user = (
-        f"TASK: Synthesize winning patterns for ONE reel format: {format_key!r}.\n"
+    if is_carousel:
+        ranking_explanation = (
+            "(by likes vs the account's own average — Instagram does not expose carousel views)"
+        )
+        format_note = (
+            "Carousels are multi-slide static-image posts. There is no audio, no video pacing and no view counter — "
+            "winning patterns hinge on slide 1 hook, swipe-rewarding structure, copywriting density per slide, "
+            "and caption value. Talk about slides, not seconds."
+        )
+    else:
+        ranking_explanation = "(by engagement_rate within this format)"
+        format_note = ""
+    user = f"TASK: Synthesize winning patterns for ONE reel format: {format_key!r}.\n"
+    if format_note:
+        user += f"{format_note}\n"
+    user += (
         "You are given competitor analyses split into TOP performers vs WEAKER performers "
-        "(by engagement_rate within this format). Weight insights from winners heavily; "
+        f"{ranking_explanation}. Weight insights from winners heavily; "
         "use losers to name anti-patterns and what to avoid.\n\n"
         "Output JSON with this exact shape:\n"
         "{\n"
@@ -278,8 +293,22 @@ def compute_format_digests(
         if n < 1:
             continue
 
+        is_carousel_fmt = fmt == "carousel"
+
         def sort_key(x: Dict[str, Any]) -> float:
             m = x.get("_reel_meta") or {}
+            if is_carousel_fmt:
+                # Carousels have no public view counter — rank by how much the post over-/under-performed
+                # the account's own average likes (outlier_likes_ratio). Fall back to comments outlier.
+                for k in ("outlier_likes_ratio", "outlier_comments_ratio"):
+                    raw = m.get(k)
+                    if raw is None:
+                        continue
+                    try:
+                        return float(raw)
+                    except (TypeError, ValueError):
+                        continue
+                return -1.0
             cvr = m.get("comment_view_ratio")
             if cvr is not None:
                 try:
@@ -306,6 +335,8 @@ def compute_format_digests(
         srs: List[float] = []
         shrs: List[float] = []
         durs: List[int] = []
+        olrs: List[float] = []
+        ocrs: List[float] = []
         for r in rows_sorted:
             m = r.get("_reel_meta") or {}
             if m.get("engagement_rate") is not None:
@@ -326,6 +357,16 @@ def compute_format_digests(
             if m.get("share_rate") is not None:
                 try:
                     shrs.append(float(m["share_rate"]))
+                except (TypeError, ValueError):
+                    pass
+            if m.get("outlier_likes_ratio") is not None:
+                try:
+                    olrs.append(float(m["outlier_likes_ratio"]))
+                except (TypeError, ValueError):
+                    pass
+            if m.get("outlier_comments_ratio") is not None:
+                try:
+                    ocrs.append(float(m["outlier_comments_ratio"]))
                 except (TypeError, ValueError):
                     pass
             vd = m.get("video_duration")
@@ -362,6 +403,7 @@ def compute_format_digests(
                     winners_compact=winners_c,
                     losers_compact=losers_c,
                     niche_benchmarks=nb if isinstance(nb, dict) else {},
+                    is_carousel=is_carousel_fmt,
                 )
                 if not isinstance(digest_json, dict):
                     digest_json = {}
@@ -428,6 +470,13 @@ def compute_format_digests(
             "digest_json": digest_json,
             "computed_at": now.isoformat(),
         }
+        if is_carousel_fmt:
+            row_db["avg_outlier_likes_ratio"] = (
+                round(sum(olrs) / len(olrs), 4) if olrs else None
+            )
+            row_db["avg_outlier_comments_ratio"] = (
+                round(sum(ocrs) / len(ocrs), 4) if ocrs else None
+            )
         try:
             supabase.table("format_digests").upsert(
                 row_db, on_conflict="client_id,format_key"

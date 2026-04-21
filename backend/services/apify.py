@@ -12,9 +12,14 @@ logger = logging.getLogger(__name__)
 
 
 def instagram_profile_posts_input(usernames: List[str], results_limit: int) -> dict[str, Any]:
-    """Input for ``apify~instagram-scraper`` — recent posts (includes carousel / Sidecar)."""
+    """Input for ``apify~instagram-scraper`` — recent posts (includes carousel / Sidecar).
+
+    This actor expects ``directUrls`` with the full profile URL, not bare usernames
+    (passing ``username`` returns ``no_items``).
+    """
+    direct_urls = [f"https://www.instagram.com/{u.lstrip('@').strip('/')}/" for u in usernames if u]
     return {
-        "username": usernames,
+        "directUrls": direct_urls,
         "resultsLimit": results_limit,
         "resultsType": "posts",
     }

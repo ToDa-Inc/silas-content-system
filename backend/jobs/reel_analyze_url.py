@@ -34,6 +34,7 @@ from services.reel_analyze_prompt import (
 from services.instagram_post_url import canonical_instagram_post_url
 from services.apify_reel_fields import saves_and_shares_from_item, video_duration_seconds_from_item
 from services.reel_thumbnail_url import reel_thumbnail_url_from_apify_item
+from services.format_classifier import canonicalize_stored_format_key
 
 
 class ReelAnalyzeTerminalError(Exception):
@@ -380,16 +381,18 @@ def _execute_reel_analyze_url_core(
         comments = int(sr.get("comments") or 0)
         caption = _caption_from_scraped_reel_row(sr)
         post_url = str(sr.get("post_url") or reel_url)
+        is_carousel = (canonicalize_stored_format_key(sr.get("format")) or "") == "carousel"
         model = settings.openrouter_reel_analyze_model
         prompt = build_reel_analysis_prompt(
             owner=owner,
-            views=f"{views:,}",
+            views="" if is_carousel else f"{views:,}",
             likes=f"{likes:,}",
             comments=f"{comments:,}",
             caption=caption,
             niche_context=niche_context,
             text_reanalyze=True,
             prior_full_text=prior if prior else None,
+            is_carousel=is_carousel,
         )
         full_text, video_analyzed = analyze_reel_silas(
             settings.openrouter_api_key,
