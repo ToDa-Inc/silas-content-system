@@ -71,6 +71,19 @@ class Settings(BaseSettings):
             return v.strip()
         return v
     openrouter_model: str = "google/gemini-2.0-flash-001"
+    openrouter_model_fallback: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPENROUTER_MODEL_FALLBACK"),
+        description="Optional OpenRouter model id; on 429 from primary, retry once with this model (text/chat paths; skipped for video multimodal).",
+    )
+
+    @field_validator("openrouter_model_fallback", mode="before")
+    @classmethod
+    def strip_openrouter_model_fallback(cls, v: object) -> object:
+        if isinstance(v, str):
+            return v.strip()
+        return v
+
     openrouter_reel_analyze_model: str = Field(
         default="google/gemini-3-flash-preview",
         description="OpenRouter model id for single-reel MP4 analysis.",

@@ -524,7 +524,12 @@ def _carousel_hook_text(row: Dict[str, Any]) -> str:
             if t:
                 return t
     chosen = _chosen_angle(row)
-    return str(chosen.get("hook") or chosen.get("title") or chosen.get("name") or "").strip()
+    # Mirror video_render.build_remotion_props: angles store the opening line as draft_hook.
+    for key in ("draft_hook", "hook", "title", "name"):
+        raw = str(chosen.get(key) or "").strip()
+        if raw:
+            return raw
+    return ""
 
 
 def _client_row_for_session(supabase: Client, client_id: str) -> Dict[str, Any]:

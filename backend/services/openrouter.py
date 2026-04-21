@@ -5,12 +5,64 @@ from __future__ import annotations
 import base64
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any, List
 
 import httpx
 
 _MAX_VIDEO_BYTES = 15 * 1024 * 1024
+_OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+
+def _openrouter_request_headers(openrouter_key: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {openrouter_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://silas-content-system.local",
+        "X-Title": "Content Machine",
+    }
+
+
+def _post_chat_completions_with_optional_fallback(
+    openrouter_key: str,
+    payload: dict[str, Any],
+    *,
+    timeout: float,
+    primary_model: str,
+    enable_model_fallback: bool,
+) -> httpx.Response:
+    """POST chat/completions. On HTTP 429, optionally retry with ``OPENROUTER_MODEL_FALLBACK``."""
+    from core.config import get_settings
+
+    models: list[str] = [primary_model]
+    if enable_model_fallback:
+        fb = (get_settings().openrouter_model_fallback or "").strip()
+        if fb and fb != primary_model:
+            models.append(fb)
+
+    headers = _openrouter_request_headers(openrouter_key)
+    last: httpx.Response | None = None
+    with httpx.Client(timeout=timeout) as client:
+        for i, model in enumerate(models):
+            body = {**payload, "model": model}
+            r = client.post(_OPENROUTER_CHAT_URL, headers=headers, json=body)
+            last = r
+            if r.status_code == 429 and i < len(models) - 1:
+                ra = r.headers.get("retry-after")
+                delay = 0.5
+                if ra:
+                    try:
+                        delay = min(3.0, float(ra))
+                    except ValueError:
+                        pass
+                time.sleep(delay)
+                continue
+            r.raise_for_status()
+            return r
+    assert last is not None
+    last.raise_for_status()
+    return last
 
 
 def analyze_relevance(
@@ -25,19 +77,14 @@ def analyze_relevance(
         "max_tokens": 512,
         "temperature": 0.1,
     }
-    with httpx.Client(timeout=120.0) as client:
-        r = client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {openrouter_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://silas-content-system.local",
-                "X-Title": "Content Machine",
-            },
-            json=payload,
-        )
-        r.raise_for_status()
-        data = r.json()
+    r = _post_chat_completions_with_optional_fallback(
+        openrouter_key,
+        payload,
+        timeout=120.0,
+        primary_model=model,
+        enable_model_fallback=True,
+    )
+    data = r.json()
     if data.get("error"):
         raise RuntimeError(data["error"].get("message", str(data["error"])))
     content = data["choices"][0]["message"]["content"]
@@ -54,19 +101,14 @@ def analyze_creator_profile(openrouter_key: str, prompt: str, model: str) -> dic
         "max_tokens": 8192,
         "temperature": 0.2,
     }
-    with httpx.Client(timeout=180.0) as client:
-        r = client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {openrouter_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://silas-content-system.local",
-                "X-Title": "Content Machine",
-            },
-            json=payload,
-        )
-        r.raise_for_status()
-        data = r.json()
+    r = _post_chat_completions_with_optional_fallback(
+        openrouter_key,
+        payload,
+        timeout=180.0,
+        primary_model=model,
+        enable_model_fallback=True,
+    )
+    data = r.json()
     if data.get("error"):
         raise RuntimeError(data["error"].get("message", str(data["error"])))
     content = data["choices"][0]["message"]["content"]
@@ -133,19 +175,14 @@ def analyze_reel_silas(
         "max_tokens": 2000,
         "temperature": 0.2,
     }
-    with httpx.Client(timeout=180.0) as client:
-        r = client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {openrouter_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://silas-content-system.local",
-                "X-Title": "Content Machine",
-            },
-            json=payload,
-        )
-        r.raise_for_status()
-        data = r.json()
+    r = _post_chat_completions_with_optional_fallback(
+        openrouter_key,
+        payload,
+        timeout=180.0,
+        primary_model=model,
+        enable_model_fallback=not video_analyzed,
+    )
+    data = r.json()
     if data.get("error"):
         raise RuntimeError(data["error"].get("message", str(data["error"])))
     choice = data.get("choices") or []
@@ -222,19 +259,14 @@ def analyze_reel_similarity(
         "max_tokens": 512,
         "temperature": 0.1,
     }
-    with httpx.Client(timeout=180.0) as client:
-        r = client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {openrouter_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://silas-content-system.local",
-                "X-Title": "Content Machine",
-            },
-            json=payload,
-        )
-        r.raise_for_status()
-        data = r.json()
+    r = _post_chat_completions_with_optional_fallback(
+        openrouter_key,
+        payload,
+        timeout=180.0,
+        primary_model=model,
+        enable_model_fallback=not video_analyzed,
+    )
+    data = r.json()
 
     if data.get("error"):
         raise RuntimeError(data["error"].get("message", str(data["error"])))
@@ -269,19 +301,14 @@ def _chat_completion_raw_text(
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
-    with httpx.Client(timeout=timeout_s) as client:
-        r = client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {openrouter_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://silas-content-system.local",
-                "X-Title": "Content Machine",
-            },
-            json=payload,
-        )
-        r.raise_for_status()
-        data = r.json()
+    r = _post_chat_completions_with_optional_fallback(
+        openrouter_key,
+        payload,
+        timeout=timeout_s,
+        primary_model=model,
+        enable_model_fallback=True,
+    )
+    data = r.json()
     if data.get("error"):
         raise RuntimeError(data["error"].get("message", str(data["error"])))
     choice = data.get("choices") or []

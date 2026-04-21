@@ -59,7 +59,8 @@ Optional: `backend/.env` or `config/.env` for overrides (see load order in root 
    - [openrouter.ai/keys](https://openrouter.ai/keys) → create key.  
    - Same idea as `OPENROUTER_API_KEY` in `config/.env` for the JS scripts.
 
-7. **`OPENROUTER_MODEL`** — optional; default is fine unless you want another model.
+7. **`OPENROUTER_MODEL`** — optional; default is fine unless you want another model.  
+   **`OPENROUTER_MODEL_FALLBACK`** — optional second model id; if the primary returns **HTTP 429**, the API retries once with the fallback (text JSON/chat paths; skipped when sending **video** bytes to the reel analyzer).
 
 8. **`OPENAI_API_KEY`** — required for **Create → Generate image** (gpt-image-1.5). Set in repo root `.env`.
 
