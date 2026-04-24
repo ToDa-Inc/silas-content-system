@@ -50,11 +50,12 @@ const tailwindPkg = path.join(appRoot, "node_modules", "tailwindcss");
 const tailwindPostcss = path.join(appRoot, "node_modules", "@tailwindcss", "postcss");
 
 const nextConfig: NextConfig = {
+  transpilePackages: ["remotion", "@remotion/player", "@remotion/google-fonts"],
   env: publicEnv,
   // Docker/Railway: minimal server bundle for `node server.js` (see Dockerfile).
   ...(process.env.DOCKER === "1" ? { output: "standalone" as const } : {}),
-  // Same as turbopack.root — avoids "outputFileTracingRoot and turbopack.root must match" on Vercel.
-  outputFileTracingRoot: appRoot,
+  // Anchor Turbopack to this app's directory. Without it, Next walks up and finds
+  // /Users/danizal/package-lock.json and warns about an inferred workspace root.
   turbopack: {
     root: appRoot,
     resolveAlias: {
@@ -62,6 +63,7 @@ const nextConfig: NextConfig = {
       "@tailwindcss/postcss": tailwindPostcss,
     },
   },
+  outputFileTracingRoot: appRoot,
   images: {
     remotePatterns: [
       {

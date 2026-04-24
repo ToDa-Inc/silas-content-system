@@ -12,9 +12,13 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@remotion/google-fonts": "4.0.451",
+    "@remotion/player": "4.0.451",
+    "remotion": "4.0.451",
     "@supabase/ssr": "^0.5.2",
     "@supabase/supabase-js": "^2.100.0",
     "clsx": "^2.1.1",
+    "fast-json-patch": "^3.1.1",
     "framer-motion": "^12.37.0",
     "lucide-react": "^0.577.0",
     "next": "16.1.7",
@@ -24,7 +28,8 @@
     "recharts": "^2.15.4",
     "server-only": "^0.0.1",
     "tailwind-merge": "^3.5.0",
-    "undici": "^7.24.6"
+    "undici": "^7.24.6",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.1",

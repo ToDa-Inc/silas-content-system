@@ -10,6 +10,7 @@ from core.database import get_supabase, get_supabase_for_settings
 from core.deps import require_org_access, resolve_client_id
 from core.id_generator import generate_client_id
 from models.client import (
+    BrandThemePatch,
     ClientCreate,
     ClientOut,
     ClientUpdate,
@@ -177,6 +178,80 @@ def dna_chat_apply(
         "updated_sections": ["analysis_brief"],
         "client": final,
     }
+
+
+@router.get("/{slug}/brand-theme")
+def get_client_brand_theme(
+    slug: str,
+    org_id: Annotated[str, Depends(require_org_access)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+) -> Dict[str, Any]:
+    try:
+        res = (
+            supabase.table("clients")
+            .select("brand_theme")
+            .eq("org_id", org_id)
+            .eq("slug", slug)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        msg = str(e)
+        arg0 = e.args[0] if getattr(e, "args", None) else None
+        if isinstance(arg0, dict):
+            msg = f"{msg} {arg0.get('message', '')} {arg0.get('code', '')}"
+        if "brand_theme" in msg and ("42703" in msg or "does not exist" in msg):
+            return {}
+        raise
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Client not found")
+    row = dict(res.data[0])
+    raw = row.get("brand_theme")
+    return raw if isinstance(raw, dict) else {}
+
+
+@router.patch("/{slug}/brand-theme")
+def patch_client_brand_theme(
+    slug: str,
+    body: BrandThemePatch,
+    org_id: Annotated[str, Depends(require_org_access)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+) -> Dict[str, Any]:
+    try:
+        res = (
+            supabase.table("clients")
+            .select("id, brand_theme")
+            .eq("org_id", org_id)
+            .eq("slug", slug)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        msg = str(e)
+        arg0 = e.args[0] if getattr(e, "args", None) else None
+        if isinstance(arg0, dict):
+            msg = f"{msg} {arg0.get('message', '')} {arg0.get('code', '')}"
+        if "brand_theme" in msg and ("42703" in msg or "does not exist" in msg):
+            raise HTTPException(
+                status_code=503,
+                detail="Database is missing column clients.brand_theme — run backend/sql/phase21_client_brand.sql in Supabase.",
+            ) from e
+        raise
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Client not found")
+    cid = str(res.data[0]["id"])
+    existing = res.data[0].get("brand_theme") if isinstance(res.data[0].get("brand_theme"), dict) else {}
+    merged = dict(existing)
+    patch = body.model_dump(exclude_unset=True)
+    for k, v in patch.items():
+        if v is None:
+            continue
+        merged[k] = v
+    supabase.table("clients").update({"brand_theme": merged}).eq("id", cid).execute()
+    out = supabase.table("clients").select("brand_theme").eq("id", cid).limit(1).execute()
+    row2 = dict(out.data[0]) if out.data else {}
+    raw2 = row2.get("brand_theme")
+    return raw2 if isinstance(raw2, dict) else {}
 
 
 @router.get("/{slug}", response_model=ClientOut)

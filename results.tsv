@@ -19,3 +19,11 @@ timestamp	commit	endpoint	avg_ms	min_ms	max_ms	runs	status	note
 2026-04-15T04:14:59Z	ea6c5ce	reels_metrics	689	674	713	4	keep	limit+sort+stats-fix+outlier-count+competitors-cap
 2026-04-15T04:15:02Z	ea6c5ce	competitors	458	436	483	4	keep	limit+sort+stats-fix+outlier-count+competitors-cap
 2026-04-15T04:15:05Z	ea6c5ce	reels_list	482	421	583	4	keep	limit+sort+stats-fix+outlier-count+competitors-cap
+2026-04-24T06:32:41Z	ecc81f1	baseline	generate_sessions	auth+data	781	573	614	484	781	5
+2026-04-24T06:32:43Z	ecc81f1	baseline	format_digests	auth+data	496	547	537	413	684	5
+2026-04-24T06:32:47Z	ecc81f1	baseline	adapt_preview_reels	auth+data	746	676	690	615	761	5
+2026-04-24T06:32:49Z	ecc81f1	baseline	reel_analyses	auth+data	520	455	468	430	520	5
+2026-04-24T06:44:03Z	ecc81f1	after: H1+H2 backend+frontend cache	generate_sessions	auth+data	278	206	220	181	278	5
+2026-04-24T06:44:03Z	ecc81f1	after: H1+H2 backend+frontend cache	format_digests	auth+data	98	122	117	93	180	5
+2026-04-24T06:44:05Z	ecc81f1	after: H1+H2 backend+frontend cache	adapt_preview_reels	auth+data	443	320	345	285	443	5
+2026-04-24T06:44:05Z	ecc81f1	after: H1+H2 backend+frontend cache	reel_analyses	auth+data	139	95	104	90	139	5

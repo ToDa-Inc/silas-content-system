@@ -54,6 +54,7 @@ from services.image_generation import (
     generate_thumbnail_freepik_pillow,
 )
 from services.video_render import RENDERS_BUCKET
+from services.video_spec_defaults import persist_finalize_spec, persist_healed_session_video_spec_row
 from services.format_digest import (
     compute_format_digests,
     ensure_format_digests_fresh,
@@ -667,6 +668,20 @@ def generation_choose_angle(
         "updated_at": now,
     }
     supabase.table("generation_sessions").update(patch).eq("id", session_id).execute()
+    out = _load_session(supabase, client_id, session_id)
+    merged = dict(out)
+    vs_pkg = package.get("visual_style")
+    if vs_pkg is not None:
+        merged["visual_style"] = vs_pkg
+    clin = {"brand_theme": client_row.get("brand_theme"), "language": client_row.get("language")}
+    persist_finalize_spec(
+        supabase,
+        session_id=session_id,
+        client_id=client_id,
+        session_row=merged,
+        client_row=clin,
+        updated_at_iso=_now_iso(),
+    )
     return _row_to_out(_load_session(supabase, client_id, session_id))
 
 
@@ -803,6 +818,20 @@ def generation_regenerate(
         "updated_at": now,
     }
     supabase.table("generation_sessions").update(patch).eq("id", session_id).execute()
+    out = _load_session(supabase, client_id, session_id)
+    merged = dict(out)
+    vs_pkg = package.get("visual_style")
+    if vs_pkg is not None:
+        merged["visual_style"] = vs_pkg
+    clin = {"brand_theme": client_row.get("brand_theme"), "language": client_row.get("language")}
+    persist_finalize_spec(
+        supabase,
+        session_id=session_id,
+        client_id=client_id,
+        session_row=merged,
+        client_row=clin,
+        updated_at_iso=_now_iso(),
+    )
     return _row_to_out(_load_session(supabase, client_id, session_id))
 
 
@@ -890,7 +919,11 @@ def generation_get_session(
     supabase: Annotated[Client, Depends(get_supabase)],
 ) -> dict:
     _ = slug
-    return _row_to_out(_load_session(supabase, client_id, session_id))
+    row = _load_session(supabase, client_id, session_id)
+    row = persist_healed_session_video_spec_row(
+        supabase, client_id=client_id, session_id=session_id, row=row
+    )
+    return _row_to_out(row)
 
 
 @router.delete("/clients/{slug}/generate/sessions/{session_id}", status_code=204)

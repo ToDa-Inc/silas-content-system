@@ -1,3 +1,4 @@
+import time
 from typing import Annotated, Optional
 
 from fastapi import Depends, Header, HTTPException, status
@@ -5,6 +6,35 @@ from supabase import Client
 
 from core.config import Settings, get_settings
 from core.database import get_supabase
+
+# ---------------------------------------------------------------------------
+# In-process TTL cache for auth resolution.
+#
+# Each unique (api_key, org_slug) pair costs 3 sequential Supabase round-trips
+# on every request. For a logged-in user hammering the generate page, this is
+# the same lookup repeated 3-5x per page load. Cache it for 60s.
+#
+# Safe because: api_key is tied to a profile row that never changes mid-session,
+# org membership is not revoked on sub-minute timescales, and this is a
+# single-process server — no cross-worker cache coherence to worry about.
+# ---------------------------------------------------------------------------
+
+_CACHE_TTL = 60.0  # seconds
+
+_org_cache: dict[tuple[str, str], tuple[str, float]] = {}    # (api_key, org_slug) → org_id
+_client_cache: dict[tuple[str, str], tuple[str, float]] = {}  # (org_id, client_slug) → client_id
+
+
+def _cache_get(store: dict, key: tuple) -> Optional[str]:
+    entry = store.get(key)
+    if entry and time.monotonic() < entry[1]:
+        return entry[0]
+    store.pop(key, None)
+    return None
+
+
+def _cache_set(store: dict, key: tuple, value: str) -> None:
+    store[key] = (value, time.monotonic() + _CACHE_TTL)
 
 
 def _parse_api_key(
@@ -33,17 +63,22 @@ async def require_org_access(
             detail="Missing API key: send X-Api-Key or Authorization: Bearer <api_key>",
         )
 
-    pres = supabase.table("profiles").select("id").eq("api_key", api_key).limit(1).execute()
-    if not pres.data:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-    user_id = pres.data[0]["id"]
-
     slug = x_org_slug or settings.default_org_slug
     if not slug:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Missing X-Org-Slug header (send the signed-in user’s org slug from Supabase).",
         )
+
+    cache_key = (api_key, slug)
+    if cached := _cache_get(_org_cache, cache_key):
+        return cached
+
+    pres = supabase.table("profiles").select("id").eq("api_key", api_key).limit(1).execute()
+    if not pres.data:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+    user_id = pres.data[0]["id"]
+
     org_res = supabase.table("organizations").select("id").eq("slug", slug).limit(1).execute()
     if not org_res.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found")
@@ -62,6 +97,8 @@ async def require_org_access(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not a member of this organization (organization_members).",
         )
+
+    _cache_set(_org_cache, cache_key, org_id)
     return org_id
 
 
@@ -70,6 +107,10 @@ def resolve_client_id(
     org_id: Annotated[str, Depends(require_org_access)],
     supabase: Annotated[Client, Depends(get_supabase)],
 ) -> str:
+    cache_key = (org_id, slug)
+    if cached := _cache_get(_client_cache, cache_key):
+        return cached
+
     res = (
         supabase.table("clients")
         .select("id")
@@ -80,4 +121,7 @@ def resolve_client_id(
     )
     if not res.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
-    return res.data[0]["id"]
+
+    client_id = res.data[0]["id"]
+    _cache_set(_client_cache, cache_key, client_id)
+    return client_id

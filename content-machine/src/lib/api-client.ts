@@ -7,6 +7,8 @@ import type {
 } from "@/lib/reel-types";
 import type { ScrapedReelRow } from "@/lib/api";
 import { getContentApiBase } from "@/lib/env";
+import type { Operation } from "fast-json-patch";
+import type { VideoSpec } from "@/lib/video-spec";
 
 /** FastAPI `detail` is a string (400) or validation array (422). */
 export function formatFastApiError(json: unknown, fallback: string): string {
@@ -51,6 +53,43 @@ async function getPreferredClientSlugFromSession(): Promise<string | null> {
   return preferredClientSlugFromSession;
 }
 
+// ---------------------------------------------------------------------------
+// Session-scoped cache for clientApiContext.
+//
+// The API key, org slug, and client slug are stable for the lifetime of a
+// logged-in session — they only change on sign-out or explicit client switch.
+// Without this cache, every API function call re-runs 4 async steps
+// (auth.getUser → session fetch → resolveTenancy → profiles query) before
+// making any real request. On the generate page alone that's 3-5 redundant
+// chains on mount.
+//
+// Cache stores the in-flight Promise (not the resolved value) so concurrent
+// callers on the same tick share one resolution — same deduplication pattern
+// already used for preferredClientSlugFromSession, but persistent across calls.
+// ---------------------------------------------------------------------------
+
+type ApiContext = { headers: HeadersInit; clientSlug: string; orgSlug: string };
+
+let _ctxCache: Promise<ApiContext> | null = null;
+let _ctxExpiry = 0;
+const _CTX_TTL_MS = 5 * 60_000; // 5-minute safety TTL
+let _authListenerSet = false;
+
+function _ensureAuthListener(): void {
+  if (_authListenerSet || typeof window === "undefined") return;
+  _authListenerSet = true;
+  createClient().auth.onAuthStateChange((event) => {
+    // INITIAL_SESSION fires on every page load — do not wipe the cache for it.
+    // TOKEN_REFRESHED rotates the JWT but never changes the api_key in profiles.
+    // Only a real sign-out invalidates the resolved identity.
+    if (event === "SIGNED_OUT") {
+      _ctxCache = null;
+      _ctxExpiry = 0;
+      preferredClientSlugFromSession = null;
+    }
+  });
+}
+
 export type ClientApiHeaderOptions = {
   /** Explicit org override; otherwise `resolveTenancy` + `X-Org-Slug` from Supabase (no repo `.env` default). */
   orgSlug?: string;
@@ -75,11 +114,7 @@ export async function clientApiHeaders(opts?: ClientApiHeaderOptions): Promise<H
   return headers;
 }
 
-export async function clientApiContext(opts?: ClientApiHeaderOptions): Promise<{
-  headers: HeadersInit;
-  clientSlug: string;
-  orgSlug: string;
-}> {
+async function _resolveClientApiContext(opts?: ClientApiHeaderOptions): Promise<ApiContext> {
   const supabase = createClient();
   const {
     data: { user },
@@ -104,6 +139,25 @@ export async function clientApiContext(opts?: ClientApiHeaderOptions): Promise<{
     }
   }
   return { headers: h, clientSlug, orgSlug };
+}
+
+export function invalidateApiContext(): void {
+  _ctxCache = null;
+  _ctxExpiry = 0;
+  preferredClientSlugFromSession = null;
+}
+
+export async function clientApiContext(_opts?: ClientApiHeaderOptions): Promise<ApiContext> {
+  _ensureAuthListener();
+
+  const now = Date.now();
+  if (!_ctxCache || now > _ctxExpiry) {
+    const p = _resolveClientApiContext();
+    _ctxCache = p;
+    _ctxExpiry = now + _CTX_TTL_MS;
+    p.catch(() => { if (_ctxCache === p) _ctxCache = null; });
+  }
+  return _ctxCache;
 }
 
 /** Full Silas analysis for a reel — opens from Intelligence / View all reels. */
@@ -418,6 +472,7 @@ export type GenerationSession = {
   hashtags?: string[] | null;
   story_variants?: string[] | null;
   text_blocks?: TextBlock[] | null;
+  video_spec?: Record<string, unknown> | null;
   cover_text_options?: string[] | null;
   background_type?: string | null;
   broll_clip_id?: string | null;
@@ -427,6 +482,7 @@ export type GenerationSession = {
   thumbnail_url?: string | null;
   render_status?: string | null;
   render_error?: string | null;
+  render_progress_pct?: number | null;
   carousel_slides?: CarouselSlide[] | null;
   status: string;
   feedback?: string | null;
@@ -869,6 +925,104 @@ export async function patchCreateSession(
       return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
     }
     return { ok: true, data: json as GenerationSession };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function patchSessionVideoSpec(
+  clientSlug: string,
+  orgSlug: string,
+  sessionId: string,
+  body: { ops: Operation[] },
+): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/create/sessions/${encodeURIComponent(sessionId)}/spec`,
+      {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    const json = (await res.json().catch(() => ({}))) as GenerationSession & { detail?: unknown };
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
+    }
+    return { ok: true, data: json as GenerationSession };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+/** Shrink block read-times so hook + gaps + blocks fit ``background.durationSec``. */
+export async function postFitSessionSpecToBroll(
+  clientSlug: string,
+  orgSlug: string,
+  sessionId: string,
+): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/create/sessions/${encodeURIComponent(sessionId)}/spec/fit-to-broll`,
+      {
+        method: "POST",
+        headers: { ...headers },
+      },
+    );
+    const json = (await res.json().catch(() => ({}))) as GenerationSession & { detail?: unknown };
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
+    }
+    return { ok: true, data: json as GenerationSession };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function promptEditSessionVideoSpec(
+  clientSlug: string,
+  orgSlug: string,
+  sessionId: string,
+  body: { instruction: string },
+): Promise<
+  | { ok: true; data: { ops: Operation[]; summary: string; preview_spec: VideoSpec } }
+  | { ok: false; error: string }
+> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/create/sessions/${encodeURIComponent(sessionId)}/spec/prompt-edit`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    const json = (await res.json().catch(() => ({}))) as {
+      ops?: Operation[];
+      summary?: string;
+      preview_spec?: VideoSpec;
+      detail?: unknown;
+    };
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
+    }
+    if (!Array.isArray(json.ops) || !json.preview_spec) {
+      return { ok: false, error: "Invalid prompt-edit response" };
+    }
+    return {
+      ok: true,
+      data: {
+        ops: json.ops,
+        summary: String(json.summary ?? ""),
+        preview_spec: json.preview_spec as VideoSpec,
+      },
+    };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
   }

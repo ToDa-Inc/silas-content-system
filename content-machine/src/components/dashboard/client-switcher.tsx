@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Loader2, Users } from "lucide-react";
 import { AppSelect } from "@/components/ui/app-select";
 import { useToast } from "@/components/ui/toast-provider";
+import { invalidateApiContext } from "@/lib/api-client";
 
 export type ClientOption = { slug: string; name: string };
 
@@ -38,6 +39,7 @@ export function ClientSwitcher({ clients, activeSlug, orgLabel }: Props) {
         show("Couldn’t switch creator — try again.", "error");
         return;
       }
+      invalidateApiContext();
       router.refresh();
     } finally {
       setBusy(false);

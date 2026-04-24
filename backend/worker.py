@@ -27,6 +27,7 @@ from jobs.keyword_reel_similarity import run_keyword_reel_similarity
 from jobs.niche_reel_scrape import run_niche_reel_scrape
 from jobs.reel_analyze_url import run_reel_analyze_bulk, run_reel_analyze_url
 from jobs.scraped_reels_refresh import run_scraped_reels_refresh
+from services.video_render import run_video_render_job
 
 
 def _fail_job(settings: Settings, job_id: str, message: str) -> None:
@@ -145,6 +146,10 @@ def _process_job_sync(settings: Settings, job: Dict[str, Any]) -> None:
         run_scraped_reels_refresh(settings, job)
     elif jt == "daily_intelligence_tick":
         run_daily_intelligence_tick(settings, job)
+    elif jt == "video_render":
+        jid = str(job.get("id") or "").strip()
+        if jid:
+            run_video_render_job(settings, jid)
     else:
         _fail_job(settings, job["id"], f"Unknown job_type: {jt}")
 

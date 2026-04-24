@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import math
 import os
 import tempfile
 import uuid
@@ -13,13 +14,13 @@ from datetime import datetime, timezone
 from typing import Annotated, Any, Dict, List, Optional
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 from supabase import Client
 
 from core.config import Settings, get_settings
-from core.database import get_supabase, get_supabase_for_settings
+from core.database import get_supabase
 from core.deps import require_org_access, resolve_client_id
 from core.id_generator import generate_job_id
 from models.generation import (
@@ -27,6 +28,8 @@ from models.generation import (
     GenerateCarouselSlidesBody,
     GenerationSessionOut,
     PatchCarouselSlidesBody,
+    PatchVideoSpecBody,
+    PromptVideoSpecBody,
     RegenerateCarouselSlideBody,
 )
 from routers.generation import _load_session, _now_iso, _row_to_out
@@ -38,7 +41,18 @@ from services.image_generation import (
     generate_slide_image,
 )
 from services.job_queue import has_active_job
-from services.video_render import RENDERS_BUCKET, fail_video_render_job, run_video_render_job
+from services.video_render import RENDERS_BUCKET, run_video_render_job
+from services.video_spec_defaults import (
+    finalize_spec_for_render,
+    fit_spec_blocks_to_broll,
+    hydrate_video_spec_broll_duration_if_needed,
+    merge_primary_hook_into_hooks_array,
+    persist_finalize_spec,
+    video_spec_to_text_blocks,
+)
+from services.video_spec_edit import propose_spec_patch_with_retry
+from services.video_spec_patch import apply_ops_to_spec
+from services.video_spec_timeline import ffprobe_duration_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +61,29 @@ router = APIRouter(prefix="/api/v1", tags=["creation"])
 VISUAL_FORMATS = frozenset({"text_overlay", "b_roll_reel", "carousel"})
 CREATE_ELIGIBLE_STATUSES = frozenset({"content_ready", "approved"})
 BROLL_BUCKET = "broll"
+
+
+def _client_brand_row(supabase: Client, client_id: str) -> Optional[Dict[str, Any]]:
+    """Slice for video_spec; `{}` when `brand_theme` column missing (run `phase21_client_brand.sql`)."""
+    try:
+        c = (
+            supabase.table("clients")
+            .select("brand_theme")
+            .eq("id", client_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        msg = str(e)
+        arg0 = e.args[0] if getattr(e, "args", None) else None
+        if isinstance(arg0, dict):
+            msg = f"{msg} {arg0.get('message', '')} {arg0.get('code', '')}"
+        if "brand_theme" in msg and ("42703" in msg or "does not exist" in msg):
+            return {}
+        raise
+    if c.data:
+        return dict(c.data[0])
+    return None
 
 
 def _public_object_url(supabase_url: str, bucket: str, path: str) -> str:
@@ -193,7 +230,166 @@ def patch_create_session(
         raise HTTPException(status_code=400, detail="No fields to update")
     patch["updated_at"] = _now_iso()
     supabase.table("generation_sessions").update(patch).eq("id", session_id).execute()
+    out = _load_session(supabase, client_id, session_id)
+    if patch.get("text_blocks") is not None and not _is_carousel_session(out):
+        if _effective_create_format_key(out) in ("text_overlay", "b_roll_reel"):
+            persist_finalize_spec(
+                supabase,
+                session_id=session_id,
+                client_id=client_id,
+                session_row=dict(out),
+                client_row=_client_brand_row(supabase, client_id),
+                updated_at_iso=_now_iso(),
+            )
+            out = _load_session(supabase, client_id, session_id)
+    return _row_to_out(out)
+
+
+@router.patch("/clients/{slug}/create/sessions/{session_id}/spec", response_model=GenerationSessionOut)
+def patch_session_video_spec(
+    slug: str,
+    session_id: str,
+    body: PatchVideoSpecBody,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+) -> dict:
+    """Apply JSON Patch to ``video_spec``; mirrors overlay lines into ``text_blocks``."""
+    _ = slug
+    row = _load_session(supabase, client_id, session_id)
+    if not _session_eligible_for_create(row) or _is_carousel_session(row):
+        raise HTTPException(status_code=400, detail="Video spec only applies to text_overlay / b_roll_reel sessions")
+    if _effective_create_format_key(row) not in ("text_overlay", "b_roll_reel"):
+        raise HTTPException(status_code=400, detail="Video spec only applies to MP4 visual formats")
+    raw = row.get("video_spec")
+    base: Dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
+    if not base:
+        try:
+            spec0 = finalize_spec_for_render(
+                dict(row),
+                client_row=_client_brand_row(supabase, client_id),
+                supabase=supabase,
+            )
+            base = spec0.model_dump(mode="json")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+    try:
+        new_spec = apply_ops_to_spec(base, body.ops)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    new_spec = hydrate_video_spec_broll_duration_if_needed(new_spec, dict(row), supabase)
+    tb = video_spec_to_text_blocks(new_spec)
+    now = _now_iso()
+    hook_sync = merge_primary_hook_into_hooks_array(row.get("hooks"), str(new_spec.hook.text or ""))
+    update_payload: Dict[str, Any] = {
+        "video_spec": new_spec.model_dump(mode="json"),
+        "text_blocks": tb,
+        "updated_at": now,
+    }
+    if hook_sync is not None:
+        update_payload["hooks"] = hook_sync
+    supabase.table("generation_sessions").update(update_payload).eq("id", session_id).execute()
     return _row_to_out(_load_session(supabase, client_id, session_id))
+
+
+@router.post("/clients/{slug}/create/sessions/{session_id}/spec/fit-to-broll", response_model=GenerationSessionOut)
+def post_fit_session_spec_to_broll(
+    slug: str,
+    session_id: str,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+) -> dict:
+    """Shrink block durations so the timeline fits ``background.durationSec`` (hook + gaps unchanged)."""
+    _ = slug
+    row = _load_session(supabase, client_id, session_id)
+    if not _session_eligible_for_create(row) or _is_carousel_session(row):
+        raise HTTPException(status_code=400, detail="Video spec only applies to text_overlay / b_roll_reel sessions")
+    if _effective_create_format_key(row) not in ("text_overlay", "b_roll_reel"):
+        raise HTTPException(status_code=400, detail="Video spec only applies to MP4 visual formats")
+    try:
+        spec0 = finalize_spec_for_render(
+            dict(row),
+            client_row=_client_brand_row(supabase, client_id),
+            supabase=supabase,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    try:
+        new_spec = fit_spec_blocks_to_broll(spec0)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    tb = video_spec_to_text_blocks(new_spec)
+    now = _now_iso()
+    hook_sync = merge_primary_hook_into_hooks_array(row.get("hooks"), str(new_spec.hook.text or ""))
+    update_payload: Dict[str, Any] = {
+        "video_spec": new_spec.model_dump(mode="json"),
+        "text_blocks": tb,
+        "updated_at": now,
+    }
+    if hook_sync is not None:
+        update_payload["hooks"] = hook_sync
+    supabase.table("generation_sessions").update(update_payload).eq("id", session_id).execute()
+    return _row_to_out(_load_session(supabase, client_id, session_id))
+
+
+@router.post("/clients/{slug}/create/sessions/{session_id}/spec/prompt-edit")
+def prompt_edit_session_video_spec(
+    slug: str,
+    session_id: str,
+    body: PromptVideoSpecBody,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Dict[str, Any]:
+    """LLM proposes JSON Patch ops + validated preview spec (not persisted until PATCH /spec)."""
+    _ = slug
+    if not settings.openrouter_api_key:
+        raise HTTPException(status_code=503, detail="OPENROUTER_API_KEY not configured")
+    row = _load_session(supabase, client_id, session_id)
+    if not _session_eligible_for_create(row) or _is_carousel_session(row):
+        raise HTTPException(status_code=400, detail="Video spec only applies to text_overlay / b_roll_reel sessions")
+    if _effective_create_format_key(row) not in ("text_overlay", "b_roll_reel"):
+        raise HTTPException(status_code=400, detail="Video spec only applies to MP4 visual formats")
+    raw = row.get("video_spec")
+    base: Dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
+    if not base:
+        try:
+            spec0 = finalize_spec_for_render(
+                dict(row),
+                client_row=_client_brand_row(supabase, client_id),
+                supabase=supabase,
+            )
+            base = spec0.model_dump(mode="json")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+    lang = "de"
+    try:
+        cr = (
+            supabase.table("clients")
+            .select("language")
+            .eq("id", client_id)
+            .limit(1)
+            .execute()
+        )
+        if cr.data and isinstance(cr.data[0], dict):
+            lang = str(cr.data[0].get("language") or "de").strip() or "de"
+    except Exception:
+        pass
+    ops, summary = propose_spec_patch_with_retry(
+        openrouter_key=settings.openrouter_api_key,
+        model=settings.openrouter_model,
+        current_spec=base,
+        instruction=body.instruction,
+        language=lang,
+    )
+    try:
+        preview = apply_ops_to_spec(base, ops)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Model patch invalid: {e}") from e
+    return {
+        "ops": ops,
+        "summary": summary,
+        "preview_spec": preview.model_dump(mode="json"),
+    }
 
 
 @router.post("/clients/{slug}/create/sessions/{session_id}/generate-background", response_model=GenerationSessionOut)
@@ -251,6 +447,15 @@ def generate_session_background(
             "updated_at": now,
         }
     ).eq("id", session_id).execute()
+    out = _load_session(supabase, client_id, session_id)
+    persist_finalize_spec(
+        supabase,
+        session_id=session_id,
+        client_id=client_id,
+        session_row=dict(out),
+        client_row=_client_brand_row(supabase, client_id),
+        updated_at_iso=_now_iso(),
+    )
     return _row_to_out(_load_session(supabase, client_id, session_id))
 
 
@@ -315,6 +520,15 @@ def set_session_broll(
             "updated_at": now,
         }
     ).eq("id", session_id).execute()
+    out = _load_session(supabase, client_id, session_id)
+    persist_finalize_spec(
+        supabase,
+        session_id=session_id,
+        client_id=client_id,
+        session_row=dict(out),
+        client_row=_client_brand_row(supabase, client_id),
+        updated_at_iso=_now_iso(),
+    )
     return _row_to_out(_load_session(supabase, client_id, session_id))
 
 
@@ -374,6 +588,15 @@ def set_session_background_image(
             "updated_at": now,
         }
     ).eq("id", session_id).execute()
+    out = _load_session(supabase, client_id, session_id)
+    persist_finalize_spec(
+        supabase,
+        session_id=session_id,
+        client_id=client_id,
+        session_row=dict(out),
+        client_row=_client_brand_row(supabase, client_id),
+        updated_at_iso=_now_iso(),
+    )
     return _row_to_out(_load_session(supabase, client_id, session_id))
 
 
@@ -381,11 +604,9 @@ def set_session_background_image(
 def queue_session_render(
     slug: str,
     session_id: str,
-    background_tasks: BackgroundTasks,
     org_id: Annotated[str, Depends(require_org_access)],
     client_id: Annotated[str, Depends(resolve_client_id)],
     supabase: Annotated[Client, Depends(get_supabase)],
-    settings: Annotated[Settings, Depends(get_settings)],
 ) -> Dict[str, Any]:
     _ = slug
     row = _load_session(supabase, client_id, session_id)
@@ -410,11 +631,16 @@ def queue_session_render(
     bg = str(row.get("background_url") or "").strip()
     if not bg:
         raise HTTPException(status_code=400, detail="Set a background (generate image or pick B-roll) first")
-    tb = row.get("text_blocks")
-    if not isinstance(tb, list) or not any(
-        isinstance(x, dict) and str(x.get("text") or "").strip() for x in tb
-    ):
-        raise HTTPException(status_code=400, detail="Session needs non-empty text_blocks")
+    try:
+        fin = finalize_spec_for_render(
+            dict(row),
+            client_row=_client_brand_row(supabase, client_id),
+            supabase=supabase,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not fin.blocks:
+        raise HTTPException(status_code=400, detail="Session needs non-empty overlay blocks (text_blocks)")
 
     job_id = generate_job_id()
     now = datetime.now(timezone.utc).isoformat()
@@ -425,8 +651,8 @@ def queue_session_render(
             "client_id": client_id,
             "job_type": "video_render",
             "payload": {"session_id": session_id},
-            "status": "running",
-            "started_at": now,
+            "status": "queued",
+            "priority": 25,
         }
     ).execute()
 
@@ -434,22 +660,7 @@ def queue_session_render(
         {"render_status": "rendering", "render_error": None, "updated_at": now}
     ).eq("id", session_id).execute()
 
-    background_tasks.add_task(_background_video_render, job_id)
     return {"job_id": job_id, "status": "queued"}
-
-
-def _background_video_render(job_id: str) -> None:
-    settings = get_settings()
-    try:
-        run_video_render_job(settings, job_id)
-    except Exception as e:
-        logger.exception("video_render background task crashed")
-        supabase = get_supabase_for_settings(settings)
-        res = supabase.table("background_jobs").select("payload").eq("id", job_id).limit(1).execute()
-        sid = ""
-        if res.data and isinstance(res.data[0].get("payload"), dict):
-            sid = str(res.data[0]["payload"].get("session_id") or "")
-        fail_video_render_job(supabase, job_id, sid, str(e))
 
 
 # ── Carousel slides ───────────────────────────────────────────────────────────
@@ -859,6 +1070,9 @@ async def upload_broll_clip(
 
     url = _public_object_url(settings.supabase_url, BROLL_BUCKET, path)
 
+    dur_raw = ffprobe_duration_seconds(data)
+    duration_s = int(math.ceil(dur_raw)) if dur_raw is not None and dur_raw > 0 else None
+
     # Extract thumbnail — best-effort, never fails the upload
     thumb_url: Optional[str] = None
     thumb_bytes = await _extract_broll_thumbnail(data)
@@ -884,6 +1098,7 @@ async def upload_broll_clip(
                 "file_url": url,
                 "thumbnail_url": thumb_url,
                 "label": (label or "").strip()[:200] or None,
+                "duration_s": duration_s,
                 "created_at": now,
             }
         )

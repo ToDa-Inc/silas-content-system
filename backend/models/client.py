@@ -62,5 +62,20 @@ class ClientOut(BaseModel):
     products: dict
     client_context: Optional[dict] = None
     client_dna: Optional[dict] = None
+    brand_theme: Optional[dict] = None
     is_active: bool
     outlier_ratio_threshold: Optional[float] = None
+
+
+class BrandThemePatch(BaseModel):
+    """PATCH …/clients/{slug}/brand-theme — partial update of JSON brand_theme."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    primary: Optional[str] = Field(default=None, max_length=32)
+    accent: Optional[str] = Field(default=None, max_length=32)
+    defaultThemeId: Optional[str] = Field(
+        default=None,
+        max_length=32,
+        description="bold-modern | editorial | casual-hand | clean-minimal",
+    )

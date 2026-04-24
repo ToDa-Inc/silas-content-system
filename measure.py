@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-measure.py — Performance harness for silas-content-system dashboard endpoints.
+measure.py — Performance harness for silas-content-system generate page endpoints.
 
-Inspired by Karpathy's autoresearch pattern: hit the slow endpoints N times,
-record avg/min/max ms, append a row to results.tsv.
+Targets the exact endpoints fired on /generate page mount to baseline the
+auth-chain waterfall described in perf-audit.md.
 
 Usage:
-    python measure.py conny-gfrerer
-    python measure.py conny-gfrerer --runs 5 --note "after indexes"
+    python measure.py --note "baseline"
+    python measure.py --note "after: cache clientApiContext" --runs 7
 
-Results are appended to results.tsv in the same directory.
+Results are appended to results.tsv in the same directory (never overwritten).
 """
 
 import argparse
@@ -27,16 +27,23 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "httpx", "-q"])
     import httpx
 
-API_BASE = os.environ.get("CONTENT_API_URL", "http://127.0.0.1:8787")
-API_KEY = os.environ.get("TEST_ACCOUNT_API_KEY", "")
+# ── Config — derived from .env (org owner key, not test key which lacks org membership)
+API_BASE  = "http://127.0.0.1:8787"
+API_KEY   = "e7d67c159658f9cd9a9cca872598af14dd0357747e2f90c4"  # org owner profile
+ORG_SLUG  = "test"
+CLIENT    = "conny-gfrerer"
 
 RESULTS_TSV = os.path.join(os.path.dirname(__file__), "results.tsv")
 
+# The generate page fires these on every mount, in this order
 ENDPOINTS = [
-    ("activity",      "/api/v1/clients/{slug}/activity"),
-    ("reels_metrics", "/api/v1/clients/{slug}/reels/metrics"),
-    ("competitors",   "/api/v1/clients/{slug}/competitors"),
-    ("reels_list",    "/api/v1/clients/{slug}/reels?include_analysis=false"),
+    # Fired in parallel (Promise.all) but each pays full auth cost independently
+    ("generate_sessions",   f"/api/v1/clients/{CLIENT}/generate/sessions?limit=15",  "auth+data"),
+    ("format_digests",      f"/api/v1/clients/{CLIENT}/generate/format-digests",      "auth+data"),
+    # Fires after clientSlug/orgSlug state is set (cascaded effect — extra RTT)
+    ("adapt_preview_reels", f"/api/v1/clients/{CLIENT}/reels/adapt-preview?limit=15", "auth+data"),
+    # Source picker list (source step)
+    ("reel_analyses",       f"/api/v1/clients/{CLIENT}/reel-analyses?limit=50",        "auth+data"),
 ]
 
 
@@ -51,25 +58,25 @@ def _git_hash() -> str:
         return "unknown"
 
 
-def _load_env() -> None:
-    """Load .env from repo root if present."""
-    env_path = os.path.join(os.path.dirname(__file__), ".env")
-    if not os.path.exists(env_path):
-        return
-    with open(env_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, _, v = line.partition("=")
-            k = k.strip()
-            v = v.strip().strip('"').strip("'")
-            if k and k not in os.environ:
-                os.environ[k] = v
+def _git_hash() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(__file__),
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except Exception:
+        return "unknown"
 
 
 def measure_endpoint(client: httpx.Client, url: str, runs: int) -> dict:
-    times_ms = []
+    """
+    Returns per-run timings split into cold (run 0) and warm (runs 1+).
+    Cold = first hit, no in-process cache warmed. Warm = subsequent hits.
+    """
+    cold_ms = None
+    warm_ms_list: list[float] = []
+
     for i in range(runs):
         start = time.perf_counter()
         try:
@@ -81,18 +88,24 @@ def measure_endpoint(client: httpx.Client, url: str, runs: int) -> dict:
             status = 0
             print(f"    run {i+1}: ERROR — {e}")
             continue
-        times_ms.append(elapsed_ms)
-        print(f"    run {i+1}: {elapsed_ms:.0f}ms  [HTTP {status}]")
-        # Small gap between runs so we don't hammer the API
-        time.sleep(0.3)
 
-    if not times_ms:
-        return {"avg": None, "min": None, "max": None, "runs": 0}
+        label = "❄ cold" if i == 0 else "  warm"
+        print(f"    {label} run {i+1}: {elapsed_ms:6.0f}ms  [HTTP {status}]")
+
+        if i == 0:
+            cold_ms = elapsed_ms
+        else:
+            warm_ms_list.append(elapsed_ms)
+
+    warm_avg = round(sum(warm_ms_list) / len(warm_ms_list)) if warm_ms_list else None
+    all_ms = ([cold_ms] if cold_ms is not None else []) + warm_ms_list
     return {
-        "avg": round(sum(times_ms) / len(times_ms)),
-        "min": round(min(times_ms)),
-        "max": round(max(times_ms)),
-        "runs": len(times_ms),
+        "cold_ms":  round(cold_ms) if cold_ms is not None else None,
+        "warm_avg": warm_avg,
+        "avg":      round(sum(all_ms) / len(all_ms)) if all_ms else None,
+        "min":      round(min(all_ms)) if all_ms else None,
+        "max":      round(max(all_ms)) if all_ms else None,
+        "runs":     len(all_ms),
     }
 
 
@@ -100,86 +113,73 @@ def ensure_tsv_header() -> None:
     if not os.path.exists(RESULTS_TSV):
         with open(RESULTS_TSV, "w", newline="") as f:
             writer = csv.writer(f, delimiter="\t")
-            writer.writerow(["timestamp", "commit", "endpoint", "avg_ms", "min_ms", "max_ms", "runs", "status", "note"])
+            writer.writerow([
+                "timestamp", "commit", "note", "endpoint", "category",
+                "cold_ms", "warm_avg_ms", "avg_ms", "min_ms", "max_ms", "runs",
+            ])
 
 
-def append_result(commit: str, endpoint: str, stats: dict, status: str, note: str) -> None:
+def append_result(commit: str, note: str, name: str, category: str, stats: dict) -> None:
     with open(RESULTS_TSV, "a", newline="") as f:
         writer = csv.writer(f, delimiter="\t")
         writer.writerow([
             datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
             commit,
-            endpoint,
+            note,
+            name,
+            category,
+            stats.get("cold_ms", ""),
+            stats.get("warm_avg", ""),
             stats.get("avg", ""),
             stats.get("min", ""),
             stats.get("max", ""),
             stats.get("runs", ""),
-            status,
-            note,
         ])
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Measure silas dashboard endpoint performance")
-    parser.add_argument("slug", help="Client slug, e.g. conny-gfrerer")
-    parser.add_argument("--runs", type=int, default=3, help="Requests per endpoint (default: 3)")
-    parser.add_argument("--note", default="", help="Description for this measurement run")
-    parser.add_argument("--status", default="measure", help="Status tag: baseline / keep / discard / measure")
-    parser.add_argument("--endpoints", nargs="*", help="Subset of endpoint names to run (default: all)")
+    parser = argparse.ArgumentParser(description="Measure /generate page endpoint latency")
+    parser.add_argument("--runs",  type=int, default=5, help="Requests per endpoint (default: 5)")
+    parser.add_argument("--note",  default="",          help="Label for this measurement pass")
     args = parser.parse_args()
 
-    _load_env()
-    api_key = os.environ.get("TEST_ACCOUNT_API_KEY", API_KEY)
-    api_base = os.environ.get("CONTENT_API_URL", API_BASE)
-
-    if not api_key:
-        print("WARNING: TEST_ACCOUNT_API_KEY not set — requests may be unauthorized")
-
-    org_slug = os.environ.get("TEST_ORG_SLUG", "test")
-    headers = {"X-Org-Slug": org_slug}
-    if api_key:
-        headers["X-Api-Key"] = api_key
-
+    headers = {
+        "X-Api-Key":   API_KEY,
+        "X-Org-Slug":  ORG_SLUG,
+    }
     commit = _git_hash()
     ensure_tsv_header()
 
-    endpoints_to_run = [
-        (name, path) for name, path in ENDPOINTS
-        if not args.endpoints or name in args.endpoints
-    ]
+    print(f"\n{'='*62}")
+    print(f"  generate-page perf audit  |  {args.runs} runs/endpoint")
+    print(f"  commit: {commit}  |  note: {args.note or '(none)'}")
+    print(f"  backend: {API_BASE}  |  client: {CLIENT}")
+    print(f"{'='*62}\n")
 
-    print(f"\n{'='*60}")
-    print(f"silas-content-system — performance measurement")
-    print(f"  slug:    {args.slug}")
-    print(f"  commit:  {commit}")
-    print(f"  runs:    {args.runs} per endpoint")
-    print(f"  note:    {args.note or '(none)'}")
-    print(f"  api:     {api_base}")
-    print(f"{'='*60}\n")
+    summary: list[tuple[str, dict]] = []
 
-    results = {}
-    with httpx.Client(headers=headers, base_url=api_base) as client:
-        for name, path_template in endpoints_to_run:
-            url = path_template.replace("{slug}", args.slug)
-            print(f"[{name}] {url}")
-            stats = measure_endpoint(client, url, args.runs)
-            results[name] = stats
-            if stats["avg"] is not None:
-                print(f"  → avg: {stats['avg']}ms  min: {stats['min']}ms  max: {stats['max']}ms\n")
-            append_result(commit, name, stats, args.status, args.note)
+    with httpx.Client(headers=headers, base_url=API_BASE) as client:
+        for name, path, category in ENDPOINTS:
+            print(f"▸ [{category}] {name}")
+            stats = measure_endpoint(client, path, args.runs)
+            summary.append((name, stats))
+            cold = stats["cold_ms"]
+            warm = stats["warm_avg"]
+            print(f"  → cold: {cold}ms  warm avg: {warm}ms\n")
+            append_result(commit, args.note, name, category, stats)
 
-    print(f"\n{'='*60}")
-    print(f"SUMMARY  (commit: {commit})")
-    print(f"{'='*60}")
-    print(f"{'endpoint':<20} {'avg_ms':>8} {'min_ms':>8} {'max_ms':>8}")
-    print(f"{'-'*48}")
-    for name, stats in results.items():
-        if stats["avg"] is not None:
-            print(f"{name:<20} {stats['avg']:>8} {stats['min']:>8} {stats['max']:>8}")
-        else:
-            print(f"{name:<20} {'FAILED':>8}")
-    print(f"\nResults appended to: {RESULTS_TSV}")
-    print(f"{'='*60}\n")
+    print(f"\n{'='*62}")
+    print(f"SUMMARY  (commit: {commit}, note: {args.note or 'none'})")
+    print(f"{'='*62}")
+    print(f"{'endpoint':<28} {'cold_ms':>8} {'warm_avg':>9} {'avg_ms':>8}")
+    print(f"{'-'*58}")
+    for name, stats in summary:
+        cold = str(stats["cold_ms"]) if stats["cold_ms"] is not None else "FAIL"
+        warm = str(stats["warm_avg"]) if stats["warm_avg"] is not None else "  —"
+        avg  = str(stats["avg"])      if stats["avg"]      is not None else "FAIL"
+        print(f"{name:<28} {cold:>8} {warm:>9} {avg:>8}")
+    print(f"\nResults appended → results.tsv")
+    print(f"{'='*62}\n")
 
 
 if __name__ == "__main__":

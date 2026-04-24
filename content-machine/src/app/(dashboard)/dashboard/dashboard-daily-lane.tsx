@@ -82,8 +82,14 @@ function fetchLane(
     : fetchDashboardCompetitorWinsClient(clientSlug, orgSlug, days);
 }
 
-function isoDaysAgo(days: number): string {
-  const d = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+/**
+ * Start of the UTC calendar day `days` before today (00:00:00.000Z).
+ * Avoids SSR/hydration mismatches from `Date.now()` drifting by seconds between server and client.
+ */
+function isoUtcStartOfDayDaysAgo(days: number): string {
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCDate(d.getUTCDate() - days);
   return d.toISOString();
 }
 
@@ -268,7 +274,7 @@ export function FreshFromNiche({ reels, ...rest }: WrapperProps) {
         badgeFor: (reel) => formatViews(reel.views),
         reelsPageHref: (days) =>
           `/intelligence/reels?source=keyword_similarity&posted_after=${encodeURIComponent(
-            isoDaysAgo(days),
+            isoUtcStartOfDayDaysAgo(days),
           )}&sort_by=views&sort_dir=desc`,
       }}
     />
@@ -295,7 +301,7 @@ export function CompetitorWins({ reels, ...rest }: WrapperProps) {
         },
         reelsPageHref: (days) =>
           `/intelligence/reels?source=profile&posted_after=${encodeURIComponent(
-            isoDaysAgo(days),
+            isoUtcStartOfDayDaysAgo(days),
           )}&sort_by=views&sort_dir=desc`,
       }}
     />

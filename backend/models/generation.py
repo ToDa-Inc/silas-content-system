@@ -130,6 +130,20 @@ class PatchCarouselSlidesBody(BaseModel):
     slides: List[CarouselSlide] = Field(..., min_length=1, max_length=10)
 
 
+class PatchVideoSpecBody(BaseModel):
+    """PATCH …/create/sessions/{id}/spec — RFC 6902 JSON Patch on video_spec."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    ops: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class PromptVideoSpecBody(BaseModel):
+    """POST …/create/sessions/{id}/spec/prompt-edit — natural language → JSON Patch preview."""
+
+    instruction: str = Field(..., min_length=3, max_length=4000)
+
+
 class GenerationSessionOut(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -151,6 +165,7 @@ class GenerationSessionOut(BaseModel):
     hashtags: Optional[List[str]] = None
     story_variants: Optional[List[str]] = None
     text_blocks: Optional[List[Dict[str, Any]]] = None
+    video_spec: Optional[Dict[str, Any]] = None
     cover_text_options: Optional[List[str]] = None
     background_type: Optional[str] = None
     broll_clip_id: Optional[str] = None
@@ -159,6 +174,7 @@ class GenerationSessionOut(BaseModel):
     rendered_video_url: Optional[str] = None
     render_status: Optional[str] = None
     render_error: Optional[str] = None
+    render_progress_pct: Optional[int] = None
     thumbnail_url: Optional[str] = None
     carousel_slides: Optional[List[CarouselSlide]] = None
     status: str

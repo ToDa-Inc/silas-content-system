@@ -20,6 +20,9 @@ import {
 } from "lucide-react";
 import { useToast } from "@/components/ui/toast-provider";
 import { PostPreviewModal } from "@/components/post-preview-modal";
+import { VideoSpecPreview } from "@/components/video-spec-preview";
+import { LayoutSlider } from "@/components/layout-slider";
+import { AppSelect } from "@/components/ui/app-select";
 import {
   brollDelete,
   brollList,
@@ -39,15 +42,38 @@ import {
   generationRegenerate,
   generationRegenerateCovers,
   patchCreateSession,
+  patchSessionVideoSpec,
+  postFitSessionSpecToBroll,
+  promptEditSessionVideoSpec,
   type BrollClipRow,
   type CarouselSlide,
   type ClientImageRow,
   type GenerationSession,
   type TextBlock,
 } from "@/lib/api-client";
+import {
+  buildPreviewSpecFromSession,
+  DEFAULT_LAYOUT,
+  parseVideoSpec,
+  sessionPrimaryHookText,
+  type VideoSpec,
+  type VideoSpecLayout,
+} from "@/lib/video-spec";
+import {
+  autoBlockDurationSec,
+  autoHookDurationSec,
+  computeTimingChange,
+  segmentDurationRange,
+  segmentDurationSec,
+  segmentExcerpt,
+  segmentLabel,
+  type CascadeMode,
+} from "@/lib/video-spec-timing";
+import { effectivePausesSec, relayoutTimeline } from "@/lib/video-spec-timeline";
 
-const POLL_MS = 4000;
-const MAX_POLLS = 90;
+/** Remotion renders often exceed 1–3 min; polling must outlast the job and prefer session row state. */
+const VIDEO_RENDER_POLL_INTERVAL_MS = 2500;
+const VIDEO_RENDER_MAX_POLLS = 240;
 
 function canonicalFormatKey(k: string | null | undefined): string | null {
   if (!k?.trim()) return null;
@@ -133,6 +159,7 @@ function BrollLibrarySection({
   sessionBrollClipId,
   showClipBanner,
   clipBannerUrl,
+  variant = "panel",
   onPick,
   onDelete,
 }: {
@@ -143,99 +170,129 @@ function BrollLibrarySection({
   sessionBrollClipId?: string | null;
   showClipBanner: boolean;
   clipBannerUrl?: string | null;
+  /** `strip`: horizontal row under the preview timeline — saves vertical space in the edit column. */
+  variant?: "panel" | "strip";
   onPick: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
+  const isStrip = variant === "strip";
+
+  const clipCards = clips.map((c) => {
+    const isActive = selectedClipId === c.id || sessionBrollClipId === c.id;
+    return (
+      <div
+        key={c.id}
+        className={`group relative flex flex-col gap-1.5 rounded-xl border transition-colors ${
+          isStrip ? "min-w-[104px] max-w-[118px] shrink-0 p-2" : "p-3"
+        } ${
+          isActive
+            ? "border-amber-500/45 bg-amber-500/10"
+            : "border-app-divider hover:border-white/20"
+        }`}
+      >
+        <div className="flex aspect-video items-center justify-center overflow-hidden rounded-lg bg-black/30">
+          {c.thumbnail_url ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={c.thumbnail_url} alt="" className="h-full w-full object-cover" />
+          ) : (
+            <Film className={`text-app-fg-subtle opacity-40 ${isStrip ? "h-4 w-4" : "h-5 w-5"}`} />
+          )}
+        </div>
+        <p className={`line-clamp-1 font-medium text-app-fg ${isStrip ? "text-[10px]" : "text-[11px]"}`}>
+          {c.label || `Clip ${c.id.slice(0, 6)}`}
+        </p>
+        <div className="flex gap-1">
+          <button
+            type="button"
+            disabled={loading || isActive}
+            onClick={() => void onPick(c.id)}
+            className={`flex-1 rounded-lg bg-amber-500/15 font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-40 ${
+              isStrip ? "py-0.5 text-[9px]" : "py-1 text-[10px]"
+            }`}
+          >
+            {isActive ? "Active" : "Use"}
+          </button>
+          <button
+            type="button"
+            disabled={deletingClipId === c.id}
+            onClick={() => void onDelete(c.id)}
+            className="rounded-lg p-1 text-app-fg-subtle hover:bg-red-500/10 hover:text-red-400"
+            aria-label="Delete clip"
+          >
+            {deletingClipId === c.id ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Trash2 className="h-3.5 w-3.5" />
+            )}
+          </button>
+        </div>
+      </div>
+    );
+  });
+
   return (
     <div>
       {showClipBanner && clipBannerUrl ? (
-        <div className="mb-4 flex items-center gap-3 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.07] px-4 py-3">
-          <Film className="h-4 w-4 shrink-0 text-emerald-500" />
+        <div
+          className={`flex items-center gap-3 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.07] ${
+            isStrip ? "mb-2 px-3 py-2" : "mb-4 px-4 py-3"
+          }`}
+        >
+          <Film className={`shrink-0 text-emerald-500 ${isStrip ? "h-3.5 w-3.5" : "h-4 w-4"}`} />
           <div className="min-w-0">
-            <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">B-roll set</p>
-            <p className="truncate text-[11px] text-app-fg-muted">{clipBannerUrl}</p>
+            <p
+              className={`font-semibold text-emerald-700 dark:text-emerald-300 ${
+                isStrip ? "text-[10px]" : "text-xs"
+              }`}
+            >
+              B-roll set
+            </p>
+            {!isStrip ? <p className="truncate text-[11px] text-app-fg-muted">{clipBannerUrl}</p> : null}
           </div>
         </div>
       ) : null}
 
-      <div className="mb-3 flex items-center justify-between">
-        <p className="text-xs font-semibold text-app-fg">
-          B-roll library{" "}
+      <div className={`flex items-center justify-between ${isStrip ? "mb-1.5" : "mb-3"}`}>
+        <p className={`font-semibold text-app-fg ${isStrip ? "text-[10px]" : "text-xs"}`}>
+          {isStrip ? "Pick clip" : "B-roll library"}{" "}
           <span className="font-normal text-app-fg-muted">
-            ({clips.length} clip{clips.length !== 1 ? "s" : ""})
+            ({clips.length})
           </span>
         </p>
         <Link
           href="/media?tab=broll"
-          className="text-[11px] font-semibold text-sky-500 hover:underline dark:text-sky-400"
+          className={`shrink-0 font-semibold text-sky-500 hover:underline dark:text-sky-400 ${
+            isStrip ? "text-[10px]" : "text-[11px]"
+          }`}
         >
-          Manage in Media →
+          Media →
         </Link>
       </div>
 
       {clips.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-app-divider/60 py-8 text-center">
-          <Film className="mx-auto mb-2 h-6 w-6 text-app-fg-subtle opacity-30" />
-          <p className="mb-3 text-xs text-app-fg-subtle">No clips yet.</p>
+        <div
+          className={`rounded-xl border border-dashed border-app-divider/60 text-center ${
+            isStrip ? "py-4" : "py-8"
+          }`}
+        >
+          <Film className={`mx-auto text-app-fg-subtle opacity-30 ${isStrip ? "mb-1 h-5 w-5" : "mb-2 h-6 w-6"}`} />
+          <p className={`text-app-fg-subtle ${isStrip ? "mb-2 text-[10px]" : "mb-3 text-xs"}`}>No clips yet.</p>
           <Link
             href="/media?tab=broll"
-            className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25"
+            className={`inline-flex items-center gap-1.5 rounded-lg bg-amber-500/15 font-bold text-app-on-amber-title hover:bg-amber-500/25 ${
+              isStrip ? "px-2 py-1 text-[10px]" : "px-3 py-1.5 text-xs"
+            }`}
           >
             <Plus className="h-3 w-3" />
-            Upload B-roll
+            Upload
           </Link>
         </div>
-      ) : (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-          {clips.map((c) => {
-            const isActive = selectedClipId === c.id || sessionBrollClipId === c.id;
-            return (
-              <div
-                key={c.id}
-                className={`group relative flex flex-col gap-1.5 rounded-xl border p-3 transition-colors ${
-                  isActive
-                    ? "border-amber-500/45 bg-amber-500/10"
-                    : "border-app-divider hover:border-white/20"
-                }`}
-              >
-                <div className="flex aspect-video items-center justify-center overflow-hidden rounded-lg bg-black/30">
-                  {c.thumbnail_url ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={c.thumbnail_url} alt="" className="h-full w-full object-cover" />
-                  ) : (
-                    <Film className="h-5 w-5 text-app-fg-subtle opacity-40" />
-                  )}
-                </div>
-                <p className="line-clamp-1 text-[11px] font-medium text-app-fg">
-                  {c.label || `Clip ${c.id.slice(0, 6)}`}
-                </p>
-                <div className="flex gap-1">
-                  <button
-                    type="button"
-                    disabled={loading || isActive}
-                    onClick={() => void onPick(c.id)}
-                    className="flex-1 rounded-lg bg-amber-500/15 py-1 text-[10px] font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-40"
-                  >
-                    {isActive ? "Active" : "Use clip"}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={deletingClipId === c.id}
-                    onClick={() => void onDelete(c.id)}
-                    className="rounded-lg p-1 text-app-fg-subtle hover:bg-red-500/10 hover:text-red-400"
-                    aria-label="Delete clip"
-                  >
-                    {deletingClipId === c.id ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Trash2 className="h-3.5 w-3.5" />
-                    )}
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+      ) : isStrip ? (
+        <div className="-mx-0.5 flex gap-2 overflow-x-auto px-0.5 pb-0.5 pt-0.5 [scrollbar-width:thin]">
+          {clipCards}
         </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{clipCards}</div>
       )}
     </div>
   );
@@ -980,6 +1037,47 @@ export function VideoCreateWorkspace({
    *  for short captions, even though users still wanted a single "see the whole
    *  post" surface with the playable video next to it). */
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [safeZonePreview, setSafeZonePreview] = useState(false);
+  const [refineVideoPrompt, setRefineVideoPrompt] = useState("");
+  /** AI refine is the only spec operation that should block the UI — it's a multi-step
+   *  LLM round-trip the user shouldn't double-fire. Template / theme / layout commits
+   *  are tracked separately via per-field optimistic state below. */
+  const [aiRefineBusy, setAiRefineBusy] = useState(false);
+  /** Optimistic overrides for template/theme so the active state flips on click,
+   *  before the PATCH round-trips. Cleared on success (server-state wins) or failure. */
+  const [pendingTemplate, setPendingTemplate] = useState<VideoSpec["templateId"] | null>(null);
+  const [pendingTheme, setPendingTheme] = useState<VideoSpec["themeId"] | null>(null);
+  /** Counter of in-flight spec PATCHes — drives the small "Saving…" pill without
+   *  disabling every control in the panel. */
+  const [specInFlight, setSpecInFlight] = useState(0);
+  /** Monotonic request id; applySession only runs for the *latest* response so a
+   *  slow PATCH can't clobber state from a faster, more recent one. */
+  const specReqIdRef = useRef(0);
+  /** Timeline-strip selection: which segment is currently being edited in the
+   *  Timing inspector. "hook" or a block id; defaults to the hook on every new
+   *  session (most natural starting point — "what's my opener?"). */
+  const [selectedSegmentId, setSelectedSegmentId] = useState<string>("hook");
+  /** Live duration draft while the slider is being dragged. Same pattern as
+   *  `layoutDraft` — flushes optimistically into `livePreviewSpec`, commits on
+   *  release. `null` = not currently dragging; preview reflects saved spec. */
+  const [timingDraft, setTimingDraft] = useState<{ id: string; durationSec: number } | null>(null);
+  /** In-flight edit for a single transition: pause before block `idx` (0 = after hook). */
+  const [pauseDraft, setPauseDraft] = useState<{ idx: number; sec: number } | null>(null);
+  /** Which inter-beat gap the compact Timing panel is editing (dropdown). */
+  const [selectedGapIdx, setSelectedGapIdx] = useState(0);
+  /** Cascade behavior on duration changes. Persisted to localStorage so the
+   *  user's preference (most pick "push" once and never look back) survives
+   *  reloads. */
+  const [cascadeMode, setCascadeMode] = useState<CascadeMode>("push");
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const v = window.localStorage.getItem("silas:cascadeMode");
+    if (v === "push" || v === "compress") setCascadeMode(v);
+  }, []);
+  const setCascadeModePersisted = useCallback((m: CascadeMode) => {
+    setCascadeMode(m);
+    if (typeof window !== "undefined") window.localStorage.setItem("silas:cascadeMode", m);
+  }, []);
   const isTextOverlay = fk === "text_overlay";
   const isCarousel = fk === "carousel";
   const isBroll = fk === "b_roll_reel";
@@ -1013,6 +1111,93 @@ export function VideoCreateWorkspace({
   const step2Done = Boolean(session?.background_url);
   const step3Done = session?.render_status === "done" || session?.render_status === "cleaned";
   const isRendering = session?.render_status === "rendering";
+
+  const previewVideoSpec = useMemo(() => {
+    if (!session) return null;
+    return parseVideoSpec(session.video_spec) ?? buildPreviewSpecFromSession(session);
+  }, [session]);
+
+  /** Must run every render (before any early return) — same order as backend
+   *  ``_session_hook_text``: hooks[0] → video_spec.hook → angle draft_hook. */
+  const primaryHookText = useMemo(
+    () =>
+      session
+        ? sessionPrimaryHookText({
+            hooks: session.hooks,
+            video_spec: session.video_spec,
+            angles: session.angles,
+            chosen_angle_index: session.chosen_angle_index ?? null,
+          })
+        : "",
+    [session],
+  );
+
+  /** Local optimistic state for layout sliders so dragging is lag-free.
+   *  Saved value (`previewVideoSpec.layout`) wins on every fresh fetch / non-layout
+   *  edit; we sync via a string key so a re-render after our own PATCH (returning
+   *  the same value) is a no-op and never clobbers a drag in progress. */
+  const sessionLayout: VideoSpecLayout = previewVideoSpec?.layout ?? DEFAULT_LAYOUT;
+  const [layoutDraft, setLayoutDraft] = useState<VideoSpecLayout>(sessionLayout);
+  const [layoutGuides, setLayoutGuides] = useState(false);
+  const layoutSyncKey = `${session?.id ?? ""}|${sessionLayout.verticalAnchor ?? "bottom"}|${sessionLayout.verticalOffset}|${sessionLayout.scale}|${sessionLayout.sidePadding}`;
+  useEffect(() => {
+    setLayoutDraft(sessionLayout);
+    // sessionLayout is included transitively via the key string; we re-sync only on actual saved changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutSyncKey]);
+
+  useEffect(() => {
+    const n = previewVideoSpec?.blocks?.length ?? 0;
+    if (n <= 0) return;
+    setSelectedGapIdx((i) => Math.min(Math.max(0, i), n - 1));
+  }, [session?.id, previewVideoSpec?.blocks?.length]);
+
+  /** Final spec rendered by the Player. Layered optimistic edits (template / theme /
+   *  layout / timing) win over the saved spec until the server confirms — keeps the
+   *  UI feeling instant without waiting on PATCH round-trips. Memoized on a
+   *  content-hash key so the Player's `inputProps` only gets a new identity when
+   *  *meaningful values* change (preventing redundant Remotion re-syncs that flash
+   *  the player). */
+  const livePreviewSpec = useMemo<VideoSpec | null>(() => {
+    if (!previewVideoSpec) return null;
+    const basePauses = effectivePausesSec(previewVideoSpec);
+    const pausesSec =
+      pauseDraft != null && pauseDraft.idx >= 0 && pauseDraft.idx < basePauses.length
+        ? basePauses.map((p, i) => (i === pauseDraft.idx ? pauseDraft.sec : p))
+        : basePauses;
+    const base: VideoSpec = {
+      ...previewVideoSpec,
+      templateId: pendingTemplate ?? previewVideoSpec.templateId,
+      themeId: pendingTheme ?? previewVideoSpec.themeId,
+      layout: layoutDraft,
+      pausesSec,
+    };
+    // Apply in-flight timing drag through the same cascade math the server will
+    // run — guarantees what the user sees during the drag matches what gets
+    // persisted on release.
+    const raw =
+      timingDraft != null
+        ? computeTimingChange(base, timingDraft.id, timingDraft.durationSec, cascadeMode).spec
+        : base;
+    const draggingTimingOrPause = pauseDraft != null || timingDraft != null;
+    return relayoutTimeline(raw, { applyClipCap: !draggingTimingOrPause });
+    // Depend on primitives, not object refs — avoids spurious recomputes when
+    // `previewVideoSpec` is reparsed but its content is unchanged.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    previewVideoSpec,
+    pendingTemplate,
+    pendingTheme,
+    layoutDraft.verticalAnchor,
+    layoutDraft.verticalOffset,
+    layoutDraft.scale,
+    layoutDraft.sidePadding,
+    pauseDraft?.idx,
+    pauseDraft?.sec,
+    timingDraft?.id,
+    timingDraft?.durationSec,
+    cascadeMode,
+  ]);
 
   const saveTextBlocks = useCallback(async () => {
     const cs = clientSlug.trim();
@@ -1138,34 +1323,74 @@ export function VideoCreateWorkspace({
     [clientSlug, orgSlug, selectedClipId, show],
   );
 
+  const refreshSession = useCallback(async () => {
+    const cs = clientSlug.trim();
+    const os = orgSlug.trim();
+    if (!cs || !os || !sessionId) {
+      return { ok: false as const, error: "Missing client or session" };
+    }
+    const s = await generationGetSession(cs, os, sessionId);
+    if (s.ok) applySession(s.data);
+    return s;
+  }, [applySession, clientSlug, orgSlug, sessionId]);
+
   const pollRenderJob = useCallback(
     async (jobId: string, sId: string) => {
       const cs = clientSlug.trim();
       const os = orgSlug.trim();
       if (!cs || !os) return;
-      for (let i = 0; i < MAX_POLLS; i++) {
-        await new Promise((r) => setTimeout(r, POLL_MS));
-        const jr = await fetchBackgroundJob(os, jobId);
-        if (!jr.ok) {
-          show(jr.error, "error");
-          return;
-        }
-        if (jr.data.status === "failed") {
-          show(jr.data.error_message || "Render failed.", "error");
-          const s = await generationGetSession(cs, os, sId);
-          if (s.ok) applySession(s.data);
-          return;
-        }
-        if (jr.data.status === "completed") {
-          const s = await generationGetSession(cs, os, sId);
-          if (s.ok) {
-            applySession(s.data);
+      for (let i = 0; i < VIDEO_RENDER_MAX_POLLS; i += 1) {
+        await new Promise((r) => setTimeout(r, VIDEO_RENDER_POLL_INTERVAL_MS));
+        const sPoll = await generationGetSession(cs, os, sId);
+        if (sPoll.ok) {
+          applySession(sPoll.data);
+          const rs = sPoll.data.render_status;
+          if (rs === "done" || rs === "cleaned") {
             show("Video ready — download below.", "success");
+            return;
           }
+          if (rs === "failed") {
+            show(sPoll.data.render_error || "Render failed.", "error");
+            return;
+          }
+        }
+        const jr = await fetchBackgroundJob(os, jobId);
+        if (jr.ok) {
+          const st = (jr.data.status || "").toLowerCase();
+          if (st === "failed") {
+            show(jr.data.error_message || "Render failed.", "error");
+            const s = await generationGetSession(cs, os, sId);
+            if (s.ok) applySession(s.data);
+            return;
+          }
+          if (st === "completed") {
+            const s = await generationGetSession(cs, os, sId);
+            if (s.ok) {
+              applySession(s.data);
+              show("Video ready — download below.", "success");
+            }
+            return;
+          }
+        }
+        // Job GET can fail transiently; session row (above) is still updated by the worker.
+      }
+      const sFinal = await generationGetSession(cs, os, sId);
+      if (sFinal.ok) {
+        applySession(sFinal.data);
+        const rs = sFinal.data.render_status;
+        if (rs === "done" || rs === "cleaned") {
+          show("Video ready — download below.", "success");
+          return;
+        }
+        if (rs === "failed") {
+          show(sFinal.data.render_error || "Render failed.", "error");
           return;
         }
       }
-      show("Render is taking longer than expected. Refresh later.", "error");
+      show(
+        "No render update after ~10 min. Try “Check status” or reload. If jobs stay queued, run the worker (`npm run dev:worker`) alongside the API.",
+        "default",
+      );
     },
     [applySession, clientSlug, orgSlug, show],
   );
@@ -1188,6 +1413,273 @@ export function VideoCreateWorkspace({
       setRenderBusy(false);
     }
   }, [clientSlug, orgSlug, session, show, pollRenderJob]);
+
+  const onPatchVideoTemplate = useCallback(
+    async (templateId: VideoSpec["templateId"]) => {
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!session || !cs || !os) return;
+      // Optimistic flip — UI shows the new active state immediately.
+      setPendingTemplate(templateId);
+      setSpecInFlight((n) => n + 1);
+      const reqId = ++specReqIdRef.current;
+      try {
+        const res = await patchSessionVideoSpec(cs, os, session.id, {
+          ops: [{ op: "replace", path: "/templateId", value: templateId }],
+        });
+        // Stale-response guard: only the latest request gets to update state.
+        if (reqId !== specReqIdRef.current) return;
+        if (!res.ok) {
+          show(res.error, "error");
+          setPendingTemplate(null);
+          return;
+        }
+        applySession(res.data);
+        setPendingTemplate(null);
+      } finally {
+        setSpecInFlight((n) => Math.max(0, n - 1));
+      }
+    },
+    [applySession, clientSlug, orgSlug, session, show],
+  );
+
+  const onPatchVideoTheme = useCallback(
+    async (themeId: VideoSpec["themeId"]) => {
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!session || !cs || !os) return;
+      setPendingTheme(themeId);
+      setSpecInFlight((n) => n + 1);
+      const reqId = ++specReqIdRef.current;
+      try {
+        const res = await patchSessionVideoSpec(cs, os, session.id, {
+          ops: [{ op: "replace", path: "/themeId", value: themeId }],
+        });
+        if (reqId !== specReqIdRef.current) return;
+        if (!res.ok) {
+          show(res.error, "error");
+          setPendingTheme(null);
+          return;
+        }
+        applySession(res.data);
+        setPendingTheme(null);
+      } finally {
+        setSpecInFlight((n) => Math.max(0, n - 1));
+      }
+    },
+    [applySession, clientSlug, orgSlug, session, show],
+  );
+
+  /** Persist a single layout knob. Drag-while-dragging updates `layoutDraft` only
+   *  (instant preview); release calls this to commit. We send a single JSON Patch
+   *  per knob so concurrent edits to other knobs / the spec don't collide. */
+  const onCommitLayout = useCallback(
+    async <K extends keyof VideoSpecLayout>(key: K, value: VideoSpecLayout[K]) => {
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!session || !cs || !os) return;
+      // No-op if user released without actually changing the value.
+      if (sessionLayout[key] === value) return;
+      setSpecInFlight((n) => n + 1);
+      const reqId = ++specReqIdRef.current;
+      try {
+        const res = await patchSessionVideoSpec(cs, os, session.id, {
+          ops: [{ op: "replace", path: `/layout/${key}`, value }],
+        });
+        if (reqId !== specReqIdRef.current) return;
+        if (!res.ok) {
+          show(res.error, "error");
+          // Roll the slider back to whatever the server still has.
+          setLayoutDraft(sessionLayout);
+          return;
+        }
+        applySession(res.data);
+      } finally {
+        setSpecInFlight((n) => Math.max(0, n - 1));
+      }
+    },
+    [applySession, clientSlug, orgSlug, session, sessionLayout, show],
+  );
+
+  const onCommitPauseBeforeBeat = useCallback(
+    async (pauseIdx: number, value: number) => {
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!session || !cs || !os || !previewVideoSpec) {
+        setPauseDraft(null);
+        return;
+      }
+      const rounded = Math.round(value * 1000) / 1000;
+      const cur = effectivePausesSec(previewVideoSpec);
+      if (pauseIdx < 0 || pauseIdx >= cur.length) {
+        setPauseDraft(null);
+        return;
+      }
+      if (Math.abs(cur[pauseIdx]! - rounded) < 1e-6) {
+        setPauseDraft(null);
+        return;
+      }
+      const next = [...cur];
+      next[pauseIdx] = rounded;
+      // Always `replace`: the server normalizes `video_spec` through Pydantic and
+      // `model_dump` includes `/pausesSec` (often `null` or a wrong-length legacy
+      // array). JSON Patch `add` on an existing member fails (RFC 6902), so the
+      // request would 400 and the value would never stick.
+      const op = { op: "replace" as const, path: "/pausesSec" as const, value: next };
+      setSpecInFlight((n) => n + 1);
+      const reqId = ++specReqIdRef.current;
+      try {
+        const res = await patchSessionVideoSpec(cs, os, session.id, { ops: [op] });
+        if (reqId !== specReqIdRef.current) return;
+        if (!res.ok) {
+          show(res.error, "error");
+          return;
+        }
+        applySession(res.data);
+      } finally {
+        setSpecInFlight((n) => Math.max(0, n - 1));
+        setPauseDraft(null);
+      }
+    },
+    [applySession, clientSlug, orgSlug, previewVideoSpec, session, show],
+  );
+
+  /** One-shot: shrink block durations so the timeline fits ``background.durationSec``. */
+  const onFitBlocksToBroll = useCallback(async () => {
+    const cs = clientSlug.trim();
+    const os = orgSlug.trim();
+    if (!session || !cs || !os) return;
+    setSpecInFlight((n) => n + 1);
+    const reqId = ++specReqIdRef.current;
+    try {
+      const res = await postFitSessionSpecToBroll(cs, os, session.id);
+      if (reqId !== specReqIdRef.current) return;
+      if (!res.ok) {
+        show(res.error, "error");
+        return;
+      }
+      applySession(res.data);
+      show("Beats fitted to B-roll length.", "success");
+    } finally {
+      setSpecInFlight((n) => Math.max(0, n - 1));
+    }
+  }, [applySession, clientSlug, orgSlug, session, show]);
+
+  /** Reset the in-flight timing draft whenever the saved spec changes (server
+   *  ack, fresh fetch). Same gate-by-string-key pattern as `layoutDraft`. */
+  const timingSyncKey = `${session?.id ?? ""}|${previewVideoSpec?.totalSec ?? 0}|${previewVideoSpec?.gapBetweenBlocksSec ?? 0}|${previewVideoSpec?.pausesSec?.join(",") ?? ""}`;
+  useEffect(() => {
+    setTimingDraft(null);
+    setPauseDraft(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timingSyncKey]);
+
+  useEffect(() => {
+    setPauseDraft(null);
+  }, [selectedSegmentId]);
+
+  /** If the selected segment disappears (e.g. an AI refine deletes a block),
+   *  fall back to the hook so the inspector never points to nothing. */
+  useEffect(() => {
+    if (!previewVideoSpec) return;
+    if (selectedSegmentId === "hook") return;
+    const exists = previewVideoSpec.blocks.some((b) => b.id === selectedSegmentId);
+    if (!exists) setSelectedSegmentId("hook");
+  }, [previewVideoSpec, selectedSegmentId]);
+
+  /** Bridge from the timeline strip's drag-handles into the same draft+commit
+   *  pipeline the slider uses. Selecting on drag-start mirrors how editors like
+   *  Premiere highlight the clip you're resizing — feels obvious in practice.
+   *  These callbacks MUST stay identity-stable across renders or VideoSpecPreview's
+   *  React.memo bails and we re-mount the Player on every spec tick. */
+  const onResizeSegmentDraft = useCallback((id: string, durationSec: number) => {
+    setSelectedSegmentId(id);
+    setTimingDraft({ id, durationSec });
+  }, []);
+  const onCommitTimingRef = useRef<((id: string, durationSec: number) => Promise<void>) | null>(null);
+  const onResizeSegmentCommit = useCallback((id: string, durationSec: number) => {
+    void onCommitTimingRef.current?.(id, durationSec);
+  }, []);
+
+  /** Persist a duration edit. Generates the same atomic multi-op patch that
+   *  the live preview math used (push-cascade or compress-cascade), so what
+   *  the user releases on is exactly what gets stored. Stale-guard same as
+   *  layout/template/theme so rapid edits don't clobber each other. */
+  const onCommitTiming = useCallback(
+    async (segmentId: string, newDurationSec: number) => {
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!session || !cs || !os || !previewVideoSpec) return;
+      const result = computeTimingChange(previewVideoSpec, segmentId, newDurationSec, cascadeMode);
+      // No-op if the requested duration ended up matching the saved value
+      // (e.g. user released the slider on the same tick they started, or the
+      // cascade-clamp made it identical). Prevents an empty PATCH.
+      if (result.ops.length === 0) {
+        setTimingDraft(null);
+        return;
+      }
+      setSpecInFlight((n) => n + 1);
+      const reqId = ++specReqIdRef.current;
+      try {
+        const res = await patchSessionVideoSpec(cs, os, session.id, { ops: result.ops });
+        if (reqId !== specReqIdRef.current) return;
+        if (!res.ok) {
+          show(res.error, "error");
+          setTimingDraft(null);
+          return;
+        }
+        applySession(res.data);
+        setTimingDraft(null);
+      } finally {
+        setSpecInFlight((n) => Math.max(0, n - 1));
+      }
+    },
+    [applySession, cascadeMode, clientSlug, orgSlug, previewVideoSpec, session, show],
+  );
+
+  // Keep the resize-handle bridge pointing at the latest commit closure without
+  // re-creating the (memoized) callback identity that VideoSpecPreview depends on.
+  useEffect(() => {
+    onCommitTimingRef.current = onCommitTiming;
+  }, [onCommitTiming]);
+
+  const onVideoRefineApply = useCallback(async () => {
+    const cs = clientSlug.trim();
+    const os = orgSlug.trim();
+    const instruction = refineVideoPrompt.trim();
+    if (!session || !cs || !os || !instruction) return;
+    setAiRefineBusy(true);
+    setSpecInFlight((n) => n + 1);
+    const reqId = ++specReqIdRef.current;
+    try {
+      const pe = await promptEditSessionVideoSpec(cs, os, session.id, { instruction });
+      if (reqId !== specReqIdRef.current) return;
+      if (!pe.ok) {
+        show(pe.error, "error");
+        return;
+      }
+      // Zero-op responses look like a success but the user sees nothing change.
+      // Fail loudly (and keep the prompt so they can rephrase).
+      if (!Array.isArray(pe.data.ops) || pe.data.ops.length === 0) {
+        show("AI couldn't translate that into a change — try being more specific.", "error");
+        return;
+      }
+      const res = await patchSessionVideoSpec(cs, os, session.id, { ops: pe.data.ops });
+      if (reqId !== specReqIdRef.current) return;
+      if (!res.ok) {
+        show(res.error, "error");
+        return;
+      }
+      applySession(res.data);
+      setRefineVideoPrompt("");
+      show(pe.data.summary || `Updated (${pe.data.ops.length} change${pe.data.ops.length === 1 ? "" : "s"}).`, "success");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "AI refine failed unexpectedly.", "error");
+    } finally {
+      setAiRefineBusy(false);
+      setSpecInFlight((n) => Math.max(0, n - 1));
+    }
+  }, [applySession, clientSlug, orgSlug, refineVideoPrompt, session, show]);
 
   const onRegenerateCovers = useCallback(async () => {
     const cs = clientSlug.trim();
@@ -1654,22 +2146,20 @@ export function VideoCreateWorkspace({
             </button>
           </div>
           <div className="space-y-2">
-            {/* Hook row — `hooks[0].text` is what `build_remotion_props` (video_render.py)
-                burns in for the first ~3s of the reel, so it's effectively the opening
-                on-screen text block. Rendered inline as the first list item (read-only,
-                amber-tinted) so the user sees the full opener + body sequence in one
-                place; full edit/alternatives live in the bottom "AI working with" panel. */}
-            {hooks[0]?.text ? (
+            {/* Hook row — same opener as ``video_spec.hook`` / Remotion (see
+                ``sessionPrimaryHookText`` + backend ``_session_hook_text``). Read-only
+                here; alternatives + regen live in the bottom panel. */}
+            {primaryHookText ? (
               <div className="flex items-center gap-2">
                 <div
                   className="glass-inset flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/[0.06] px-3 py-2"
-                  title="Hook · burned into the first ~3s of the reel"
+                  title="Hook · burned into the first segment of the reel"
                 >
                   <span className="shrink-0 rounded-md bg-amber-500/20 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400">
-                    Hook · 3s
+                    Hook
                   </span>
                   <p className="min-w-0 flex-1 truncate text-sm font-semibold text-app-fg">
-                    {hooks[0].text}
+                    {primaryHookText}
                   </p>
                 </div>
                 <RegenInline
@@ -1719,7 +2209,7 @@ export function VideoCreateWorkspace({
                 </button>
               </div>
             ))}
-            {textDraft.length === 0 && !hooks[0]?.text && (
+            {textDraft.length === 0 && !primaryHookText && (
               <p className="rounded-xl border border-dashed border-app-divider/60 py-4 text-center text-xs text-app-fg-subtle">
                 No text blocks yet — click Add block above, or hit Regenerate.
               </p>
@@ -1780,114 +2270,636 @@ export function VideoCreateWorkspace({
           </div>
         ) : null}
 
-        {/* Preview-left + per-tab content-right. The preview is the "this is what your
-            reel will use" anchor — it always reflects whatever's saved on the session
-            (photo, clip, AI still) at proper 9:16, regardless of which tab is active.
-            Picker grids on the right are for browsing/selecting; this preview is for
-            verifying the choice (especially clips, which autoplay so you can check the loop). */}
-        <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
-          <div className="mx-auto shrink-0 sm:mx-0">
+        {/* Preview column (sticky) + edit column: preview stays visible while scrolling
+            template/theme/layout/timing — matches NLE / Figma mental model. */}
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:gap-8">
+          <div className="mx-auto flex w-full max-w-[300px] shrink-0 flex-col gap-3 lg:sticky lg:top-4 lg:mx-0 lg:self-start">
             {bgBusy ? (
-              <div className="flex aspect-[9/16] w-[160px] flex-col items-center justify-center gap-2 rounded-xl border border-app-divider bg-app-chip-bg/40">
+              <div className="flex aspect-[9/16] w-full max-w-[280px] flex-col items-center justify-center gap-2 self-center rounded-xl border border-app-divider bg-app-chip-bg/40">
                 <Loader2 className="h-6 w-6 animate-spin text-app-fg-subtle" />
                 <p className="text-[10px] text-app-fg-muted">~30–60s</p>
               </div>
-            ) : session.background_url ? (
-              <a
-                href={session.background_url}
-                target="_blank"
-                rel="noreferrer"
-                title="Open full size"
-                className="block"
-              >
-                <div className="w-[160px] overflow-hidden rounded-xl border border-app-divider shadow-md">
-                  {session.background_type === "broll" ? (
-                    <video
-                      src={session.background_url}
-                      muted
-                      loop
-                      autoPlay
-                      playsInline
-                      className="block aspect-[9/16] w-full object-cover"
-                    />
-                  ) : (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={session.background_url}
-                      alt="Currently active background"
-                      width={160}
-                      className="block aspect-[9/16] w-full object-cover"
-                    />
-                  )}
-                </div>
-                <p className="mt-1.5 text-center text-[10px] uppercase tracking-wide text-app-fg-subtle">
-                  Currently active
-                </p>
-              </a>
             ) : (
-              <div className="flex aspect-[9/16] w-[160px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-app-divider/70 bg-app-chip-bg/20">
-                <ImageIcon className="h-6 w-6 text-app-fg-subtle opacity-30" />
-                <p className="px-3 text-center text-[10px] text-app-fg-subtle">No background yet</p>
-              </div>
+              <>
+                <VideoSpecPreview
+                  spec={livePreviewSpec}
+                  safeZone={safeZonePreview}
+                  layoutGuides={layoutGuides}
+                  width={280}
+                  selectedSegmentId={selectedSegmentId}
+                  onSelectSegment={setSelectedSegmentId}
+                  onResizeSegmentDraft={onResizeSegmentDraft}
+                  onResizeSegmentCommit={onResizeSegmentCommit}
+                />
+                {((isTextOverlay && bgSource === "clip") || isBroll) && (
+                  <>
+                    <BrollLibrarySection
+                      clips={clips}
+                      loading={loading}
+                      deletingClipId={deletingClipId}
+                      selectedClipId={selectedClipId}
+                      sessionBrollClipId={session.broll_clip_id}
+                      showClipBanner={false}
+                      variant="strip"
+                      onPick={(id) => void onSetBroll(id)}
+                      onDelete={(id) => void onDeleteClip(id)}
+                    />
+                    <div className="w-full space-y-3 rounded-xl border border-app-divider/50 bg-app-chip-bg/15 p-3.5">
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Background</p>
+                        <p className="mt-0.5 text-[9px] leading-snug text-app-fg-subtle">
+                          {isBroll
+                            ? "Active clip is your reel background and sets timing limits. Refine text on the right."
+                            : "Selected clip loads into the preview above. Refine look and timing in the column on the right."}
+                        </p>
+                      </div>
+                      {isTextOverlay && bgSource === "clip" && !isBroll ? (
+                        <p className="text-[10px] leading-relaxed text-app-fg-muted">
+                          Longer clips are fine — we trim to your beats, or use{" "}
+                          <span className="font-semibold text-app-fg-secondary">Fit beats to B-roll</span> in Timing.
+                        </p>
+                      ) : null}
+                      {session.background_url ? (
+                        <a
+                          href={session.background_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex text-[10px] font-semibold text-app-fg-muted underline decoration-app-divider underline-offset-2 hover:text-amber-200/90"
+                        >
+                          Open background asset ↗
+                        </a>
+                      ) : null}
+                    </div>
+                  </>
+                )}
+              </>
             )}
           </div>
 
-          <div className="flex min-w-0 flex-1 flex-col gap-3">
-            {bgSource === "ai" && (
-              <>
-                <p className="text-xs leading-relaxed text-app-fg-muted">
-                  Generate a 9:16 still matched to the chosen angle. ~30–60s.
-                </p>
-                <button
-                  type="button"
-                  disabled={bgBusy}
-                  onClick={() => void onGenerateBg()}
-                  className="inline-flex items-center gap-2 self-start rounded-xl bg-amber-500/15 px-4 py-2 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-50"
-                >
-                  {bgBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                  {bgBusy
-                    ? "Generating…"
-                    : session.background_type === "generated_image" && session.background_url
-                    ? "Regenerate"
-                    : "Generate image"}
-                </button>
-              </>
-            )}
-
-            {bgSource === "image" && (
-              <>
-                <p className="text-xs leading-relaxed text-app-fg-muted">
-                  Use an existing photo of you / your brand as a static 9:16 background.
-                </p>
-                <ClientImagesPicker
-                  images={images}
-                  selectedImageId={session.background_type === "client_image" ? selectedImageId : ""}
-                  busy={loading}
-                  onPick={(id) => void onSetBackgroundImage(id)}
-                />
-              </>
-            )}
-
-            {bgSource === "clip" && (
-              <>
-                {!isBroll ? (
-                  <p className="text-xs leading-relaxed text-app-fg-muted">
-                    Loop a video clip behind the text. Clip length doesn&apos;t matter — render follows
-                    your script timing.
+          <div className="flex min-w-0 flex-1 flex-col gap-4 lg:max-w-[480px]">
+            {isTextOverlay && (bgSource === "ai" || bgSource === "image") ? (
+              <div className="space-y-3 rounded-xl border border-app-divider/50 bg-app-chip-bg/15 p-3.5">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Background</p>
+                  <p className="mt-0.5 text-[9px] leading-snug text-app-fg-subtle">
+                    {bgSource === "ai"
+                      ? "Generate a 9:16 still — unlocks layout, timing, and render."
+                      : "Pick a client photo as a static backdrop."}
                   </p>
+                </div>
+                {bgSource === "ai" ? (
+                  <>
+                    <button
+                      type="button"
+                      disabled={bgBusy}
+                      onClick={() => void onGenerateBg()}
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500/15 px-4 py-2.5 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-50 sm:w-auto sm:justify-start"
+                    >
+                      {bgBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                      {bgBusy
+                        ? "Generating…"
+                        : session.background_type === "generated_image" && session.background_url
+                          ? "Regenerate image"
+                          : "Generate image"}
+                    </button>
+                    <p className="text-[10px] text-app-fg-muted">~30–60s per run.</p>
+                  </>
+                ) : (
+                  <ClientImagesPicker
+                    images={images}
+                    selectedImageId={session.background_type === "client_image" ? selectedImageId : ""}
+                    busy={loading}
+                    onPick={(id) => void onSetBackgroundImage(id)}
+                  />
+                )}
+                {session.background_url ? (
+                  <a
+                    href={session.background_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex text-[10px] font-semibold text-app-fg-muted underline decoration-app-divider underline-offset-2 hover:text-amber-200/90"
+                  >
+                    Open background asset ↗
+                  </a>
                 ) : null}
-                <BrollLibrarySection
-                  clips={clips}
-                  loading={loading}
-                  deletingClipId={deletingClipId}
-                  selectedClipId={selectedClipId}
-                  sessionBrollClipId={session.broll_clip_id}
-                  showClipBanner={false}
-                  onPick={(id) => void onSetBroll(id)}
-                  onDelete={(id) => void onDeleteClip(id)}
-                />
-              </>
-            )}
+              </div>
+            ) : null}
+
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-app-divider/40 pb-2">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Look & timing</p>
+              {specInFlight > 0 ? (
+                <span
+                  className="inline-flex items-center gap-1 rounded-md bg-sky-500/15 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-sky-300"
+                  title="Sending changes to the server"
+                >
+                  <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-sky-300" />
+                  Saving…
+                </span>
+              ) : null}
+            </div>
+
+            <div className="space-y-1">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">View</p>
+              <p className="text-[9px] text-app-fg-subtle">Preview overlays only — not burned into export</p>
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-app-fg-muted">
+                <label
+                  className="flex cursor-pointer items-center gap-1.5"
+                  title="Margins where Instagram UI (likes, captions) can cover the frame — keep key text inside."
+                >
+                  <input
+                    type="checkbox"
+                    checked={safeZonePreview}
+                    onChange={(e) => setSafeZonePreview(e.target.checked)}
+                    className="accent-amber-500"
+                  />
+                  IG safe zone
+                </label>
+                <label
+                  className="flex cursor-pointer items-center gap-1.5"
+                  title="Light guides for margins and alignment while you tune layout."
+                >
+                  <input
+                    type="checkbox"
+                    checked={layoutGuides}
+                    onChange={(e) => setLayoutGuides(e.target.checked)}
+                    className="accent-amber-500"
+                  />
+                  Layout guides
+                </label>
+              </div>
+            </div>
+
+                <div className="space-y-1">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Template</p>
+                  <p className="text-[9px] text-app-fg-subtle">Where the text sits on the frame</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(
+                      [
+                        {
+                          id: "centered-pop" as const,
+                          label: "Centered",
+                          title: "Headline-style stack in the middle of the frame",
+                        },
+                        {
+                          id: "bottom-card" as const,
+                          label: "Bottom card",
+                          title: "Lower-third card with supporting lines above it",
+                        },
+                        {
+                          id: "top-banner" as const,
+                          label: "Top banner",
+                          title: "Title strip along the top with body text below",
+                        },
+                        {
+                          id: "capcut-highlight" as const,
+                          label: "Bold stroke",
+                          title: "High-contrast outline style for punchy short clips",
+                        },
+                      ] as const
+                    ).map((t) => {
+                      const active = livePreviewSpec?.templateId === t.id;
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          aria-pressed={active}
+                          title={t.title}
+                          disabled={!session.background_url}
+                          onClick={() => void onPatchVideoTemplate(t.id)}
+                          className={`rounded-lg border px-2 py-1 text-[10px] font-semibold transition disabled:opacity-40 ${
+                            active
+                              ? "border-amber-500 bg-amber-500/15 text-amber-200 shadow-[0_0_0_1px_rgba(245,158,11,0.4)]"
+                              : "border-app-divider text-app-fg-muted hover:border-amber-500/40 hover:text-app-fg"
+                          }`}
+                        >
+                          {t.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Theme</p>
+                  <p className="text-[9px] text-app-fg-subtle">Font, color, and weight</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(
+                      [
+                        {
+                          id: "bold-modern" as const,
+                          label: "Bold",
+                          title: "Heavy sans, high contrast — good for promos",
+                        },
+                        {
+                          id: "editorial" as const,
+                          label: "Editorial",
+                          title: "Magazine-style serif mix, refined spacing",
+                        },
+                        {
+                          id: "casual-hand" as const,
+                          label: "Hand",
+                          title: "Friendly handwritten feel",
+                        },
+                        {
+                          id: "clean-minimal" as const,
+                          label: "Minimal",
+                          title: "Thin weights, lots of air, understated",
+                        },
+                      ] as const
+                    ).map((t) => {
+                      const active = livePreviewSpec?.themeId === t.id;
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          aria-pressed={active}
+                          title={t.title}
+                          disabled={!session.background_url}
+                          onClick={() => void onPatchVideoTheme(t.id)}
+                          className={`rounded-lg border px-2 py-1 text-[10px] font-semibold transition disabled:opacity-40 ${
+                            active
+                              ? "border-amber-500 bg-amber-500/15 text-amber-200 shadow-[0_0_0_1px_rgba(245,158,11,0.4)]"
+                              : "border-app-divider text-app-fg-muted hover:border-amber-500/40 hover:text-app-fg"
+                          }`}
+                        >
+                          {t.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="space-y-2 border-t border-app-divider/30 pt-4">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Layout</p>
+                        {(sessionLayout.verticalAnchor !== DEFAULT_LAYOUT.verticalAnchor ||
+                          sessionLayout.verticalOffset !== DEFAULT_LAYOUT.verticalOffset ||
+                          sessionLayout.scale !== DEFAULT_LAYOUT.scale ||
+                          sessionLayout.sidePadding !== DEFAULT_LAYOUT.sidePadding) ? (
+                          <span
+                            className="rounded-sm bg-emerald-500/15 px-1 py-px text-[8px] font-semibold uppercase tracking-wide text-emerald-300"
+                            title={`Saved: anchor ${sessionLayout.verticalAnchor ?? "bottom"}, vertical ${Math.round(sessionLayout.verticalOffset * 100)}%, size ${sessionLayout.scale.toFixed(2)}x, padding ${Math.round(sessionLayout.sidePadding * 100)}%`}
+                          >
+                            Saved
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="mt-0.5 text-[9px] text-app-fg-subtle">Nudge position and text size globally</p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={
+                        !session.background_url ||
+                        (sessionLayout.verticalAnchor === DEFAULT_LAYOUT.verticalAnchor &&
+                          sessionLayout.verticalOffset === DEFAULT_LAYOUT.verticalOffset &&
+                          sessionLayout.scale === DEFAULT_LAYOUT.scale &&
+                          sessionLayout.sidePadding === DEFAULT_LAYOUT.sidePadding)
+                      }
+                      onClick={() => {
+                        setLayoutDraft(DEFAULT_LAYOUT);
+                        void Promise.all([
+                          onCommitLayout("verticalAnchor", DEFAULT_LAYOUT.verticalAnchor),
+                          onCommitLayout("verticalOffset", DEFAULT_LAYOUT.verticalOffset),
+                          onCommitLayout("scale", DEFAULT_LAYOUT.scale),
+                          onCommitLayout("sidePadding", DEFAULT_LAYOUT.sidePadding),
+                        ]);
+                      }}
+                      className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-subtle hover:text-app-fg disabled:opacity-30"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                  {(() => {
+                    const tpl = pendingTemplate ?? previewVideoSpec?.templateId ?? "centered-pop";
+                    const isBottomCard = tpl === "bottom-card";
+                    const anchor = layoutDraft.verticalAnchor ?? "bottom";
+                    return (
+                      <div className="space-y-2">
+                        {isBottomCard ? (
+                          <AppSelect
+                            label="Card position"
+                            value={anchor}
+                            disabled={!session.background_url}
+                            onChange={(v) => {
+                              const next = v as VideoSpecLayout["verticalAnchor"];
+                              setLayoutDraft((s) => ({ ...s, verticalAnchor: next }));
+                              void onCommitLayout("verticalAnchor", next);
+                            }}
+                            options={[
+                              { value: "bottom", label: "Bottom (safe area)" },
+                              { value: "center", label: "Center (Y axis)" },
+                              { value: "top", label: "Top" },
+                            ]}
+                            className="w-full"
+                            triggerClassName="min-w-0 w-full py-1.5 text-[10px] font-semibold"
+                            dense
+                          />
+                        ) : null}
+                        <LayoutSlider
+                          label={isBottomCard ? "Fine-tune vertical" : "Vertical"}
+                          leftHint="Up"
+                          rightHint="Down"
+                          min={-0.2}
+                          max={0.2}
+                          step={0.01}
+                          value={layoutDraft.verticalOffset}
+                          disabled={!session.background_url}
+                          formatValue={(v) =>
+                            v === 0 ? "0" : `${v > 0 ? "+" : ""}${Math.round(v * 100)}%`
+                          }
+                          onChange={(v) => setLayoutDraft((s) => ({ ...s, verticalOffset: v }))}
+                          onCommit={(v) => void onCommitLayout("verticalOffset", v)}
+                        />
+                      </div>
+                    );
+                  })()}
+                  <LayoutSlider
+                    label="Text size"
+                    leftHint="Smaller"
+                    rightHint="Larger"
+                    min={0.7}
+                    max={1.3}
+                    step={0.05}
+                    value={layoutDraft.scale}
+                    disabled={!session.background_url}
+                    formatValue={(v) => `${v.toFixed(2)}x`}
+                    onChange={(v) => setLayoutDraft((s) => ({ ...s, scale: v }))}
+                    onCommit={(v) => void onCommitLayout("scale", v)}
+                  />
+                  <LayoutSlider
+                    label="Padding"
+                    title="Horizontal inset: space between the left/right frame edge and the text block (not top/bottom)."
+                    leftHint="Tight"
+                    rightHint="Roomy"
+                    min={0.02}
+                    max={0.12}
+                    step={0.005}
+                    value={layoutDraft.sidePadding}
+                    disabled={!session.background_url}
+                    formatValue={(v) => `${Math.round(v * 100)}%`}
+                    onChange={(v) => setLayoutDraft((s) => ({ ...s, sidePadding: v }))}
+                    onCommit={(v) => void onCommitLayout("sidePadding", v)}
+                  />
+                </div>
+
+                {/* Timing: select a segment in the timeline strip above and tune its
+                    on-screen duration with cascade behavior. Mirrors the layout pattern:
+                    optimistic preview, single PATCH on release, multi-op cascade. */}
+                {(() => {
+                  if (!previewVideoSpec) return null;
+                  const segId = selectedSegmentId;
+                  const range = segmentDurationRange(segId);
+                  const draftActive = timingDraft?.id === segId;
+                  const displayedDur = draftActive
+                    ? timingDraft!.durationSec
+                    : segmentDurationSec(livePreviewSpec ?? previewVideoSpec, segId);
+                  const sliderVal = Math.min(range.max, Math.max(range.min, displayedDur));
+                  const savedDur = segmentDurationSec(previewVideoSpec, segId);
+                  const label = segmentLabel(previewVideoSpec, segId);
+                  const excerpt = segmentExcerpt(previewVideoSpec, segId);
+                  const isLastBlock = segId !== "hook"
+                    && previewVideoSpec.blocks.findIndex((b) => b.id === segId)
+                       === previewVideoSpec.blocks.length - 1;
+                  const compressIneffective = cascadeMode === "compress"
+                    && (segId === "hook" ? previewVideoSpec.blocks.length === 0 : isLastBlock);
+                  const autoFor = (id: string): number => {
+                    if (id === "hook") return autoHookDurationSec();
+                    const b = previewVideoSpec.blocks.find((x) => x.id === id);
+                    return autoBlockDurationSec(b?.text ?? "");
+                  };
+                  return (
+                    <div className="space-y-2 border-t border-app-divider/30 pt-4">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Timing</p>
+                          <p className="mt-0.5 text-[9px] text-app-fg-subtle">
+                            Tap a segment on the bar under the preview, then adjust duration here
+                          </p>
+                        </div>
+                        <span
+                          className="rounded-sm bg-app-chip-bg/40 px-1.5 py-px text-[9px] font-bold tabular-nums text-app-fg-muted"
+                          title="Total video length"
+                        >
+                          {(livePreviewSpec?.totalSec ?? previewVideoSpec.totalSec).toFixed(1)}s
+                        </span>
+                      </div>
+                      <div className="rounded-md border border-app-divider/50 bg-app-chip-bg/20 px-2 py-1.5">
+                        <div className="flex items-baseline justify-between gap-2">
+                          <span className="text-[10px] font-bold text-amber-200">{label}</span>
+                          <button
+                            type="button"
+                            disabled={!session.background_url || Math.abs(autoFor(segId) - savedDur) < 0.05}
+                            onClick={() => void onCommitTiming(segId, autoFor(segId))}
+                            className="rounded-sm border border-app-divider/60 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-app-fg-muted hover:border-amber-500/40 hover:text-app-fg disabled:opacity-30"
+                            title={`Auto-fit from word count (~${autoFor(segId).toFixed(1)}s)`}
+                          >
+                            Auto {autoFor(segId).toFixed(1)}s
+                          </button>
+                        </div>
+                        <p className="mt-0.5 truncate text-[10px] italic text-app-fg-subtle">{excerpt}</p>
+                      </div>
+                      <LayoutSlider
+                        label="Duration"
+                        leftHint={`${range.min.toFixed(1)}s`}
+                        rightHint={`${range.max.toFixed(1)}s`}
+                        min={range.min}
+                        max={range.max}
+                        step={0.1}
+                        value={sliderVal}
+                        disabled={!session.background_url}
+                        formatValue={(v) => `${v.toFixed(1)}s`}
+                        onChange={(v) => setTimingDraft({ id: segId, durationSec: v })}
+                        onCommit={(v) => void onCommitTiming(segId, v)}
+                      />
+                      {livePreviewSpec?.background.kind === "video" &&
+                      livePreviewSpec.background.durationSec != null ? (
+                        <div className="space-y-1.5">
+                          <p className="text-[9px] text-app-fg-subtle">
+                            {livePreviewSpec.totalSec > livePreviewSpec.background.durationSec + 0.25 ? (
+                              <>
+                                Timeline is{" "}
+                                <span className="font-bold tabular-nums text-amber-200">
+                                  {(livePreviewSpec.totalSec - livePreviewSpec.background.durationSec).toFixed(1)}s
+                                </span>
+                                {" "}
+                                longer than this B-roll (
+                                {livePreviewSpec.background.durationSec.toFixed(1)}s). Shrink beats or gaps.
+                              </>
+                            ) : (
+                              <>
+                                B-roll clip{" "}
+                                <span className="font-bold tabular-nums text-app-fg">
+                                  {livePreviewSpec.background.durationSec.toFixed(1)}s
+                                </span>
+                                . Timeline fits within it.
+                              </>
+                            )}
+                          </p>
+                          {livePreviewSpec.totalSec > livePreviewSpec.background.durationSec + 0.25 ? (
+                            <button
+                              type="button"
+                              disabled={!session.background_url}
+                              onClick={() => void onFitBlocksToBroll()}
+                              className="w-full rounded-md border border-amber-500/50 bg-amber-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-amber-100 hover:bg-amber-500/20 disabled:opacity-30"
+                            >
+                              Fit beats to B-roll (
+                              {livePreviewSpec.background.durationSec.toFixed(1)}s)
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      {(() => {
+                        const chrono = [...previewVideoSpec.blocks].sort(
+                          (a, b) => a.startSec - b.startSec,
+                        );
+                        if (chrono.length === 0) return null;
+                        const livePauses = livePreviewSpec?.pausesSec ?? [];
+                        const rows = chrono.map((_, i) => ({
+                          idx: i,
+                          before: i === 0 ? "Hook" : `B${i}`,
+                          after: `B${i + 1}`,
+                          sec:
+                            pauseDraft?.idx === i
+                              ? pauseDraft.sec
+                              : Math.min(5, Math.max(0, livePauses[i] ?? 0)),
+                        }));
+                        const row = rows.find((r) => r.idx === selectedGapIdx) ?? rows[0]!;
+                        const anyNonZero = rows.some((r) => r.sec > 0.05);
+                        return (
+                          <div className="rounded-md border border-app-divider/40 bg-app-chip-bg/15 p-2">
+                            <div className="mb-1.5 flex items-center justify-between gap-2">
+                              <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">
+                                Gap
+                              </p>
+                              <button
+                                type="button"
+                                disabled={!session.background_url || !anyNonZero}
+                                onClick={() => {
+                                  setPauseDraft(null);
+                                  void Promise.all(rows.map((r) => onCommitPauseBeforeBeat(r.idx, 0)));
+                                }}
+                                className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-subtle hover:text-app-fg disabled:opacity-30"
+                                title="Reset every gap to 0s"
+                              >
+                                Clear all
+                              </button>
+                            </div>
+                            <div className="mb-2 flex flex-wrap items-end gap-2">
+                              <div className="min-w-0 flex-1">
+                                <AppSelect
+                                  ariaLabel="Which gap between beats to edit"
+                                  value={String(selectedGapIdx)}
+                                  disabled={!session.background_url}
+                                  onChange={(v) => {
+                                    setPauseDraft(null);
+                                    setSelectedGapIdx(Number(v));
+                                  }}
+                                  options={rows.map((r) => ({
+                                    value: String(r.idx),
+                                    label: `${r.before} → ${r.after} · ${r.sec.toFixed(1)}s`,
+                                  }))}
+                                  className="w-full"
+                                  triggerClassName="min-w-0 w-full py-1.5 text-[10px] font-semibold"
+                                  dense
+                                  menuAbove
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                disabled={!session.background_url || row.sec <= 0.05}
+                                onClick={() => {
+                                  setPauseDraft(null);
+                                  void onCommitPauseBeforeBeat(row.idx, 0);
+                                }}
+                                className="shrink-0 rounded-sm border border-app-divider/60 px-1.5 py-1 text-[9px] font-semibold uppercase tracking-wide text-app-fg-muted hover:border-amber-500/40 hover:text-app-fg disabled:opacity-30"
+                                title="This gap → 0s"
+                              >
+                                0
+                              </button>
+                            </div>
+                            <LayoutSlider
+                              label={`Silence (${row.before} → ${row.after})`}
+                              title="Quiet time on the timeline. Amber dashed band on the strip."
+                              leftHint="None"
+                              rightHint="5s"
+                              min={0}
+                              max={5}
+                              step={0.1}
+                              value={row.sec}
+                              disabled={!session.background_url}
+                              formatValue={(v) => `${v.toFixed(1)}s`}
+                              onChange={(v) => setPauseDraft({ idx: row.idx, sec: v })}
+                              onCommit={(v) => void onCommitPauseBeforeBeat(row.idx, v)}
+                            />
+                          </div>
+                        );
+                      })()}
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-muted">
+                          When changed
+                        </span>
+                        <div className="inline-flex overflow-hidden rounded-md border border-app-divider/60 text-[9px] font-bold uppercase tracking-wide">
+                          {(
+                            [
+                              { id: "push" as const, label: "Push", title: "Later blocks shift right; total grows" },
+                              { id: "compress" as const, label: "Compress", title: "Next block absorbs the change; total stays" },
+                            ] as const
+                          ).map((m) => (
+                            <button
+                              key={m.id}
+                              type="button"
+                              aria-pressed={cascadeMode === m.id}
+                              onClick={() => setCascadeModePersisted(m.id)}
+                              title={m.title}
+                              className={`px-1.5 py-0.5 transition ${
+                                cascadeMode === m.id
+                                  ? "bg-amber-500/20 text-amber-200"
+                                  : "text-app-fg-muted hover:bg-app-chip-bg/40 hover:text-app-fg"
+                              }`}
+                            >
+                              {m.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <p className="text-[9px] leading-snug text-app-fg-subtle">
+                        Push: longer segments grow total time and shift what comes after. Compress: the next
+                        segment shortens so total stays the same when a following block exists.
+                      </p>
+                      {compressIneffective ? (
+                        <p className="text-[9px] italic text-app-fg-subtle">
+                          No segment after this one — Compress falls back to Push.
+                        </p>
+                      ) : null}
+                    </div>
+                  );
+                })()}
+
+                <div className="space-y-1.5 border-t border-app-divider/30 pt-4">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Refine with AI</p>
+                  <p className="text-[9px] text-app-fg-subtle">Plain-language tweaks to layout, theme, or copy</p>
+                  <input
+                    value={refineVideoPrompt}
+                    onChange={(e) => setRefineVideoPrompt(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey && !aiRefineBusy && refineVideoPrompt.trim()) {
+                        e.preventDefault();
+                        void onVideoRefineApply();
+                      }
+                    }}
+                    disabled={aiRefineBusy}
+                    placeholder='e.g. "make text bigger", "move text up", "use editorial theme"'
+                    className="glass-inset w-full rounded-lg px-2 py-1.5 text-[11px] text-app-fg placeholder:text-app-fg-subtle disabled:opacity-50"
+                  />
+                  <button
+                    type="button"
+                    disabled={aiRefineBusy || !refineVideoPrompt.trim() || !session.background_url}
+                    onClick={() => void onVideoRefineApply()}
+                    className="w-full rounded-lg bg-violet-500/20 py-1.5 text-[10px] font-bold text-violet-200 hover:bg-violet-500/30 disabled:opacity-40"
+                  >
+                    {aiRefineBusy ? "Applying…" : "Apply (↵)"}
+                  </button>
+                </div>
           </div>
         </div>
 
@@ -1895,16 +2907,50 @@ export function VideoCreateWorkspace({
             that unblocks it, instead of a separate "Render" card that's empty 90% of the time. */}
         <div className="mt-5 border-t border-app-divider/50 pt-4">
           {!step2Done && !step3Done ? (
-            <p className="text-xs text-app-fg-muted">Pick a background above to enable render.</p>
+            <p className="text-xs text-app-fg-muted">Pick a background (clip, photo, or AI) to enable render.</p>
           ) : isRendering ? (
-            <div className="flex items-center gap-3 rounded-xl border border-amber-500/25 bg-amber-500/[0.07] px-4 py-3">
-              <Loader2 className="h-5 w-5 shrink-0 animate-spin text-amber-500" />
-              <div>
-                <p className="text-sm font-semibold text-app-fg">Rendering…</p>
-                <p className="text-xs text-app-fg-muted">
-                  Usually 1–3 minutes. You can leave this page.
-                </p>
+            <div className="flex flex-col gap-3 rounded-xl border border-amber-500/25 bg-amber-500/[0.07] px-4 py-3 sm:flex-row sm:items-center">
+              <div className="flex min-w-0 flex-1 items-start gap-3">
+                <Loader2 className="h-5 w-5 shrink-0 animate-spin text-amber-500" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-app-fg">Rendering…</p>
+                  <p className="text-xs text-app-fg-muted">
+                    Usually 1–3 minutes (this page polls for up to ~10 min). You can leave and come back.
+                  </p>
+                  {typeof session.render_progress_pct === "number" ? (
+                    <div className="mt-2 h-1.5 w-full max-w-xs overflow-hidden rounded-full bg-black/20 dark:bg-white/10">
+                      <div
+                        className="h-full rounded-full bg-amber-500 transition-all duration-300"
+                        style={{ width: `${Math.min(100, Math.max(0, session.render_progress_pct))}%` }}
+                      />
+                    </div>
+                  ) : null}
+                </div>
               </div>
+              <button
+                type="button"
+                onClick={() => {
+                  void (async () => {
+                    const r = await refreshSession();
+                    if (!r.ok) {
+                      show(r.error, "error");
+                      return;
+                    }
+                    const rs = r.data.render_status;
+                    if (rs === "done" || rs === "cleaned") {
+                      show("Video ready — download below.", "success");
+                    } else if (rs === "failed") {
+                      show(r.data.render_error || "Render failed.", "error");
+                    } else {
+                      show("Still rendering — check again in a bit.", "success");
+                    }
+                  })();
+                }}
+                className="inline-flex shrink-0 items-center justify-center gap-1.5 self-start rounded-lg border border-app-divider bg-black/10 px-3 py-2 text-xs font-semibold text-app-fg hover:bg-black/20 dark:bg-white/5 dark:hover:bg-white/10 sm:self-center"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Check status
+              </button>
             </div>
           ) : session.render_status === "failed" ? (
             <div className="space-y-3">

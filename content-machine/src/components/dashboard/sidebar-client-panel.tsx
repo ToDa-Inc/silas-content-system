@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Loader2, Plus } from "lucide-react";
-import { clientApiHeaders, contentApiFetch, getContentApiBase } from "@/lib/api-client";
+import { clientApiHeaders, contentApiFetch, getContentApiBase, invalidateApiContext } from "@/lib/api-client";
 import { slugify } from "@/lib/slug";
 import { AppSelect } from "@/components/ui/app-select";
 import { useToast } from "@/components/ui/toast-provider";
@@ -44,6 +44,7 @@ export function SidebarClientPanel({ clients, activeSlug, orgSlug }: Props) {
         show("Couldn’t switch creator — try again.", "error");
         return;
       }
+      invalidateApiContext();
       router.refresh();
     } finally {
       setBusySwitch(false);
@@ -101,6 +102,7 @@ export function SidebarClientPanel({ clients, activeSlug, orgSlug }: Props) {
       setSlug("");
       setInstagram("");
       setAddOpen(false);
+      invalidateApiContext();
       router.refresh();
     } finally {
       setBusyCreate(false);

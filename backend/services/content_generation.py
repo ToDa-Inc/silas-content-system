@@ -546,11 +546,70 @@ def _normalize_text_blocks(raw: Any) -> Optional[List[Dict[str, Any]]]:
     for item in raw[:8]:
         if not isinstance(item, dict):
             continue
-        text = str(item.get("text") or "").strip()
+        text = str(item.get("text") or "").strip()[:60]
         if not text:
             continue
         out.append({"text": text, "isCTA": bool(item.get("isCTA"))})
     return out if out else None
+
+
+_VALID_VIDEO_TEMPLATES = frozenset(
+    {"bottom-card", "centered-pop", "top-banner", "capcut-highlight"}
+)
+_VALID_VIDEO_THEMES = frozenset({"bold-modern", "editorial", "casual-hand", "clean-minimal"})
+_VALID_BLOCK_ANIMS = frozenset({"pop", "fade", "slide-up", "none"})
+
+
+def _normalize_visual_style(
+    raw: Any,
+    *,
+    source_format_key: Optional[str],
+    client_row: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """LLM-suggested template/theme/per-block animation; timing still comes from video_spec_timing."""
+    from services.video_spec_timing import template_id_for_format_key
+
+    data = raw if isinstance(raw, dict) else {}
+    fk = canonicalize_stored_format_key(source_format_key or "") or (source_format_key or "").strip()
+    default_tpl = template_id_for_format_key(fk, source_type="")
+
+    tid = str(data.get("templateId") or "").strip()
+    if tid not in _VALID_VIDEO_TEMPLATES:
+        tid = default_tpl
+
+    thid = str(data.get("themeId") or "").strip()
+    if thid not in _VALID_VIDEO_THEMES:
+        bt = client_row.get("brand_theme") if isinstance(client_row.get("brand_theme"), dict) else {}
+        cand = str(bt.get("defaultThemeId") or "").strip()
+        thid = cand if cand in _VALID_VIDEO_THEMES else "bold-modern"
+
+    block_anims: Optional[List[str]] = None
+    raw_anims = data.get("blockAnimations")
+    if isinstance(raw_anims, list) and raw_anims:
+        block_anims = []
+        for x in raw_anims[:12]:
+            a = str(x or "").strip()
+            block_anims.append(a if a in _VALID_BLOCK_ANIMS else "fade")
+
+    # Optional: LLM may suggest a starting layout. Bounds mirror VideoSpecLayout
+    # — silently snap out-of-range values so a hallucinated number can't break the spec.
+    layout: Optional[Dict[str, float]] = None
+    raw_layout = data.get("layout")
+    if isinstance(raw_layout, dict):
+        def _bounded(key: str, default: float, lo: float, hi: float) -> float:
+            try:
+                v = float(raw_layout.get(key, default))
+            except (TypeError, ValueError):
+                return default
+            return max(lo, min(hi, v))
+
+        layout = {
+            "verticalOffset": _bounded("verticalOffset", 0.0, -0.2, 0.2),
+            "scale": _bounded("scale", 1.0, 0.7, 1.3),
+            "sidePadding": _bounded("sidePadding", 0.05, 0.02, 0.12),
+        }
+
+    return {"templateId": tid, "themeId": thid, "blockAnimations": block_anims, "layout": layout}
 
 
 # ── Cover text generator ────────────────────────────────────────────────────────
@@ -884,7 +943,15 @@ def run_content_package(
         '  "hashtags": [string]'
     )
     if _wants_text_blocks(source_format_key):
-        json_shape += ',\n  "text_blocks": [{"text": string, "isCTA": boolean}]'
+        json_shape += (
+            ',\n  "text_blocks": [{"text": string, "isCTA": boolean}],\n'
+            '  "visual_style": {\n'
+            '    "templateId": "bottom-card" | "centered-pop" | "top-banner" | "capcut-highlight",\n'
+            '    "themeId": "bold-modern" | "editorial" | "casual-hand" | "clean-minimal",\n'
+            '    "blockAnimations": ["pop"|"fade"|"slide-up"|"none", ...],\n'
+            '    "layout": { "verticalOffset": number, "scale": number, "sidePadding": number }\n'
+            "  }"
+        )
     json_shape += "\n}\n"
     tb_rules = ""
     if _wants_text_blocks(source_format_key):
@@ -924,6 +991,19 @@ def run_content_package(
             "\n"
             "FINAL CHECK before returning text_blocks:\n"
             "\"Would this stop the scroll for ONE specific person in the ICP?\" If not, rewrite.\n"
+            "\n"
+            "visual_style (layout + motion for the on-screen reel preview):\n"
+            "- templateId: pick the layout that fits PATTERNS_JSON.format_insights / the angle. "
+            "b_roll_reel → usually bottom-card; dense text-overlay / punchy beats → centered-pop or capcut-highlight; "
+            "face-cam + lower-third feel → top-banner.\n"
+            "- themeId: match emotional tone to CHOSEN_ANGLE_JSON (bold-modern = high-contrast; editorial = refined; "
+            "casual-hand = handwritten vibe; clean-minimal = glassy/modern).\n"
+            "- blockAnimations: exactly one entry per text_blocks item (same order). "
+            "Use pop for the strongest beat or CTA; fade/slide-up for supports; none only if the beat is ultra soft.\n"
+            "- layout: leave as defaults (verticalOffset 0, scale 1, sidePadding 0.05) UNLESS the chosen template needs it. "
+            "Only nudge verticalOffset (-0.2..0.2 = up..down as fraction of canvas) if face-cam framing or product reveal "
+            "should reserve the opposite side; only bump scale (0.7..1.3) for ultra-short hooks (<3 words → 1.15) or long "
+            "subline beats (>5 words → 0.85); sidePadding (0.02..0.12) is for visual breathing room only.\n"
         )
     adapt_block = ""
     if adapt_single_reference_reel:
@@ -1017,6 +1097,14 @@ def run_content_package(
     }
     if _wants_text_blocks(source_format_key):
         out["text_blocks"] = _normalize_text_blocks(data.get("text_blocks"))
+        if out["text_blocks"]:
+            out["visual_style"] = _normalize_visual_style(
+                data.get("visual_style"),
+                source_format_key=source_format_key,
+                client_row=client_row,
+            )
+        else:
+            out["visual_style"] = None
     else:
         out["text_blocks"] = None
     return _apply_german_natural_polish(settings, client_row, out, mode=german_polish)
@@ -1076,7 +1164,7 @@ def run_regenerate(
         "hooks": ("hooks",),
         "script": ("script",),
         "caption": ("caption_body", "hashtags"),
-        "text_blocks": ("text_blocks",),
+        "text_blocks": ("text_blocks", "visual_style"),
         # legacy "story" scope kept for backwards-compat; touches nothing in new sessions.
         "story": (),
     }

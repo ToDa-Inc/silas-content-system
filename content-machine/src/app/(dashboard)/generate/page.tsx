@@ -648,20 +648,23 @@ export default function GeneratePage() {
     Boolean(sessionIdFromUrl?.trim()),
   );
   /**
-   * Initial mode = stored preference, but a `?url=…` deep-link forces Recreate.
-   * (`?session=…` skips the source step entirely so it doesn't matter there.)
+   * Mode must match server + first client paint (no `localStorage` in the initializer — it
+   * caused hydration mismatches when the stored tab differed from SSR). We sync storage in
+   * `useEffect` after mount; `?url=…` still forces Recreate on both.
    */
-  const [mode, setMode] = useState<Mode>(() => {
-    if (urlFromUrl?.trim()) return "recreate";
-    if (typeof window === "undefined") return "idea";
+  const [mode, setMode] = useState<Mode>(() => (urlFromUrl?.trim() ? "recreate" : "idea"));
+  useEffect(() => {
+    if (urlFromUrl?.trim()) {
+      setMode("recreate");
+      return;
+    }
     try {
       const stored = window.localStorage.getItem(MODE_STORAGE_KEY);
-      if (stored === "idea" || stored === "recreate") return stored;
+      if (stored === "idea" || stored === "recreate") setMode(stored);
     } catch {
       // ignore (private mode, etc.)
     }
-    return "idea";
-  });
+  }, [urlFromUrl]);
   const [composerInput, setComposerInput] = useState(urlFromUrl?.trim() ?? "");
   const [formatPreset, setFormatPreset] = useState<FormatPreset>("auto");
   /** Target production format for "Recreate a reel" — no default; user must pick.
