@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Any, Dict, List, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 from supabase import Client
@@ -41,7 +41,7 @@ from services.image_generation import (
     generate_slide_image,
 )
 from services.job_queue import has_active_job
-from services.video_render import RENDERS_BUCKET, run_video_render_job
+from services.video_render import RENDERS_BUCKET, recover_stale_video_render_jobs, run_video_render_job
 from services.video_spec_defaults import (
     finalize_spec_for_render,
     fit_spec_blocks_to_broll,
@@ -57,6 +57,14 @@ from services.video_spec_timeline import ffprobe_duration_seconds
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["creation"])
+
+
+def _dispatch_video_render_job(job_id: str) -> None:
+    """Post-response hook: run Remotion in-process if the worker has not claimed the row yet."""
+    try:
+        run_video_render_job(get_settings(), job_id, from_worker=False)
+    except Exception:
+        logger.exception("Inline video_render task crashed for job %s", job_id)
 
 VISUAL_FORMATS = frozenset({"text_overlay", "b_roll_reel", "carousel"})
 CREATE_ELIGIBLE_STATUSES = frozenset({"content_ready", "approved"})
@@ -607,8 +615,10 @@ def queue_session_render(
     org_id: Annotated[str, Depends(require_org_access)],
     client_id: Annotated[str, Depends(resolve_client_id)],
     supabase: Annotated[Client, Depends(get_supabase)],
+    background_tasks: BackgroundTasks,
 ) -> Dict[str, Any]:
     _ = slug
+    recover_stale_video_render_jobs(get_settings())
     row = _load_session(supabase, client_id, session_id)
     if not _session_eligible_for_create(row) or _is_carousel_session(row):
         raise HTTPException(
@@ -619,7 +629,26 @@ def queue_session_render(
             ),
         )
     if str(row.get("render_status") or "") == "rendering":
-        raise HTTPException(status_code=409, detail="A render is already in progress for this session")
+        if has_active_job(
+            supabase,
+            client_id=client_id,
+            job_type="video_render",
+            payload_match={"session_id": session_id},
+        ):
+            raise HTTPException(status_code=409, detail="A render is already in progress for this session")
+        now_clear = _now_iso()
+        supabase.table("generation_sessions").update(
+            {
+                "render_status": "failed",
+                "render_error": (
+                    "Previous render had no active worker job (API reload, worker stopped, or DB drift). "
+                    "Try render again."
+                ),
+                "render_progress_pct": None,
+                "updated_at": now_clear,
+            }
+        ).eq("id", session_id).execute()
+        row = _load_session(supabase, client_id, session_id)
     if has_active_job(
         supabase,
         client_id=client_id,
@@ -660,6 +689,7 @@ def queue_session_render(
         {"render_status": "rendering", "render_error": None, "updated_at": now}
     ).eq("id", session_id).execute()
 
+    background_tasks.add_task(_dispatch_video_render_job, job_id)
     return {"job_id": job_id, "status": "queued"}
 
 

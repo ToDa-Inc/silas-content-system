@@ -53,8 +53,9 @@ from services.image_generation import (
     compose_thumbnail_from_image,
     generate_thumbnail_freepik_pillow,
 )
-from services.video_render import RENDERS_BUCKET
+from services.video_render import RENDERS_BUCKET, recover_stale_video_render_jobs
 from services.video_spec_defaults import persist_finalize_spec, persist_healed_session_video_spec_row
+from services.job_queue import has_active_job
 from services.format_digest import (
     compute_format_digests,
     ensure_format_digests_fresh,
@@ -920,6 +921,30 @@ def generation_get_session(
 ) -> dict:
     _ = slug
     row = _load_session(supabase, client_id, session_id)
+    if str(row.get("render_status") or "") == "rendering":
+        try:
+            recover_stale_video_render_jobs(get_settings())
+            row = _load_session(supabase, client_id, session_id)
+        except Exception:
+            logger.debug("stale video_render sweep on session GET failed", exc_info=True)
+        if str(row.get("render_status") or "") == "rendering" and not has_active_job(
+            supabase,
+            client_id=client_id,
+            job_type="video_render",
+            payload_match={"session_id": session_id},
+        ):
+            supabase.table("generation_sessions").update(
+                {
+                    "render_status": "failed",
+                    "render_error": (
+                        "Render state had no active background job (worker not running or job lost). "
+                        "Start the worker and click Render again."
+                    ),
+                    "render_progress_pct": None,
+                    "updated_at": _now_iso(),
+                }
+            ).eq("id", session_id).eq("client_id", client_id).execute()
+            row = _load_session(supabase, client_id, session_id)
     row = persist_healed_session_video_spec_row(
         supabase, client_id=client_id, session_id=session_id, row=row
     )

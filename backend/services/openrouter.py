@@ -333,6 +333,63 @@ def _chat_completion_raw_text(
     return text.strip()
 
 
+def _strip_json_response_fences(text: str) -> str:
+    cleaned = re.sub(r"^```json\s*", "", text)
+    cleaned = re.sub(r"^```\s*", "", cleaned).strip()
+    cleaned = re.sub(r"```\s*$", "", cleaned).strip()
+    return cleaned
+
+
+def _extract_first_json_object(s: str) -> str | None:
+    """Return the first top-level `{ ... }` substring, or None (string-aware, handles nested objects)."""
+    start = s.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(s)):
+        c = s[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_string = False
+        else:
+            if c == '"':
+                in_string = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    return s[start : i + 1]
+    return None
+
+
+def _parse_json_object_from_model_text(cleaned: str) -> dict:
+    """Parse a single JSON object; try full text then first balanced `{...}` slice."""
+    cleaned = cleaned.strip()
+    candidates: list[str] = [cleaned]
+    extracted = _extract_first_json_object(cleaned)
+    if extracted and extracted != cleaned:
+        candidates.append(extracted)
+    last_err: json.JSONDecodeError | None = None
+    for cand in candidates:
+        try:
+            parsed = json.loads(cand)
+        except json.JSONDecodeError as e:
+            last_err = e
+            continue
+        if not isinstance(parsed, dict):
+            raise RuntimeError("Model JSON must be an object at the top level")
+        return parsed
+    assert last_err is not None
+    raise last_err
+
+
 def chat_json_completion(
     openrouter_key: str,
     model: str,
@@ -342,26 +399,36 @@ def chat_json_completion(
     max_tokens: int = 12_288,
     temperature: float = 0.35,
 ) -> dict:
-    """Chat completion; response must be a single JSON object (markdown fences stripped)."""
-    text = _chat_completion_raw_text(
-        openrouter_key,
-        model,
-        system=system,
-        user=user,
-        max_tokens=max_tokens,
-        temperature=temperature,
-    )
-    cleaned = re.sub(r"^```json\s*", "", text)
-    cleaned = re.sub(r"^```\s*", "", cleaned).strip()
-    cleaned = re.sub(r"```\s*$", "", cleaned).strip()
-    try:
-        parsed = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        tail = cleaned[:500] + ("…" if len(cleaned) > 500 else "")
-        raise RuntimeError(f"Model returned invalid JSON: {e}. Start of response: {tail!r}") from e
-    if not isinstance(parsed, dict):
-        raise RuntimeError("Model JSON must be an object at the top level")
-    return parsed
+    """Chat completion; response must be a single JSON object (markdown fences stripped).
+
+    On invalid JSON: retries up to 3 completions, and parses a brace-balanced `{...}` slice
+    when the model adds preamble/trailing text outside the object.
+    """
+    last_exc: BaseException | None = None
+    last_text = ""
+    for attempt in range(3):
+        t = temperature if attempt == 0 else min(temperature, 0.2)
+        last_text = _chat_completion_raw_text(
+            openrouter_key,
+            model,
+            system=system,
+            user=user,
+            max_tokens=max_tokens,
+            temperature=t,
+        )
+        cleaned = _strip_json_response_fences(last_text)
+        try:
+            return _parse_json_object_from_model_text(cleaned)
+        except (json.JSONDecodeError, RuntimeError) as e:
+            last_exc = e
+            if attempt < 2:
+                time.sleep(0.35 + 0.25 * attempt)
+                continue
+            break
+    tail = _strip_json_response_fences(last_text)
+    tail = tail[:500] + ("…" if len(tail) > 500 else "")
+    msg = str(last_exc) if last_exc else "unknown parse error"
+    raise RuntimeError(f"Model returned invalid JSON after retries: {msg}. Start of response: {tail!r}") from last_exc
 
 
 def chat_text_completion(
