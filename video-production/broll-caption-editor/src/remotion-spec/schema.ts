@@ -1,4 +1,5 @@
 /** VideoSpec v1 — shared contract with backend (Pydantic). */
+/* Mirror: content-machine/src/remotion-spec/schema.ts (Next preview). Edit both or extract a workspace package. */
 
 export type VideoTemplateId =
   | 'bottom-card'

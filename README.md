@@ -178,7 +178,7 @@ The root **`package.json`** now also defines **`start`** and **`build`** pointin
 
 Health check: **`/api/health/env`**.
 
-**FastAPI (cron / GitHub Actions):** the root Dockerfile is the **dashboard** only. Cron URLs such as `POST /api/v1/cron/sync-all` must target the **Python API**. Add a **second Railway service** with **Root Directory** `backend`, **`backend/Dockerfile`**, and the same secrets the API needs (`CRON_SECRET`, Supabase service role, Apify, OpenRouter, …). Step-by-step: **`backend/RAILWAY.md`**. If `SYNC_ALL_URL` / niche cron return **404** with `{"detail":"Not Found"}`, that URL is not running this repo’s FastAPI (wrong service or image never rebuilt from `backend/`).
+**FastAPI (cron / GitHub Actions):** the root Dockerfile is the **dashboard** only. Cron URLs such as `POST /api/v1/cron/sync-all` must target the **Python API**. Add a **second Railway service** with **Root Directory** empty (repo root), **`backend.Dockerfile`**, and the same secrets the API needs (`CRON_SECRET`, Supabase service role, Apify, OpenRouter, …). Step-by-step: **`backend/RAILWAY.md`**. If `SYNC_ALL_URL` / niche cron return **404** with `{"detail":"Not Found"}`, that URL is not running this repo’s FastAPI (wrong service or stale image).
 
 ---
 

@@ -1,6 +1,6 @@
 # https://docs.railway.com/reference/config-as-code
-# Use the backend Dockerfile; set service "Root directory" to **backend** (not the monorepo root)
-# so COPY paths in backend/Dockerfile match the build context.
+# API service: Root directory = repo root (empty), Dockerfile = backend.Dockerfile
+# (build context must include video-production/ for Remotion). See backend/RAILWAY.md.
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "backend/Dockerfile"
+dockerfilePath = "backend.Dockerfile"

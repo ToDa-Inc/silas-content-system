@@ -1,4 +1,5 @@
 /** VideoSpec v1 — shared contract with backend (Pydantic). */
+/* Mirror: video-production/broll-caption-editor/src/remotion-spec/schema.ts (Remotion CLI render). */
 
 export type VideoTemplateId =
   | 'bottom-card'

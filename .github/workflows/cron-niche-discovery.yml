@@ -98,6 +98,6 @@ jobs:
           rm -f "$body_file"
 
           if [ "$code" != "200" ]; then
-            echo "::error::All candidate URLs returned non-200 (last HTTP ${code}). The host does not expose this repo FastAPI cron routes (404 = wrong Railway service or stale image). Fix: add a Railway service with Root Directory backend and backend/Dockerfile — see backend/RAILWAY.md. Point SYNC_ALL_URL and NICHE_DISCOVERY_CRON_URL at that API. Verify GET https://<api>/openapi.json lists /api/v1/cron/keyword-reel-similarity."
+            echo "::error::All candidate URLs returned non-200 (last HTTP ${code}). The host does not expose this repo FastAPI cron routes (404 = wrong Railway service or stale image). Fix: Railway API service — Root Directory empty (repo root), Dockerfile backend.Dockerfile — see backend/RAILWAY.md. Point SYNC_ALL_URL and NICHE_DISCOVERY_CRON_URL at that API. Verify GET https://<api>/openapi.json lists /api/v1/cron/keyword-reel-similarity."
             exit 1
           fi

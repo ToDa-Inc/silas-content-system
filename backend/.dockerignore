@@ -1,8 +1,6 @@
-# Optional local env / caches (context = backend)
+# Used when Docker build context is `backend/` only. The production API image is built from the
+# repo root with `backend.Dockerfile` (see backend/RAILWAY.md); that build uses the root `.dockerignore`.
 .venv
 **/__pycache__
 **/*.pyc
 .pytest_cache
-broll-caption-editor/node_modules
-broll-caption-editor/.remotion
-broll-caption-editor/out

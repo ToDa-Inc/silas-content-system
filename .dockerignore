@@ -9,3 +9,9 @@ backend/.venv
 data
 .env
 **/.env.local
+
+# backend.Dockerfile uses repo-root context but only COPYs backend + video-production;
+# shrink upload / layer invalidation for API builds.
+content-machine/
+docs/
+.claude/

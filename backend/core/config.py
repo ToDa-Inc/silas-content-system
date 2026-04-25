@@ -98,7 +98,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("REMOTION_EDITOR_DIR", "BROLL_CAPTION_EDITOR_DIR"),
         description=(
             "Absolute path to `broll-caption-editor` (must contain `src/Root.tsx` and `node_modules/@remotion/cli`). "
-            "Required when the API/worker runs from a backend-only deploy; optional locally if the monorepo layout is used."
+            "Docker image sets this to `/opt/broll-caption-editor`. Locally optional: defaults to `video-production/broll-caption-editor` when unset."
         ),
     )
 

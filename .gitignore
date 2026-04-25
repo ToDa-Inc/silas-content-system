@@ -21,10 +21,6 @@ content-machine/.vercel
 video-production/broll-caption-editor/node_modules/
 video-production/broll-caption-editor/.remotion/
 video-production/broll-caption-editor/out/
-# Vendored copy for backend-only Docker (see scripts/sync-broll-vendor.sh)
-backend/broll-caption-editor/node_modules/
-backend/broll-caption-editor/.remotion/
-backend/broll-caption-editor/out/
 
 # OS
 .DS_Store
@@ -44,6 +40,10 @@ npm-debug.log*
 # Python backend
 backend/.venv/
 backend/.env
+__pycache__/
+*.py[cod]
+*$py.class
+.claude/
 
 # Misc
 .cache/

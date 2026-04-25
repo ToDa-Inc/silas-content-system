@@ -42,10 +42,9 @@ def _tail_remotion_log(lines: List[str], *, max_chars: int = 7500) -> str:
 def _resolve_remotion_project_dir(settings: Settings) -> Path:
     """Locate ``broll-caption-editor`` (Remotion root with ``src/Root.tsx``).
 
-    Local monorepo: ``backend/../video-production/broll-caption-editor``.
+    Canonical path in this repo: ``<repo>/video-production/broll-caption-editor``.
 
-    Backend-only Docker image (``WORKDIR /app`` = backend): ``backend.parent`` is ``/`` — wrong.
-    Set ``REMOTION_EDITOR_DIR`` or bake the project under ``/opt/broll-caption-editor`` (see ``backend/Dockerfile``).
+    Production Docker: set ``REMOTION_EDITOR_DIR=/opt/broll-caption-editor`` (see ``backend.Dockerfile``).
     """
     raw = (settings.remotion_editor_dir or "").strip()
     if raw:
@@ -61,8 +60,6 @@ def _resolve_remotion_project_dir(settings: Settings) -> Path:
     backend_root = here.parent.parent
     candidates = [
         backend_root.parent / "video-production" / "broll-caption-editor",
-        backend_root / "broll-caption-editor",
-        backend_root / "vendor" / "broll-caption-editor",
     ]
     for c in candidates:
         if (c / "src" / "Root.tsx").is_file():
@@ -283,6 +280,9 @@ def run_video_render_job(settings: Settings, job_id: str, *, from_worker: bool =
             f"--props={props_arg}",
             "--overwrite",
         ]
+        browser_exe = os.environ.get("REMOTION_BROWSER_EXECUTABLE", "").strip()
+        if browser_exe:
+            cmd.extend(["--browser-executable", browser_exe])
         env = {**os.environ, "NODE_ENV": "production"}
         proc = subprocess.Popen(
             cmd,

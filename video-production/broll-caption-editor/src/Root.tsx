@@ -1,6 +1,6 @@
 import { Composition, registerRoot } from 'remotion';
-// Bundled next to Root so `remotion render` works in Docker (backend-only context has no
-// ../content-machine). Keep in sync with content-machine via scripts/sync-broll-vendor.sh.
+// Remotion CLI entry; ./remotion-spec is the render-time copy. Next.js preview imports the
+// parallel tree under content-machine/src/remotion-spec — keep types/defaults aligned (see schema.ts).
 import Renderer from './remotion-spec/Renderer';
 import { defaultStudioSpec } from './remotion-spec/schema';
 
