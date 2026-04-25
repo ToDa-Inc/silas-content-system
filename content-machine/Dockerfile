@@ -1,5 +1,6 @@
 # Next.js production image. Build with context = this folder (`docker build .` from content-machine).
-# Repo root `../Dockerfile` also supports this layout when context is content-machine (same RUN logic).
+# The repo-root Dockerfile is intentionally the same shape for Railway services that point at it
+# while using Root Directory = content-machine.
 # Railway injects env at build time for ARGS below when variables exist on the service.
 FROM node:22-alpine AS base
 WORKDIR /app

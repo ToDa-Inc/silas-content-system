@@ -161,16 +161,11 @@ Supabase → **Authentication → URL configuration**: add your Vercel URL (`htt
 
 ### Railway (Railpack / “No start command detected”)
 
-The **repo root** `package.json` had no `start` script, so Railpack failed. Two supported setups:
+The dashboard service has one supported Docker setup:
 
-**A — Recommended (repo root, no Root Directory change)**  
-1. Use the repo-root **`Dockerfile`** + **`railway.json`** + **`.dockerignore`** (they build `content-machine/` from the monorepo root).  
-2. **`builder`: `DOCKERFILE`** skips Railpack.  
-3. Redeploy after pull.
-
-**B — Subdirectory deploy**  
-1. **Settings → Root Directory** → **`content-machine`**.  
-2. Use **`content-machine/Dockerfile`** *or* the repo-root **`Dockerfile`** (same image; root Dockerfile detects both monorepo and app-only contexts). **`content-machine/railway.json`** may set the Dockerfile path.
+1. **Settings → Root Directory** → **`content-machine`**.
+2. **Dockerfile path** → `Dockerfile` (the Dockerfile in that root).
+3. **Builder** → `DOCKERFILE`.
 
 The root **`package.json`** now also defines **`start`** and **`build`** pointing at `content-machine/` so Railpack can fall back if Docker is not used.
 

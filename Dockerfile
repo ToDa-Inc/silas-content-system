@@ -1,21 +1,13 @@
-# Next.js dashboard — supports two Docker build contexts:
-#   1) Monorepo root (context = repo root): app lives in content-machine/
-#   2) App-only (context = content-machine/): app files are at context root (Railway Root Directory)
-#
-# Railway: either Root Directory empty + this Dockerfile, OR Root Directory = content-machine
-# and this Dockerfile as the selected file (same file works for both).
+# Next.js dashboard image.
+# Build context must be `content-machine/` (Railway Root Directory = content-machine).
+# The API uses backend.Dockerfile from the repo root; do not use this file for the API.
 
 FROM node:22-alpine AS base
 WORKDIR /app
 RUN apk add --no-cache libc6-compat
 
 FROM base AS deps
-COPY . /src
-RUN if [ -d /src/content-machine ]; then \
-      cp /src/content-machine/package.json /src/content-machine/package-lock.json . ; \
-    else \
-      cp /src/package.json /src/package-lock.json . ; \
-    fi && rm -rf /src
+COPY package.json package-lock.json ./
 RUN npm ci
 
 FROM base AS builder
@@ -23,12 +15,7 @@ ENV DOCKER=1
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_OPTIONS=--max-old-space-size=6144
 COPY --from=deps /app/node_modules ./node_modules
-COPY . /src
-RUN if [ -d /src/content-machine ]; then \
-      cp -a /src/content-machine/. . ; \
-    else \
-      cp -a /src/. . ; \
-    fi && rm -rf /src
+COPY . .
 
 ARG SUPABASE_URL
 ARG SUPABASE_ANON_KEY
