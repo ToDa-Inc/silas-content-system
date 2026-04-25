@@ -10,8 +10,7 @@ data
 .env
 **/.env.local
 
-# backend.Dockerfile uses repo-root context but only COPYs backend + video-production;
-# shrink upload / layer invalidation for API builds.
-content-machine/
+# Do NOT list `content-machine/` here: the repo-root Next.js Dockerfile must COPY it in.
+# (**/node_modules already trims heavy dirs.) These shrink context for builds that do not need them:
 docs/
 .claude/
