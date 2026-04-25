@@ -1,0 +1,22 @@
+{
+  "name": "broll-caption-editor",
+  "version": "1.0.0",
+  "description": "Remotion-based B-roll caption editor for Instagram Reels",
+  "type": "module",
+  "scripts": {
+    "dev": "remotion studio src/Root.tsx",
+    "build": "remotion render src/Root.tsx --output-path=./out/video.mp4"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.451",
+    "@remotion/google-fonts": "4.0.451",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "remotion": "4.0.451"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@vitejs/plugin-react": "^4.0.0",
+    "vite": "^5.0.0"
+  }
+}

@@ -1,14 +1,15 @@
-# API + worker image with Remotion bundled.
+# API + worker. Remotion sources are vendored at `backend/broll-caption-editor/`
+# (kept in sync with `video-production/broll-caption-editor` — see scripts/sync-broll-vendor.sh).
 #
-# Build from **monorepo root** (parent of `backend/` and `video-production/`):
-#   docker build -f backend/Dockerfile .
+# Build (Railway "Root directory" = `backend` — this is the default for many services):
+#   docker build -f Dockerfile .
+#   (run from the `backend/` directory)
 #
-# If your platform only allows `backend/` as build context, either:
-#   - switch the service root to the monorepo and use this file, or
-#   - copy `video-production/broll-caption-editor` into `backend/vendor/` before build and
-#     set REMOTION_EDITOR_DIR=/app/vendor/broll-caption-editor (see auto-discovery in video_render.py).
+# Build from monorepo root (alternative):
+#   docker build -f api.Dockerfile .
 #
-# Railway: Root Directory = repo root, Dockerfile path = `backend/Dockerfile`.
+# Do NOT set Docker build context to `backend` if this file still used COPY ../video-production
+# (old layout). The vendor copy fixes that.
 
 FROM python:3.12-slim-bookworm
 
@@ -19,15 +20,14 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends nodejs npm \
   && rm -rf /var/lib/apt/lists/*
 
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY backend/ /app/
-
-COPY video-production/broll-caption-editor /opt/broll-caption-editor
+COPY broll-caption-editor/ /opt/broll-caption-editor/
 WORKDIR /opt/broll-caption-editor
 RUN npm ci
 WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . /app/
 
 ENV REMOTION_EDITOR_DIR=/opt/broll-caption-editor
 ENV PYTHONUNBUFFERED=1

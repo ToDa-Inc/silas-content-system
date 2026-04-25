@@ -1,10 +1,8 @@
+# Optional local env / caches (context = backend)
 .venv
-__pycache__
-*.pyc
+**/__pycache__
+**/*.pyc
 .pytest_cache
-.mypy_cache
-.env
-.env.*
-*.md
-.git
-.gitignore
+broll-caption-editor/node_modules
+broll-caption-editor/.remotion
+broll-caption-editor/out

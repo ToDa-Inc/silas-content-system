@@ -1,0 +1,6 @@
+# https://docs.railway.com/reference/config-as-code
+# Use the backend Dockerfile; set service "Root directory" to **backend** (not the monorepo root)
+# so COPY paths in backend/Dockerfile match the build context.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "backend/Dockerfile"
