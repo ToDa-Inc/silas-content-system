@@ -11,13 +11,13 @@ VIDEO_SPEC_PATCH_SYSTEM = """You output RFC 6902 JSON Patch operations for a Vid
 
 The document has this shape (field names are camelCase):
 - v: always 1
-- templateId: "bottom-card" | "centered-pop" | "top-banner" | "capcut-highlight"
+- templateId: "bottom-card" | "centered-pop" | "top-banner" | "capcut-highlight" | "stacked-cards"
 - themeId: "bold-modern" | "editorial" | "casual-hand" | "clean-minimal"
 - brand: { primary: hex string, accent?: hex }
 - background: { url, kind: "video"|"image", focalPoint: "top"|"center"|"bottom", durationSec?: number }
 - hook: { text, durationSec }
 - blocks: array of { id, text, isCTA, startSec, endSec, animation: "pop"|"fade"|"slide-up"|"none" }
-- layout: { verticalAnchor: "bottom"|"center"|"top", verticalOffset: -0.2..0.2, scale: 0.7..1.3, sidePadding: 0.02..0.12 }
+- layout: { verticalAnchor, verticalOffset, scale, sidePadding, textAlign ("left"|"center"|"right"), stackGap 0..0.06, stackGrowth ("up"|"down") stacked-cards only }
 - gapBetweenBlocksSec: number 0..5 — legacy uniform pause; ignored when pausesSec matches blocks
 - pausesSec: number[] same length as blocks — pause before each block in timeline order (index 0 after hook); prefer this for uneven pauses
 - totalSec: number (must be >= max block endSec and >= hook.durationSec; equals background.durationSec when B-roll clip length is known)
@@ -27,6 +27,8 @@ LAYOUT GUIDE (for instructions about position / size / margins):
 - "move text up / down" → replace /layout/verticalOffset (negative = up, positive = down) OR change /layout/verticalAnchor for bottom-card (center = true vertical center)
 - "add more padding / breathing room" → replace /layout/sidePadding (e.g. 0.08–0.10)
 - "center the text vertically" on bottom-card → replace /layout/verticalAnchor with "center" and /layout/verticalOffset with 0; on centered-pop → verticalOffset 0
+- "align text left/center/right" → replace /layout/textAlign (all templates)
+- stacked-cards only: "more/less space between caption boxes" → replace /layout/stackGap (0..0.06)
 - Use these BEFORE inventing new fields. Templates render layout.* uniformly.
 
 RULES:

@@ -1,7 +1,13 @@
 import { applyPatch, type Operation } from "fast-json-patch";
 import { z } from "zod";
 
-const templateIdZ = z.enum(["bottom-card", "centered-pop", "top-banner", "capcut-highlight"]);
+const templateIdZ = z.enum([
+  "bottom-card",
+  "centered-pop",
+  "top-banner",
+  "capcut-highlight",
+  "stacked-cards",
+]);
 const themeIdZ = z.enum(["bold-modern", "editorial", "casual-hand", "clean-minimal"]);
 const animationZ = z.enum(["pop", "fade", "slide-up", "none"]);
 
@@ -15,6 +21,8 @@ export const videoSpecBlockZ = z.object({
 });
 
 const verticalAnchorZ = z.enum(["bottom", "center", "top"]);
+const textAlignZ = z.enum(["left", "center", "right"]);
+const stackGrowthZ = z.enum(["up", "down"]);
 
 /** Global layout modifiers (kept small on purpose — see backend models/video_spec.py). */
 export const videoSpecLayoutZ = z.object({
@@ -22,6 +30,9 @@ export const videoSpecLayoutZ = z.object({
   verticalOffset: z.number().min(-0.2).max(0.2).default(0),
   scale: z.number().min(0.7).max(1.3).default(1),
   sidePadding: z.number().min(0.02).max(0.12).default(0.05),
+  textAlign: textAlignZ.default("center"),
+  stackGap: z.number().min(0).max(0.06).default(0.008),
+  stackGrowth: stackGrowthZ.default("up"),
 });
 
 export type VideoSpecLayout = z.infer<typeof videoSpecLayoutZ>;
@@ -31,6 +42,9 @@ export const DEFAULT_LAYOUT: VideoSpecLayout = {
   verticalOffset: 0,
   scale: 1,
   sidePadding: 0.05,
+  textAlign: "center",
+  stackGap: 0.008,
+  stackGrowth: "up",
 };
 
 export const videoSpecZ = z.object({

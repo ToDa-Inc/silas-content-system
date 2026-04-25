@@ -1,8 +1,8 @@
-import React from 'react';
 import { AbsoluteFill } from 'remotion';
 import type { VideoSpecWithTimeline } from '../templateProps';
 import { resolveTheme } from '../themes';
 import { blockEntranceStyle } from '../animations';
+import { flexAlignForTextAlign } from '../alignLayout';
 import { resolveLayoutPx } from '../layout';
 
 export default function CenteredPopTemplate({ spec, frame, fps }: VideoSpecWithTimeline) {
@@ -28,6 +28,8 @@ export default function CenteredPopTemplate({ spec, frame, fps }: VideoSpecWithT
   const baseSize = showHook ? 68 : 60;
   const ctaScaled = isCTA ? Math.round(baseSize * theme.ctaScale) : baseSize;
   const fontSize = Math.round(ctaScaled * layout.scale);
+  const ta = layout.textAlign;
+  const cross = flexAlignForTextAlign(ta);
 
   return (
     <AbsoluteFill
@@ -35,7 +37,7 @@ export default function CenteredPopTemplate({ spec, frame, fps }: VideoSpecWithT
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'center',
-        alignItems: 'center',
+        alignItems: cross,
       }}
     >
       <AbsoluteFill
@@ -50,7 +52,7 @@ export default function CenteredPopTemplate({ spec, frame, fps }: VideoSpecWithT
         style={{
           position: 'relative',
           zIndex: 10,
-          textAlign: 'center',
+          textAlign: ta,
           width: '100%',
           maxWidth: '100%',
           paddingLeft: layout.paddingPx,

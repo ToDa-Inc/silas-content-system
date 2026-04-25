@@ -1139,7 +1139,7 @@ export function VideoCreateWorkspace({
   const sessionLayout: VideoSpecLayout = previewVideoSpec?.layout ?? DEFAULT_LAYOUT;
   const [layoutDraft, setLayoutDraft] = useState<VideoSpecLayout>(sessionLayout);
   const [layoutGuides, setLayoutGuides] = useState(false);
-  const layoutSyncKey = `${session?.id ?? ""}|${sessionLayout.verticalAnchor ?? "bottom"}|${sessionLayout.verticalOffset}|${sessionLayout.scale}|${sessionLayout.sidePadding}`;
+  const layoutSyncKey = `${session?.id ?? ""}|${sessionLayout.verticalAnchor ?? "bottom"}|${sessionLayout.verticalOffset}|${sessionLayout.scale}|${sessionLayout.sidePadding}|${sessionLayout.textAlign}|${sessionLayout.stackGap}|${sessionLayout.stackGrowth}`;
   useEffect(() => {
     setLayoutDraft(sessionLayout);
     // sessionLayout is included transitively via the key string; we re-sync only on actual saved changes.
@@ -1192,6 +1192,9 @@ export function VideoCreateWorkspace({
     layoutDraft.verticalOffset,
     layoutDraft.scale,
     layoutDraft.sidePadding,
+    layoutDraft.textAlign,
+    layoutDraft.stackGap,
+    layoutDraft.stackGrowth,
     pauseDraft?.idx,
     pauseDraft?.sec,
     timingDraft?.id,
@@ -2455,6 +2458,12 @@ export function VideoCreateWorkspace({
                           label: "Bold stroke",
                           title: "High-contrast outline style for punchy short clips",
                         },
+                        {
+                          id: "stacked-cards" as const,
+                          label: "Stacked",
+                          title:
+                            "One white card per beat, stacked top-to-bottom — Layout gets Left/Center/Right + space between cards",
+                        },
                       ] as const
                     ).map((t) => {
                       const active = livePreviewSpec?.templateId === t.id;
@@ -2477,6 +2486,13 @@ export function VideoCreateWorkspace({
                       );
                     })}
                   </div>
+                  <p className="mt-1.5 max-w-md text-[9px] leading-snug text-app-fg-subtle">
+                    <span className="font-semibold text-app-fg-muted">Stacked</span> = one white card per beat,
+                    stacked vertically (spacing control in Layout).{" "}
+                    <span className="font-semibold text-app-fg-muted">Bottom card</span> = one card at a time in a
+                    lower-third band. <span className="font-semibold text-app-fg-muted">Text alignment</span>{" "}
+                    (left/center/right) works for every template — see Layout.
+                  </p>
                 </div>
                 <div className="space-y-1">
                   <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Theme</p>
@@ -2535,16 +2551,21 @@ export function VideoCreateWorkspace({
                         {(sessionLayout.verticalAnchor !== DEFAULT_LAYOUT.verticalAnchor ||
                           sessionLayout.verticalOffset !== DEFAULT_LAYOUT.verticalOffset ||
                           sessionLayout.scale !== DEFAULT_LAYOUT.scale ||
-                          sessionLayout.sidePadding !== DEFAULT_LAYOUT.sidePadding) ? (
+                          sessionLayout.sidePadding !== DEFAULT_LAYOUT.sidePadding ||
+                          sessionLayout.textAlign !== DEFAULT_LAYOUT.textAlign ||
+                          sessionLayout.stackGap !== DEFAULT_LAYOUT.stackGap ||
+                          sessionLayout.stackGrowth !== DEFAULT_LAYOUT.stackGrowth) ? (
                           <span
                             className="rounded-sm bg-emerald-500/15 px-1 py-px text-[8px] font-semibold uppercase tracking-wide text-emerald-300"
-                            title={`Saved: anchor ${sessionLayout.verticalAnchor ?? "bottom"}, vertical ${Math.round(sessionLayout.verticalOffset * 100)}%, size ${sessionLayout.scale.toFixed(2)}x, padding ${Math.round(sessionLayout.sidePadding * 100)}%`}
+                            title={`Saved: anchor ${sessionLayout.verticalAnchor ?? "bottom"}, vertical ${Math.round(sessionLayout.verticalOffset * 100)}%, size ${sessionLayout.scale.toFixed(2)}x, padding ${Math.round(sessionLayout.sidePadding * 100)}%, align ${sessionLayout.textAlign}, stack gap ${Math.round(sessionLayout.stackGap * 1920)}px, stack growth ${sessionLayout.stackGrowth}`}
                           >
                             Saved
                           </span>
                         ) : null}
                       </div>
-                      <p className="mt-0.5 text-[9px] text-app-fg-subtle">Nudge position and text size globally</p>
+                      <p className="mt-0.5 text-[9px] text-app-fg-subtle">
+                        Vertical pin + nudge (where supported), text left/center/right, size, and side margins
+                      </p>
                     </div>
                     <button
                       type="button"
@@ -2553,7 +2574,10 @@ export function VideoCreateWorkspace({
                         (sessionLayout.verticalAnchor === DEFAULT_LAYOUT.verticalAnchor &&
                           sessionLayout.verticalOffset === DEFAULT_LAYOUT.verticalOffset &&
                           sessionLayout.scale === DEFAULT_LAYOUT.scale &&
-                          sessionLayout.sidePadding === DEFAULT_LAYOUT.sidePadding)
+                          sessionLayout.sidePadding === DEFAULT_LAYOUT.sidePadding &&
+                          sessionLayout.textAlign === DEFAULT_LAYOUT.textAlign &&
+                          sessionLayout.stackGap === DEFAULT_LAYOUT.stackGap &&
+                          sessionLayout.stackGrowth === DEFAULT_LAYOUT.stackGrowth)
                       }
                       onClick={() => {
                         setLayoutDraft(DEFAULT_LAYOUT);
@@ -2562,6 +2586,9 @@ export function VideoCreateWorkspace({
                           onCommitLayout("verticalOffset", DEFAULT_LAYOUT.verticalOffset),
                           onCommitLayout("scale", DEFAULT_LAYOUT.scale),
                           onCommitLayout("sidePadding", DEFAULT_LAYOUT.sidePadding),
+                          onCommitLayout("textAlign", DEFAULT_LAYOUT.textAlign),
+                          onCommitLayout("stackGap", DEFAULT_LAYOUT.stackGap),
+                          onCommitLayout("stackGrowth", DEFAULT_LAYOUT.stackGrowth),
                         ]);
                       }}
                       className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-subtle hover:text-app-fg disabled:opacity-30"
@@ -2572,31 +2599,160 @@ export function VideoCreateWorkspace({
                   {(() => {
                     const tpl = pendingTemplate ?? previewVideoSpec?.templateId ?? "centered-pop";
                     const isBottomCard = tpl === "bottom-card";
+                    const isStackedCards = tpl === "stacked-cards";
+                    const showVerticalAnchor = isBottomCard || isStackedCards;
                     const anchor = layoutDraft.verticalAnchor ?? "bottom";
                     return (
                       <div className="space-y-2">
-                        {isBottomCard ? (
+                        {showVerticalAnchor ? (
+                          <>
+                            <p className="text-[9px] leading-snug text-app-fg-subtle">
+                              <span className="font-semibold text-app-fg-muted">Pin</span> chooses which vertical band
+                              the caption block attaches to (bottom safe area, middle of the frame, or top).{" "}
+                              <span className="font-semibold text-app-fg-muted">Nudge</span> (below) shifts it a bit
+                              up or down in small steps.
+                            </p>
+                            <AppSelect
+                              label="Pin on screen"
+                              value={anchor}
+                              disabled={!session.background_url}
+                              onChange={(v) => {
+                                const next = v as VideoSpecLayout["verticalAnchor"];
+                                setLayoutDraft((s) => ({ ...s, verticalAnchor: next }));
+                                void onCommitLayout("verticalAnchor", next);
+                              }}
+                              options={[
+                                { value: "bottom", label: "Bottom (safe area)" },
+                                { value: "center", label: "Middle (Y axis)" },
+                                { value: "top", label: "Top" },
+                              ]}
+                              className="w-full"
+                              triggerClassName="min-w-0 w-full py-1.5 text-[10px] font-semibold"
+                              dense
+                            />
+                          </>
+                        ) : (
+                          <p className="text-[9px] leading-snug text-app-fg-subtle">
+                            This template uses a fixed vertical band. Use{" "}
+                            <span className="font-semibold text-app-fg-muted">Nudge up / down</span> for a small shift.
+                            Pick <span className="font-semibold text-app-fg-muted">Bottom card</span> or{" "}
+                            <span className="font-semibold text-app-fg-muted">Stacked</span> if you need bottom /
+                            middle / top <span className="font-semibold text-app-fg-muted">Pin</span>.
+                          </p>
+                        )}
+                        <div className="space-y-1">
+                          <p className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-muted">
+                            Text alignment
+                          </p>
+                          <p className="text-[9px] leading-snug text-app-fg-subtle">
+                            Left, center, or right — applies to every template (how lines sit inside the caption area).
+                          </p>
+                          <div className="flex flex-wrap gap-1">
+                            {(
+                              [
+                                { id: "left" as const, label: "Left" },
+                                { id: "center" as const, label: "Center" },
+                                { id: "right" as const, label: "Right" },
+                              ] as const
+                            ).map((opt) => {
+                              const active = layoutDraft.textAlign === opt.id;
+                              return (
+                                <button
+                                  key={opt.id}
+                                  type="button"
+                                  aria-pressed={active}
+                                  disabled={!session.background_url}
+                                  onClick={() => {
+                                    setLayoutDraft((s) => ({ ...s, textAlign: opt.id }));
+                                    void onCommitLayout("textAlign", opt.id);
+                                  }}
+                                  className={`rounded-md border px-2 py-1 text-[10px] font-semibold transition disabled:opacity-40 ${
+                                    active
+                                      ? "border-amber-500 bg-amber-500/15 text-amber-200"
+                                      : "border-app-divider text-app-fg-muted hover:border-amber-500/40"
+                                  }`}
+                                >
+                                  {opt.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        <div
+                          className={`space-y-1.5 rounded-md border px-2 py-2 ${
+                            isStackedCards
+                              ? "border-amber-500/25 bg-amber-500/5"
+                              : "border-app-divider/60 bg-app-chip-bg/20"
+                          }`}
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-muted">
+                                Stacked template only
+                              </p>
+                              <p className="mt-0.5 text-[9px] leading-snug text-app-fg-subtle">
+                                {isStackedCards
+                                  ? "One white card per beat, stacked in a column. Spacing is between those cards."
+                                  : "Switch to Stacked to show one card per beat in a vertical stack (in addition to text alignment above)."}
+                              </p>
+                            </div>
+                            {!isStackedCards && session.background_url ? (
+                              <button
+                                type="button"
+                                onClick={() => void onPatchVideoTemplate("stacked-cards")}
+                                className="shrink-0 rounded-md border border-amber-500/50 bg-amber-500/10 px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-amber-200 hover:bg-amber-500/20"
+                              >
+                                Use Stacked
+                              </button>
+                            ) : null}
+                          </div>
+                          <LayoutSlider
+                            label="Space between cards"
+                            title="Vertical gap between stacked caption boxes (fraction of frame height). Only when template is Stacked."
+                            leftHint="Tight"
+                            rightHint="Spaced"
+                            min={0}
+                            max={0.06}
+                            step={0.002}
+                            value={layoutDraft.stackGap}
+                            disabled={!session.background_url || !isStackedCards}
+                            formatValue={(v) => `${Math.round(v * 1920)}px`}
+                            onChange={(v) => setLayoutDraft((s) => ({ ...s, stackGap: v }))}
+                            onCommit={(v) => void onCommitLayout("stackGap", v)}
+                          />
+                          <p className="text-[9px] leading-snug text-app-fg-subtle">
+                            <span className="font-semibold text-app-fg-muted">Add below</span> keeps earlier cards
+                            from moving when a new beat appears.{" "}
+                            <span className="font-semibold text-app-fg-muted">Hug bottom</span> keeps the stack on
+                            the lower safe area (earlier lines shift up as the list grows).
+                          </p>
                           <AppSelect
-                            label="Card position"
-                            value={anchor}
-                            disabled={!session.background_url}
+                            label="New beats"
+                            value={layoutDraft.stackGrowth}
+                            disabled={!session.background_url || !isStackedCards}
                             onChange={(v) => {
-                              const next = v as VideoSpecLayout["verticalAnchor"];
-                              setLayoutDraft((s) => ({ ...s, verticalAnchor: next }));
-                              void onCommitLayout("verticalAnchor", next);
+                              const next = v as VideoSpecLayout["stackGrowth"];
+                              setLayoutDraft((s) => ({ ...s, stackGrowth: next }));
+                              void onCommitLayout("stackGrowth", next);
                             }}
                             options={[
-                              { value: "bottom", label: "Bottom (safe area)" },
-                              { value: "center", label: "Center (Y axis)" },
-                              { value: "top", label: "Top" },
+                              {
+                                value: "down",
+                                label: "Add below — first line stays put",
+                              },
+                              {
+                                value: "up",
+                                label: "Hug bottom — stack shifts up",
+                              },
                             ]}
                             className="w-full"
                             triggerClassName="min-w-0 w-full py-1.5 text-[10px] font-semibold"
                             dense
                           />
-                        ) : null}
+                        </div>
                         <LayoutSlider
-                          label={isBottomCard ? "Fine-tune vertical" : "Vertical"}
+                          label="Nudge up / down"
+                          title="Fine vertical move for the whole caption area: fraction of frame height (negative = up, positive = down). Works on every template."
                           leftHint="Up"
                           rightHint="Down"
                           min={-0.2}

@@ -1,8 +1,8 @@
-import React from 'react';
 import { AbsoluteFill } from 'remotion';
 import type { VideoSpecWithTimeline } from '../templateProps';
 import { resolveTheme } from '../themes';
 import { blockEntranceStyle } from '../animations';
+import { flexAlignForTextAlign } from '../alignLayout';
 import { resolveLayoutPx } from '../layout';
 
 /**
@@ -40,6 +40,8 @@ export default function CapcutHighlightTemplate({ spec, frame, fps }: VideoSpecW
   const baseSize = showHook ? 70 : 60;
   const ctaScaled = isCTA ? Math.round(baseSize * theme.ctaScale) : baseSize;
   const fontSize = Math.round(ctaScaled * layout.scale);
+  const ta = layout.textAlign;
+  const cross = flexAlignForTextAlign(ta);
   const primary = spec.brand?.primary || '#ffffff';
   const highlightColor = isCTA ? primary : '#ffffff';
 
@@ -49,7 +51,7 @@ export default function CapcutHighlightTemplate({ spec, frame, fps }: VideoSpecW
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'center',
-        alignItems: 'center',
+        alignItems: cross,
       }}
     >
       <AbsoluteFill
@@ -63,7 +65,7 @@ export default function CapcutHighlightTemplate({ spec, frame, fps }: VideoSpecW
         style={{
           position: 'relative',
           zIndex: 2,
-          textAlign: 'center',
+          textAlign: ta,
           paddingLeft: layout.paddingPx,
           paddingRight: layout.paddingPx,
           maxWidth: layout.innerWidth + layout.paddingPx * 2,

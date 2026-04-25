@@ -162,6 +162,11 @@ def build_default_video_spec(
                 "dur": block_read_duration_sec(t, language=lang),
             })
 
+    # Multi-beat non–B-roll reels read better as separate stacked caption cards
+    # (IG-style). B-roll keeps bottom-card from ``template_id_for_format_key``.
+    if len(rows) >= 2 and template_id != "bottom-card":
+        template_id = "stacked-cards"  # type: ignore[assignment]
+
     if cap is not None and rows:
         # Reserve hook + a 1s tail; pauses default to 0 here so blocks get the rest.
         available = max(MIN_BLOCK * len(rows), cap - float(hook_s))
@@ -316,7 +321,7 @@ def apply_visual_style_hints(spec: VideoSpecV1, session: Dict[str, Any]) -> Vide
     raw = session.get("visual_style")
     if not isinstance(raw, dict):
         return spec
-    valid_templates = {"bottom-card", "centered-pop", "top-banner", "capcut-highlight"}
+    valid_templates = {"bottom-card", "centered-pop", "top-banner", "capcut-highlight", "stacked-cards"}
     valid_themes = {"bold-modern", "editorial", "casual-hand", "clean-minimal"}
     valid_anims = {"pop", "fade", "slide-up", "none"}
 
@@ -346,6 +351,9 @@ def apply_visual_style_hints(spec: VideoSpecV1, session: Dict[str, Any]) -> Vide
                 "verticalOffset": layout_hint.get("verticalOffset", spec.layout.verticalOffset),
                 "scale": layout_hint.get("scale", spec.layout.scale),
                 "sidePadding": layout_hint.get("sidePadding", spec.layout.sidePadding),
+                "textAlign": layout_hint.get("textAlign", spec.layout.textAlign),
+                "stackGap": layout_hint.get("stackGap", spec.layout.stackGap),
+                "stackGrowth": layout_hint.get("stackGrowth", spec.layout.stackGrowth),
             })
             updates["layout"] = merged
         except Exception:
@@ -420,6 +428,9 @@ def _is_default_layout(layout: VideoSpecLayout) -> bool:
         and layout.verticalOffset == 0.0
         and layout.scale == 1.0
         and layout.sidePadding == 0.05
+        and layout.textAlign == "center"
+        and abs(float(layout.stackGap) - 0.008) < 1e-9
+        and layout.stackGrowth == "up"
     )
 
 

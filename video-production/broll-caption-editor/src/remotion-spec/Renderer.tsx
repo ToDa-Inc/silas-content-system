@@ -6,6 +6,7 @@ import BottomCardTemplate from './templates/bottomCard';
 import CenteredPopTemplate from './templates/centeredPop';
 import TopBannerTemplate from './templates/topBanner';
 import CapcutHighlightTemplate from './templates/capcutHighlight';
+import StackedCardsTemplate from './templates/stackedCards';
 
 export default function Renderer(props: VideoSpec) {
   const frame = useCurrentFrame();
@@ -25,6 +26,9 @@ export default function Renderer(props: VideoSpec) {
       break;
     case 'capcut-highlight':
       overlay = <CapcutHighlightTemplate {...timeline} />;
+      break;
+    case 'stacked-cards':
+      overlay = <StackedCardsTemplate {...timeline} />;
       break;
     case 'centered-pop':
     default:

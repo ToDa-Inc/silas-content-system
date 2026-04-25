@@ -18,6 +18,8 @@ RUN apt-get update \
     ffmpeg \
     chromium \
     fonts-liberation \
+    fonts-noto-core \
+    fonts-noto-color-emoji \
   && rm -rf /var/lib/apt/lists/* \
   && test -x /usr/bin/chromium
 

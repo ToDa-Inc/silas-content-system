@@ -7,12 +7,16 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-VideoTemplateId = Literal["bottom-card", "centered-pop", "top-banner", "capcut-highlight"]
+VideoTemplateId = Literal["bottom-card", "centered-pop", "top-banner", "capcut-highlight", "stacked-cards"]
 VideoThemeId = Literal["bold-modern", "editorial", "casual-hand", "clean-minimal"]
 VideoAnimation = Literal["pop", "fade", "slide-up", "none"]
 BackgroundKind = Literal["video", "image"]
 FocalPoint = Literal["top", "center", "bottom"]
 VerticalAnchor = Literal["bottom", "center", "top"]
+TextAlign = Literal["left", "center", "right"]
+# stacked-cards: ``up`` = stack hugs bottom safe area (new beats push earlier lines up).
+# ``down`` = first line stays near the top band; new beats append below (no upward jump).
+StackGrowth = Literal["up", "down"]
 
 
 class VideoSpecBrand(BaseModel):
@@ -73,15 +77,14 @@ class VideoSpecBlock(BaseModel):
 class VideoSpecLayout(BaseModel):
     """Global layout modifiers applied uniformly across the chosen template.
 
-    Kept intentionally small (3 knobs) so the spec stays AI-authorable and
-    deterministic. Per-block overrides are deliberately *not* exposed —
-    rephrase via Refine-with-AI or change templates instead.
+    Kept intentionally small so the spec stays AI-authorable and deterministic.
+    Per-block free positioning is deliberately *not* exposed — use template +
+    anchor + alignment + stack gap instead.
     """
 
     model_config = ConfigDict(extra="ignore")
 
-    # Where the text stack anchors on the canvas (bottom-card reads this;
-    # centered templates still use flex center + ``verticalOffset`` nudge).
+    # Where the text stack anchors on the canvas (bottom-card, stacked-cards).
     verticalAnchor: VerticalAnchor = Field(default="bottom")
     # Fine nudge as a fraction of canvas height. Negative = up, positive = down.
     # Tighter range once ``verticalAnchor`` handles coarse placement.
@@ -106,6 +109,34 @@ class VideoSpecLayout(BaseModel):
     scale: float = Field(default=1.0, ge=0.7, le=1.3)
     # Per-side horizontal padding as a fraction of canvas width (0.05 = 54px on 1080).
     sidePadding: float = Field(default=0.05, ge=0.02, le=0.12)
+    # Caption line alignment inside the text area (all templates).
+    textAlign: TextAlign = Field(default="center")
+    # Vertical gap between stacked caption cards, as a fraction of canvas height
+    # (e.g. 0.01 ≈ 19px on 1920px). Used by ``stacked-cards`` only.
+    stackGap: float = Field(default=0.008, ge=0.0, le=0.06)
+    # stacked-cards only: how the vertical list grows as beats appear (see StackGrowth).
+    stackGrowth: StackGrowth = Field(default="up")
+
+    @field_validator("textAlign", mode="before")
+    @classmethod
+    def _coerce_text_align(cls, v: Any) -> str:
+        s = str(v).strip().lower() if v is not None else "center"
+        return s if s in ("left", "center", "right") else "center"
+
+    @field_validator("stackGap", mode="before")
+    @classmethod
+    def _coerce_stack_gap(cls, v: Any) -> float:
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            return 0.008
+        return max(0.0, min(0.06, x))
+
+    @field_validator("stackGrowth", mode="before")
+    @classmethod
+    def _coerce_stack_growth(cls, v: Any) -> str:
+        s = str(v).strip().lower() if v is not None else "up"
+        return s if s in ("up", "down") else "up"
 
 
 class VideoSpecV1(BaseModel):

@@ -1,12 +1,9 @@
-import React from 'react';
 import { AbsoluteFill } from 'remotion';
-import { loadFont } from '@remotion/google-fonts/Inter';
 import type { VideoSpecWithTimeline } from '../templateProps';
 import { resolveTheme } from '../themes';
 import { blockEntranceStyle } from '../animations';
+import { flexAlignForTextAlign } from '../alignLayout';
 import { resolveLayoutPx } from '../layout';
-
-const { fontFamily } = loadFont('normal', { weights: ['700', '800'] });
 
 export default function TopBannerTemplate({ spec, frame, fps }: VideoSpecWithTimeline) {
   const sec = frame / fps;
@@ -30,6 +27,8 @@ export default function TopBannerTemplate({ spec, frame, fps }: VideoSpecWithTim
   const baseSize = showHook ? 56 : 50;
   const ctaScaled = isCTA ? Math.round(baseSize * theme.ctaScale) : baseSize;
   const fontSize = Math.round(ctaScaled * layout.scale);
+  const ta = layout.textAlign;
+  const cross = flexAlignForTextAlign(ta);
 
   return (
     <AbsoluteFill>
@@ -39,12 +38,12 @@ export default function TopBannerTemplate({ spec, frame, fps }: VideoSpecWithTim
           top: 0,
           left: 0,
           width: '100%',
-          height: '70%',
-          background: 'linear-gradient(to bottom, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.1) 100%)',
+          maxHeight: '50%',
+          background: 'transparent',
           display: 'flex',
           flexDirection: 'column',
           justifyContent: 'flex-start',
-          alignItems: 'flex-start',
+          alignItems: cross,
           paddingTop: '100px',
           paddingLeft: layout.paddingPx,
           paddingRight: layout.paddingPx,
@@ -69,13 +68,14 @@ export default function TopBannerTemplate({ spec, frame, fps }: VideoSpecWithTim
               style={{
                 fontSize,
                 fontWeight: 800,
-                fontFamily,
+                fontFamily: theme.bodyFontStack,
                 color: theme.cardText,
                 margin: 0,
                 lineHeight: 1.2,
                 letterSpacing: '-0.02em',
                 wordWrap: 'break-word',
                 overflowWrap: 'break-word',
+                textAlign: ta,
               }}
             >
               {activeText}

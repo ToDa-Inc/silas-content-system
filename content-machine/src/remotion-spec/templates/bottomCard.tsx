@@ -1,12 +1,10 @@
 import React from 'react';
 import { AbsoluteFill } from 'remotion';
-import { loadFont } from '@remotion/google-fonts/Poppins';
 import type { VideoSpecWithTimeline } from '../templateProps';
 import { resolveTheme } from '../themes';
 import { blockEntranceStyle } from '../animations';
+import { flexAlignForTextAlign } from '../alignLayout';
 import { resolveLayoutPx } from '../layout';
-
-const { fontFamily } = loadFont('normal', { weights: ['700', '800'] });
 
 export default function BottomCardTemplate({ spec, frame, fps }: VideoSpecWithTimeline) {
   const sec = frame / fps;
@@ -34,6 +32,8 @@ export default function BottomCardTemplate({ spec, frame, fps }: VideoSpecWithTi
 
   const anchor = layout.verticalAnchor;
   const pad = '160px';
+  const ta = layout.textAlign;
+  const rowAlign = flexAlignForTextAlign(ta);
 
   const textShell = activeText ? (
     <div
@@ -51,7 +51,7 @@ export default function BottomCardTemplate({ spec, frame, fps }: VideoSpecWithTi
         style={{
           fontSize,
           fontWeight: 800,
-          fontFamily,
+          fontFamily: theme.bodyFontStack,
           color: theme.cardText,
           margin: 0,
           lineHeight: 1.25,
@@ -60,10 +60,24 @@ export default function BottomCardTemplate({ spec, frame, fps }: VideoSpecWithTi
           textRendering: 'optimizeLegibility',
           wordWrap: 'break-word',
           overflowWrap: 'break-word',
+          textAlign: ta,
         }}
       >
         {activeText}
       </p>
+    </div>
+  ) : null;
+
+  const textRow = activeText ? (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: rowAlign,
+        width: '100%',
+      }}
+    >
+      {textShell}
     </div>
   ) : null;
 
@@ -123,7 +137,7 @@ export default function BottomCardTemplate({ spec, frame, fps }: VideoSpecWithTi
           transform: `translateY(calc(-50% + ${layout.offsetPx}px))`,
         }}
       >
-        {textShell}
+        {textRow}
       </div>
     );
   } else if (anchor === 'top') {
@@ -143,7 +157,7 @@ export default function BottomCardTemplate({ spec, frame, fps }: VideoSpecWithTi
           transform: layout.translateY,
         }}
       >
-        {textShell}
+        {textRow}
       </div>
     );
   } else {
@@ -163,7 +177,7 @@ export default function BottomCardTemplate({ spec, frame, fps }: VideoSpecWithTi
           transform: layout.translateY,
         }}
       >
-        {textShell}
+        {textRow}
       </div>
     );
   }

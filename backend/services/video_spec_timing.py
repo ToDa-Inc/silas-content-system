@@ -35,7 +35,7 @@ def default_hook_duration_sec() -> float:
 
 
 def template_id_for_format_key(format_key: str, *, source_type: str = "") -> Literal[
-    "bottom-card", "centered-pop", "top-banner", "capcut-highlight"
+    "bottom-card", "centered-pop", "top-banner", "capcut-highlight", "stacked-cards"
 ]:
     fk = (format_key or "").strip().lower()
     if not fk and (source_type or "").strip() == "url_adapt":

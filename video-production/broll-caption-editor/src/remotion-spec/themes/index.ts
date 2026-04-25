@@ -1,4 +1,15 @@
+import { loadFont as loadInter } from '@remotion/google-fonts/Inter';
+import { loadFont as loadPatrickHand } from '@remotion/google-fonts/PatrickHand';
+import { loadFont as loadPlayfairDisplay } from '@remotion/google-fonts/PlayfairDisplay';
+import { loadFont as loadPoppins } from '@remotion/google-fonts/Poppins';
 import type { VideoSpec } from '../schema';
+
+const { fontFamily: poppins } = loadPoppins('normal', { weights: ['700', '800', '900'], subsets: ['latin', 'latin-ext'] });
+const { fontFamily: inter } = loadInter('normal', { weights: ['700', '800', '900'], subsets: ['latin', 'latin-ext'] });
+const { fontFamily: playfair } = loadPlayfairDisplay('normal', { weights: ['700', '800'], subsets: ['latin', 'latin-ext'] });
+const { fontFamily: patrickHand } = loadPatrickHand('normal', { weights: ['400'], subsets: ['latin', 'latin-ext'] });
+
+const emojiFallback = '"Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji"';
 
 export type ThemeTokens = {
   cardBg: string;
@@ -16,8 +27,8 @@ const boldModern: ThemeTokens = {
   cardText: '#0a0a0a',
   overlayText: '#ffffff',
   overlayStroke: '#000000',
-  bodyFontStack: 'system-ui, sans-serif',
-  hookFontStack: 'system-ui, sans-serif',
+  bodyFontStack: `"${poppins}", ${emojiFallback}, sans-serif`,
+  hookFontStack: `"${poppins}", ${emojiFallback}, sans-serif`,
   ctaScale: 0.87,
   bodyScale: 1,
 };
@@ -27,8 +38,8 @@ const editorial: ThemeTokens = {
   cardText: '#1a1a1a',
   overlayText: '#faf8f5',
   overlayStroke: '#1a1a1a',
-  bodyFontStack: 'Georgia, "Times New Roman", serif',
-  hookFontStack: 'Georgia, "Times New Roman", serif',
+  bodyFontStack: `"${playfair}", ${emojiFallback}, Georgia, serif`,
+  hookFontStack: `"${playfair}", ${emojiFallback}, Georgia, serif`,
   ctaScale: 0.85,
   bodyScale: 0.95,
 };
@@ -38,8 +49,8 @@ const casualHand: ThemeTokens = {
   cardText: '#ffffff',
   overlayText: '#ffffff',
   overlayStroke: '#000000',
-  bodyFontStack: '"Comic Sans MS", "Segoe Print", cursive',
-  hookFontStack: '"Comic Sans MS", "Segoe Print", cursive',
+  bodyFontStack: `"${patrickHand}", ${emojiFallback}, cursive`,
+  hookFontStack: `"${patrickHand}", ${emojiFallback}, cursive`,
   ctaScale: 0.9,
   bodyScale: 1,
 };
@@ -49,8 +60,8 @@ const cleanMinimal: ThemeTokens = {
   cardText: '#ffffff',
   overlayText: '#ffffff',
   overlayStroke: 'rgba(0,0,0,0.6)',
-  bodyFontStack: 'system-ui, sans-serif',
-  hookFontStack: 'system-ui, sans-serif',
+  bodyFontStack: `"${inter}", ${emojiFallback}, sans-serif`,
+  hookFontStack: `"${inter}", ${emojiFallback}, sans-serif`,
   ctaScale: 0.88,
   bodyScale: 1,
 };
