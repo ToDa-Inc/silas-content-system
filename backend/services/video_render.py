@@ -30,11 +30,40 @@ _FRAME_PROGRESS = re.compile(
 )
 
 
-def _repo_remotion_dir(settings: Settings) -> Path:
+def _resolve_remotion_project_dir(settings: Settings) -> Path:
+    """Locate ``broll-caption-editor`` (Remotion root with ``src/Root.tsx``).
+
+    Local monorepo: ``backend/../video-production/broll-caption-editor``.
+
+    Backend-only Docker image (``WORKDIR /app`` = backend): ``backend.parent`` is ``/`` — wrong.
+    Set ``REMOTION_EDITOR_DIR`` or bake the project under ``/opt/broll-caption-editor`` (see ``backend/Dockerfile``).
+    """
+    raw = (settings.remotion_editor_dir or "").strip()
+    if raw:
+        p = Path(raw).expanduser().resolve()
+        if (p / "src" / "Root.tsx").is_file():
+            return p
+        raise ValueError(
+            f"REMOTION_EDITOR_DIR={p} does not contain src/Root.tsx. "
+            "Point it at the broll-caption-editor folder (see video-production/broll-caption-editor)."
+        )
+
     here = Path(__file__).resolve()
-    backend = here.parent.parent
-    root = backend.parent
-    return root / "video-production" / "broll-caption-editor"
+    backend_root = here.parent.parent
+    candidates = [
+        backend_root.parent / "video-production" / "broll-caption-editor",
+        backend_root / "broll-caption-editor",
+        backend_root / "vendor" / "broll-caption-editor",
+    ]
+    for c in candidates:
+        if (c / "src" / "Root.tsx").is_file():
+            return c.resolve()
+    tried = "; ".join(str(c) for c in candidates)
+    raise ValueError(
+        "Remotion project not found. Set REMOTION_EDITOR_DIR to the absolute path of "
+        "video-production/broll-caption-editor (folder with src/Root.tsx). "
+        f"Tried: {tried}"
+    )
 
 
 def _public_object_url(supabase_url: str, bucket: str, path: str) -> str:
@@ -194,7 +223,11 @@ def run_video_render_job(settings: Settings, job_id: str, *, from_worker: bool =
         else:
             raise
 
-    remotion_dir = _repo_remotion_dir(settings)
+    try:
+        remotion_dir = _resolve_remotion_project_dir(settings)
+    except ValueError as e:
+        fail_video_render_job(supabase, job_id, session_id, str(e))
+        return
     entry = remotion_dir / "src" / "Root.tsx"
     if not entry.is_file():
         fail_video_render_job(supabase, job_id, session_id, f"Remotion entry missing: {entry}")

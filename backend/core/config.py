@@ -93,6 +93,22 @@ class Settings(BaseSettings):
 
     cron_secret: str = ""
 
+    remotion_editor_dir: str = Field(
+        default="",
+        validation_alias=AliasChoices("REMOTION_EDITOR_DIR", "BROLL_CAPTION_EDITOR_DIR"),
+        description=(
+            "Absolute path to `broll-caption-editor` (must contain `src/Root.tsx` and `node_modules/@remotion/cli`). "
+            "Required when the API/worker runs from a backend-only deploy; optional locally if the monorepo layout is used."
+        ),
+    )
+
+    @field_validator("remotion_editor_dir", mode="before")
+    @classmethod
+    def strip_remotion_dir(cls, v: object) -> object:
+        if isinstance(v, str):
+            return v.strip()
+        return v
+
 
 @lru_cache
 def get_settings() -> Settings:
