@@ -166,6 +166,7 @@ The dashboard service has one supported Docker setup:
 1. **Settings → Root Directory** → **`content-machine`**.
 2. **Dockerfile path** → `Dockerfile` (the Dockerfile in that root).
 3. **Builder** → `DOCKERFILE`.
+4. **Start Command** → leave empty or `node server.js` (not `bash`). `content-machine/railway.json` pins this as `node server.js`.
 
 The root **`package.json`** now also defines **`start`** and **`build`** pointing at `content-machine/` so Railpack can fall back if Docker is not used.
 
