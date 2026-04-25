@@ -1,20 +1,34 @@
-# Next.js dashboard — build context must be the monorepo ROOT (so `content-machine/` is copied in).
-# Railway: leave default root directory = repo root, or this file is ignored if you use `content-machine/Dockerfile` with Root Directory = content-machine.
+# Next.js dashboard — supports two Docker build contexts:
+#   1) Monorepo root (context = repo root): app lives in content-machine/
+#   2) App-only (context = content-machine/): app files are at context root (Railway Root Directory)
+#
+# Railway: either Root Directory empty + this Dockerfile, OR Root Directory = content-machine
+# and this Dockerfile as the selected file (same file works for both).
+
 FROM node:22-alpine AS base
 WORKDIR /app
 RUN apk add --no-cache libc6-compat
 
 FROM base AS deps
-COPY content-machine/package.json content-machine/package-lock.json ./
+COPY . /src
+RUN if [ -d /src/content-machine ]; then \
+      cp /src/content-machine/package.json /src/content-machine/package-lock.json . ; \
+    else \
+      cp /src/package.json /src/package-lock.json . ; \
+    fi && rm -rf /src
 RUN npm ci
 
 FROM base AS builder
 ENV DOCKER=1
 ENV NEXT_TELEMETRY_DISABLED=1
-# Avoid Node OOM during "Running TypeScript …" / webpack on small Railway builders
 ENV NODE_OPTIONS=--max-old-space-size=6144
 COPY --from=deps /app/node_modules ./node_modules
-COPY content-machine/ .
+COPY . /src
+RUN if [ -d /src/content-machine ]; then \
+      cp -a /src/content-machine/. . ; \
+    else \
+      cp -a /src/. . ; \
+    fi && rm -rf /src
 
 ARG SUPABASE_URL
 ARG SUPABASE_ANON_KEY

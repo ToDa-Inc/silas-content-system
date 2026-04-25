@@ -1,4 +1,5 @@
-# Next.js production image (Railway, Fly, etc.). Build with root = this folder (`content-machine`).
+# Next.js production image. Build with context = this folder (`docker build .` from content-machine).
+# Repo root `../Dockerfile` also supports this layout when context is content-machine (same RUN logic).
 # Railway injects env at build time for ARGS below when variables exist on the service.
 FROM node:22-alpine AS base
 WORKDIR /app

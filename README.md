@@ -170,7 +170,7 @@ The **repo root** `package.json` had no `start` script, so Railpack failed. Two 
 
 **B — Subdirectory deploy**  
 1. **Settings → Root Directory** → **`content-machine`**.  
-2. Uses **`content-machine/Dockerfile`** + **`content-machine/railway.json`**.
+2. Use **`content-machine/Dockerfile`** *or* the repo-root **`Dockerfile`** (same image; root Dockerfile detects both monorepo and app-only contexts). **`content-machine/railway.json`** may set the Dockerfile path.
 
 The root **`package.json`** now also defines **`start`** and **`build`** pointing at `content-machine/` so Railpack can fall back if Docker is not used.
 
@@ -178,7 +178,7 @@ The root **`package.json`** now also defines **`start`** and **`build`** pointin
 
 Health check: **`/api/health/env`**.
 
-**FastAPI (cron / GitHub Actions):** the root Dockerfile is the **dashboard** only. Cron URLs such as `POST /api/v1/cron/sync-all` must target the **Python API**. Add a **second Railway service** with **Root Directory** empty (repo root), **`backend.Dockerfile`**, and the same secrets the API needs (`CRON_SECRET`, Supabase service role, Apify, OpenRouter, …). Step-by-step: **`backend/RAILWAY.md`**. If `SYNC_ALL_URL` / niche cron return **404** with `{"detail":"Not Found"}`, that URL is not running this repo’s FastAPI (wrong service or stale image).
+**FastAPI (cron / GitHub Actions):** the repo-root **`Dockerfile`** builds the **Next.js dashboard** only (not the Python API). Cron URLs such as `POST /api/v1/cron/sync-all` must target the **Python API**. Add a **second Railway service** with **Root Directory** empty (repo root), **`backend.Dockerfile`**, and the same secrets the API needs (`CRON_SECRET`, Supabase service role, Apify, OpenRouter, …). Step-by-step: **`backend/RAILWAY.md`**. If `SYNC_ALL_URL` / niche cron return **404** with `{"detail":"Not Found"}`, that URL is not running this repo’s FastAPI (wrong service or stale image).
 
 ---
 
