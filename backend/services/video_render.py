@@ -30,6 +30,15 @@ _FRAME_PROGRESS = re.compile(
 )
 
 
+def _tail_remotion_log(lines: List[str], *, max_chars: int = 7500) -> str:
+    body = "".join(lines).strip()
+    if not body:
+        return "(no stdout captured)"
+    if len(body) > max_chars:
+        return "…\n" + body[-max_chars:]
+    return body
+
+
 def _resolve_remotion_project_dir(settings: Settings) -> Path:
     """Locate ``broll-caption-editor`` (Remotion root with ``src/Root.tsx``).
 
@@ -286,10 +295,12 @@ def run_video_render_job(settings: Settings, job_id: str, *, from_worker: bool =
         )
         assert proc.stdout is not None
         line_q: Queue[Optional[str]] = Queue()
+        output_lines: List[str] = []
 
         def _pump_stdout() -> None:
             try:
                 for line in proc.stdout:
+                    output_lines.append(line)
                     line_q.put(line)
             except Exception:
                 logger.debug("video_render stdout pump ended", exc_info=True)
@@ -337,8 +348,13 @@ def run_video_render_job(settings: Settings, job_id: str, *, from_worker: bool =
             return
         pump_t.join(timeout=2)
         if proc.returncode != 0:
-            err_tail = f"exit {proc.returncode}"
-            fail_video_render_job(supabase, job_id, session_id, f"remotion failed: {err_tail}")
+            tail = _tail_remotion_log(output_lines)
+            fail_video_render_job(
+                supabase,
+                job_id,
+                session_id,
+                f"remotion failed (exit {proc.returncode}). Log tail:\n{tail}",
+            )
             return
         if not os.path.isfile(out_mp4):
             fail_video_render_job(

@@ -1,9 +1,8 @@
 import { Composition, registerRoot } from 'remotion';
-// Spec source lives under content-machine so the dashboard's <Player> and the
-// Remotion CLI render share one physical install of `remotion` + `react`.
-// Two copies break Player context (useCurrentFrame returns the default frame).
-import Renderer from '../../../content-machine/src/remotion-spec/Renderer';
-import { defaultStudioSpec } from '../../../content-machine/src/remotion-spec/schema';
+// Bundled next to Root so `remotion render` works in Docker (backend-only context has no
+// ../content-machine). Keep in sync with content-machine via scripts/sync-broll-vendor.sh.
+import Renderer from './remotion-spec/Renderer';
+import { defaultStudioSpec } from './remotion-spec/schema';
 
 registerRoot(() => (
   <Composition
