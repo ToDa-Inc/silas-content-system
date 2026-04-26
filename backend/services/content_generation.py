@@ -1018,7 +1018,7 @@ def run_content_package(
             "should reserve the opposite side; only bump scale (0.7..1.3) for ultra-short hooks (<3 words → 1.15) or long "
             "subline beats (>5 words → 0.85); sidePadding (0.02..0.12) is for visual breathing room only. "
             "textAlign left|center|right applies to every template. stackGap 0..0.06 (fraction of canvas height) only affects stacked-cards spacing between cards. "
-            "stackGrowth stacked-cards only: \"down\" = new beats append below (first line stays put); \"up\" = hug bottom safe area (earlier lines shift up as beats add).\n"
+            "stackGrowth stacked-cards only: \"down\" = prefer first line fixed while beats add (use with Pin Top); \"up\" = hug bottom safe area (earlier lines shift up as beats add). Pin always chooses top/middle/bottom placement.\n"
         )
     adapt_block = ""
     if adapt_single_reference_reel:

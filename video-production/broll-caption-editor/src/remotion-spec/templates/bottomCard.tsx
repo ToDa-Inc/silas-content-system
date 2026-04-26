@@ -1,14 +1,15 @@
 import React from 'react';
 import { AbsoluteFill } from 'remotion';
 import type { VideoSpecWithTimeline } from '../templateProps';
-import { resolveTheme } from '../themes';
+import { resolveAppearance } from '../appearance';
 import { blockEntranceStyle } from '../animations';
 import { flexAlignForTextAlign } from '../alignLayout';
 import { resolveLayoutPx } from '../layout';
+import { cardBoldOutlineCaptionStyle, isBoldOutlineTreatment } from '../textTreatment';
 
 export default function BottomCardTemplate({ spec, frame, fps }: VideoSpecWithTimeline) {
   const sec = frame / fps;
-  const theme = resolveTheme(spec);
+  const theme = resolveAppearance(spec);
   const layout = resolveLayoutPx(spec);
   const hookDur = spec.hook.durationSec;
   const showHook = sec < hookDur;
@@ -56,6 +57,7 @@ export default function BottomCardTemplate({ spec, frame, fps }: VideoSpecWithTi
           margin: 0,
           lineHeight: 1.25,
           letterSpacing: '-0.01em',
+          ...(isBoldOutlineTreatment(spec) ? cardBoldOutlineCaptionStyle(spec) : {}),
           WebkitFontSmoothing: 'antialiased',
           textRendering: 'optimizeLegibility',
           wordWrap: 'break-word',

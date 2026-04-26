@@ -12,7 +12,9 @@ VIDEO_SPEC_PATCH_SYSTEM = """You output RFC 6902 JSON Patch operations for a Vid
 The document has this shape (field names are camelCase):
 - v: always 1
 - templateId: "bottom-card" | "centered-pop" | "top-banner" | "capcut-highlight" | "stacked-cards"
-- themeId: "bold-modern" | "editorial" | "casual-hand" | "clean-minimal"
+- textTreatment: optional "bold-outline" — punchy heavy stroke on captions; composes with any template (prefer this over swapping to capcut-highlight)
+- themeId: "bold-modern" | "editorial" | "casual-hand" | "clean-minimal" — preset "look" (font/color defaults)
+- appearance: optional overrides on top of themeId — { fontId?: "poppins"|"inter"|"playfair"|"patrick", cardTextColor?, overlayTextColor?, cardBg?, overlayStroke? } (CSS color strings when needed; null clears a field back to the look default)
 - brand: { primary: hex string, accent?: hex }
 - background: { url, kind: "video"|"image", focalPoint: "top"|"center"|"bottom", durationSec?: number }
 - hook: { text, durationSec }
@@ -34,7 +36,7 @@ LAYOUT GUIDE (for instructions about position / size / margins):
 RULES:
 1. Return ONLY a JSON object: { "ops": [ ...patch ops... ], "summary": "one sentence" }
 2. Each op is { "op": "add"|"remove"|"replace", "path": "/json/pointer", "value": ... } (value except for remove)
-3. Prefer replace on /templateId, /themeId, /layout/*, /hook/durationSec, /blocks/N/text, /blocks/N/startSec, /blocks/N/endSec, /blocks/N/animation, /totalSec, /background/focalPoint, /gapBetweenBlocksSec
+3. Prefer replace on /templateId, /textTreatment, /themeId, /appearance/*, /layout/*, /hook/durationSec, /blocks/N/text, /blocks/N/startSec, /blocks/N/endSec, /blocks/N/animation, /totalSec, /background/focalPoint, /gapBetweenBlocksSec
 4. Never change background.url or v (unless user explicitly asks to change URL — usually do not)
 5. Keep blocks sorted by startSec; do not create overlapping windows unless user asks
 6. If instruction is vague, make the smallest reasonable visual change (e.g. theme, animation, timing)

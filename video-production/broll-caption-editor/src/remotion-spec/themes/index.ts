@@ -66,6 +66,28 @@ const cleanMinimal: ThemeTokens = {
   bodyScale: 1,
 };
 
+/** Font family override (same faces loaded as theme presets). */
+export type AppearanceFontId = 'poppins' | 'inter' | 'playfair' | 'patrick';
+
+function fontPair(face: string, generic: string): Pick<ThemeTokens, 'bodyFontStack' | 'hookFontStack'> {
+  const stack = `"${face}", ${emojiFallback}, ${generic}`;
+  return { bodyFontStack: stack, hookFontStack: stack };
+}
+
+export function fontStacksForAppearanceFontId(id: AppearanceFontId): Pick<ThemeTokens, 'bodyFontStack' | 'hookFontStack'> {
+  switch (id) {
+    case 'inter':
+      return fontPair(inter, 'sans-serif');
+    case 'playfair':
+      return fontPair(playfair, 'Georgia, serif');
+    case 'patrick':
+      return fontPair(patrickHand, 'cursive');
+    case 'poppins':
+    default:
+      return fontPair(poppins, 'sans-serif');
+  }
+}
+
 export function resolveTheme(spec: VideoSpec): ThemeTokens {
   switch (spec.themeId) {
     case 'editorial':

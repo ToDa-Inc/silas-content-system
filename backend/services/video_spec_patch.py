@@ -21,6 +21,8 @@ def _document_for_json_patch(model_dump: Dict[str, Any]) -> Dict[str, Any]:
     """
     doc = dict(model_dump)
     doc.setdefault("pausesSec", None)
+    doc.setdefault("appearance", {})
+    doc.setdefault("textTreatment", None)
     return doc
 
 

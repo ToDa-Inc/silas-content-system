@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import type { Operation } from "fast-json-patch";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
@@ -10,10 +11,13 @@ import {
   Download,
   Eye,
   Film,
+  Grid3x3,
   Image as ImageIcon,
   Loader2,
   Plus,
   RefreshCw,
+  RotateCcw,
+  Shield,
   Sparkles,
   Trash2,
   Video,
@@ -53,10 +57,12 @@ import {
 } from "@/lib/api-client";
 import {
   buildPreviewSpecFromSession,
+  DEFAULT_APPEARANCE,
   DEFAULT_LAYOUT,
   parseVideoSpec,
   sessionPrimaryHookText,
   type VideoSpec,
+  type VideoSpecAppearance,
   type VideoSpecLayout,
 } from "@/lib/video-spec";
 import {
@@ -70,10 +76,135 @@ import {
   type CascadeMode,
 } from "@/lib/video-spec-timing";
 import { effectivePausesSec, relayoutTimeline } from "@/lib/video-spec-timeline";
+import {
+  APPEARANCE_CLEAR_OPS,
+  appearanceOpsToPatchOps,
+  inferContrast,
+  inferFontMood,
+  mergeAppearanceOpsIntoDraft,
+  opsForContrast,
+  opsForFontMood,
+  type AppearanceOp,
+  type VideoThemeId,
+} from "@/lib/appearance-style";
 
 /** Remotion renders often exceed 1–3 min; polling must outlast the job and prefer session row state. */
 const VIDEO_RENDER_POLL_INTERVAL_MS = 2500;
 const VIDEO_RENDER_MAX_POLLS = 240;
+
+const STYLE_CHIP_ON =
+  "border-amber-500 bg-amber-500/15 text-amber-200 shadow-[0_0_0_1px_rgba(245,158,11,0.4)]";
+const STYLE_CHIP_OFF = "border-app-divider text-app-fg-muted hover:border-amber-500/40 hover:text-app-fg";
+
+/** Layout format only — bold outline (“CapCut style”) is a separate Style control. */
+type UiFormat = "center" | "card" | "stack";
+
+function layoutFormatFromTemplateId(id: VideoSpec["templateId"] | undefined | null): UiFormat {
+  switch (id) {
+    case "bottom-card":
+    case "top-banner":
+      return "card";
+    case "stacked-cards":
+      return "stack";
+    case "centered-pop":
+    case "capcut-highlight":
+    default:
+      return "center";
+  }
+}
+
+function FormatGlyph({ format }: { format: UiFormat }) {
+  const shell =
+    "relative flex h-6 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-white/10 bg-zinc-950/80";
+  switch (format) {
+    case "center":
+      return (
+        <span className={shell} aria-hidden>
+          <span className="h-2.5 w-3 rounded-sm bg-app-fg-muted/40" />
+        </span>
+      );
+    case "card":
+      return (
+        <span className={shell} aria-hidden>
+          <span className="absolute bottom-0.5 left-0.5 right-0.5 h-1 rounded-sm bg-app-fg-muted/45" />
+        </span>
+      );
+    case "stack":
+      return (
+        <span className={shell} aria-hidden>
+          <span className="flex flex-col gap-0.5">
+            <span className="mx-auto h-0.5 w-4 rounded-full bg-app-fg-muted/35" />
+            <span className="mx-auto h-0.5 w-4 rounded-full bg-app-fg-muted/35" />
+            <span className="mx-auto h-0.5 w-4 rounded-full bg-app-fg-muted/35" />
+          </span>
+        </span>
+      );
+    default:
+      return <span className={shell} aria-hidden />;
+  }
+}
+
+function OutlineGlyph() {
+  const shell =
+    "relative flex h-6 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-white/10 bg-zinc-950/80";
+  return (
+    <span className={shell} aria-hidden>
+      <span
+        className="text-[8px] font-black leading-none text-app-fg-muted/80"
+        style={{ WebkitTextStroke: "0.6px currentColor" }}
+      >
+        Aa
+      </span>
+    </span>
+  );
+}
+
+const LOOK_VISUAL: {
+  id: VideoSpec["themeId"];
+  label: string;
+  title: string;
+  fontFamily: string;
+  swatches: string[];
+}[] = [
+  {
+    id: "bold-modern",
+    label: "Bold",
+    title: "Heavy sans, high contrast — good for promos",
+    fontFamily: "ui-sans-serif, system-ui",
+    swatches: ["#ffffff", "#0a0a0a", "#f59e0b"],
+  },
+  {
+    id: "editorial",
+    label: "Editorial",
+    title: "Magazine-style serif, refined spacing",
+    fontFamily: "Georgia, 'Times New Roman', serif",
+    swatches: ["#faf8f5", "#1a1a1a", "#c4a574"],
+  },
+  {
+    id: "casual-hand",
+    label: "Hand",
+    title: "Friendly handwritten feel",
+    fontFamily: "'Segoe Print', 'Bradley Hand', cursive",
+    swatches: ["#1f2937", "#ffffff", "#fbbf24"],
+  },
+  {
+    id: "clean-minimal",
+    label: "Minimal",
+    title: "Thin weights, understated glass",
+    fontFamily: "ui-sans-serif, system-ui",
+    swatches: ["rgba(20,20,20,0.55)", "#ffffff", "#94a3b8"],
+  },
+];
+
+function appearanceHasSavedOverrides(a: VideoSpecAppearance): boolean {
+  return Boolean(
+    a.fontId ||
+      (a.cardTextColor && String(a.cardTextColor).trim()) ||
+      (a.overlayTextColor && String(a.overlayTextColor).trim()) ||
+      (a.cardBg && String(a.cardBg).trim()) ||
+      (a.overlayStroke && String(a.overlayStroke).trim()),
+  );
+}
 
 function canonicalFormatKey(k: string | null | undefined): string | null {
   if (!k?.trim()) return null;
@@ -1040,10 +1171,12 @@ export function VideoCreateWorkspace({
   const [safeZonePreview, setSafeZonePreview] = useState(false);
   const [refineVideoPrompt, setRefineVideoPrompt] = useState("");
   /** AI refine is the only spec operation that should block the UI — it's a multi-step
-   *  LLM round-trip the user shouldn't double-fire. Template / theme / layout commits
-   *  are tracked separately via per-field optimistic state below. */
+   *  LLM round-trip the user shouldn't double-fire. Template / look / appearance /
+   *  layout commits are tracked separately via per-field optimistic state below. */
   const [aiRefineBusy, setAiRefineBusy] = useState(false);
-  /** Optimistic overrides for template/theme so the active state flips on click,
+  /** Drives visible copy during the two-step AI refine (LLM → apply patches). */
+  const [aiRefinePhase, setAiRefinePhase] = useState<"idle" | "thinking" | "applying">("idle");
+  /** Optimistic overrides for template / look so the active state flips on click,
    *  before the PATCH round-trips. Cleared on success (server-state wins) or failure. */
   const [pendingTemplate, setPendingTemplate] = useState<VideoSpec["templateId"] | null>(null);
   const [pendingTheme, setPendingTheme] = useState<VideoSpec["themeId"] | null>(null);
@@ -1053,6 +1186,11 @@ export function VideoCreateWorkspace({
   /** Monotonic request id; applySession only runs for the *latest* response so a
    *  slow PATCH can't clobber state from a faster, more recent one. */
   const specReqIdRef = useRef(0);
+  /** Set when the user edits Style (font/contrast) so we know they diverged from pure Look defaults. */
+  const styleTouchedRef = useRef(false);
+  useEffect(() => {
+    styleTouchedRef.current = false;
+  }, [session?.id]);
   /** Timeline-strip selection: which segment is currently being edited in the
    *  Timing inspector. "hook" or a block id; defaults to the hook on every new
    *  session (most natural starting point — "what's my opener?"). */
@@ -1146,14 +1284,22 @@ export function VideoCreateWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layoutSyncKey]);
 
+  const sessionAppearance: VideoSpecAppearance = previewVideoSpec?.appearance ?? DEFAULT_APPEARANCE;
+  const [appearanceDraft, setAppearanceDraft] = useState<VideoSpecAppearance>(sessionAppearance);
+  const appearanceSyncKey = `${session?.id ?? ""}|${JSON.stringify(sessionAppearance)}`;
+  useEffect(() => {
+    setAppearanceDraft(sessionAppearance);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appearanceSyncKey]);
+
   useEffect(() => {
     const n = previewVideoSpec?.blocks?.length ?? 0;
     if (n <= 0) return;
     setSelectedGapIdx((i) => Math.min(Math.max(0, i), n - 1));
   }, [session?.id, previewVideoSpec?.blocks?.length]);
 
-  /** Final spec rendered by the Player. Layered optimistic edits (template / theme /
-   *  layout / timing) win over the saved spec until the server confirms — keeps the
+  /** Final spec rendered by the Player. Layered optimistic edits (template / look /
+   *  appearance / layout / timing) win over the saved spec until the server confirms — keeps the
    *  UI feeling instant without waiting on PATCH round-trips. Memoized on a
    *  content-hash key so the Player's `inputProps` only gets a new identity when
    *  *meaningful values* change (preventing redundant Remotion re-syncs that flash
@@ -1170,6 +1316,7 @@ export function VideoCreateWorkspace({
       templateId: pendingTemplate ?? previewVideoSpec.templateId,
       themeId: pendingTheme ?? previewVideoSpec.themeId,
       layout: layoutDraft,
+      appearance: appearanceDraft,
       pausesSec,
     };
     // Apply in-flight timing drag through the same cascade math the server will
@@ -1195,12 +1342,29 @@ export function VideoCreateWorkspace({
     layoutDraft.textAlign,
     layoutDraft.stackGap,
     layoutDraft.stackGrowth,
+    JSON.stringify(appearanceDraft),
     pauseDraft?.idx,
     pauseDraft?.sec,
     timingDraft?.id,
     timingDraft?.durationSec,
     cascadeMode,
   ]);
+
+  const styleThemeForCard = (pendingTheme ?? previewVideoSpec?.themeId ?? "bold-modern") as VideoThemeId;
+  const styleTemplateId = pendingTemplate ?? previewVideoSpec?.templateId ?? "centered-pop";
+  const styleFontMood = inferFontMood(appearanceDraft);
+  const styleContrast = inferContrast(appearanceDraft, styleTemplateId, styleThemeForCard);
+  const effectiveTemplateId = livePreviewSpec?.templateId ?? previewVideoSpec?.templateId;
+  const formatChipSelection = layoutFormatFromTemplateId(effectiveTemplateId);
+  const isBoldOutline =
+    (livePreviewSpec?.textTreatment ?? previewVideoSpec?.textTreatment) === "bold-outline";
+  const uiPinForPositionRow = (() => {
+    const tpl = livePreviewSpec?.templateId ?? previewVideoSpec?.templateId;
+    if (tpl === "top-banner") return "top" as const;
+    if (tpl === "bottom-card" || tpl === "stacked-cards")
+      return (layoutDraft.verticalAnchor ?? "bottom") as VideoSpecLayout["verticalAnchor"];
+    return "center" as const;
+  })();
 
   const saveTextBlocks = useCallback(async () => {
     const cs = clientSlug.trim();
@@ -1455,8 +1619,9 @@ export function VideoCreateWorkspace({
       setSpecInFlight((n) => n + 1);
       const reqId = ++specReqIdRef.current;
       try {
+        const clearAppearanceOps = appearanceOpsToPatchOps(APPEARANCE_CLEAR_OPS);
         const res = await patchSessionVideoSpec(cs, os, session.id, {
-          ops: [{ op: "replace", path: "/themeId", value: themeId }],
+          ops: [{ op: "replace", path: "/themeId", value: themeId }, ...clearAppearanceOps],
         });
         if (reqId !== specReqIdRef.current) return;
         if (!res.ok) {
@@ -1465,6 +1630,7 @@ export function VideoCreateWorkspace({
           return;
         }
         applySession(res.data);
+        styleTouchedRef.current = false;
         setPendingTheme(null);
       } finally {
         setSpecInFlight((n) => Math.max(0, n - 1));
@@ -1503,6 +1669,155 @@ export function VideoCreateWorkspace({
     },
     [applySession, clientSlug, orgSlug, session, sessionLayout, show],
   );
+
+  const onCommitVideoSpecOps = useCallback(
+    async (ops: Operation[]) => {
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!session || !cs || !os || ops.length === 0) return;
+      for (const op of ops) {
+        if (op.op !== "replace") continue;
+        const p = op.path;
+        const v = (op as { value?: unknown }).value;
+        if (p === "/templateId" && typeof v === "string") {
+          setPendingTemplate(v as VideoSpec["templateId"]);
+        }
+        if (p === "/layout/verticalAnchor" && (v === "top" || v === "center" || v === "bottom")) {
+          setLayoutDraft((s) => ({ ...s, verticalAnchor: v }));
+        }
+      }
+      setSpecInFlight((n) => n + 1);
+      const reqId = ++specReqIdRef.current;
+      try {
+        const res = await patchSessionVideoSpec(cs, os, session.id, { ops });
+        if (reqId !== specReqIdRef.current) return;
+        if (!res.ok) {
+          show(res.error, "error");
+          setLayoutDraft(sessionLayout);
+          setPendingTemplate(null);
+          return;
+        }
+        applySession(res.data);
+        setPendingTemplate(null);
+      } finally {
+        setSpecInFlight((n) => Math.max(0, n - 1));
+      }
+    },
+    [applySession, clientSlug, orgSlug, session, sessionLayout, show],
+  );
+
+  const onSetUiFormat = useCallback(
+    async (f: UiFormat) => {
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!session || !cs || !os || !previewVideoSpec) return;
+      const cur = previewVideoSpec.templateId;
+      const ops: Operation[] = [];
+      if (f === "center") ops.push({ op: "replace", path: "/templateId", value: "centered-pop" });
+      else if (f === "stack") {
+        ops.push({ op: "replace", path: "/templateId", value: "stacked-cards" });
+        if (cur === "top-banner") ops.push({ op: "replace", path: "/layout/verticalAnchor", value: "top" });
+        if (cur === "centered-pop") {
+          ops.push({ op: "replace", path: "/layout/verticalAnchor", value: "bottom" });
+        }
+      } else if (f === "card") {
+        ops.push({ op: "replace", path: "/templateId", value: "bottom-card" });
+        if (cur === "top-banner") ops.push({ op: "replace", path: "/layout/verticalAnchor", value: "top" });
+        else if (cur === "centered-pop") {
+          ops.push({ op: "replace", path: "/layout/verticalAnchor", value: "bottom" });
+        }
+      }
+      await onCommitVideoSpecOps(ops);
+    },
+    [onCommitVideoSpecOps, clientSlug, orgSlug, previewVideoSpec, session],
+  );
+
+  const onSetOutlineLayout = useCallback(
+    async (outline: boolean) => {
+      if (!session || !previewVideoSpec) return;
+      await onCommitVideoSpecOps([
+        { op: "replace", path: "/textTreatment", value: outline ? "bold-outline" : null },
+      ]);
+    },
+    [onCommitVideoSpecOps, previewVideoSpec, session],
+  );
+
+  const onSetUiPin = useCallback(
+    async (pin: VideoSpecLayout["verticalAnchor"]) => {
+      if (!session || !previewVideoSpec) return;
+      const tpl = pendingTemplate ?? previewVideoSpec.templateId;
+      if (tpl !== "bottom-card" && tpl !== "stacked-cards" && tpl !== "top-banner") return;
+      const ops: Operation[] =
+        tpl === "top-banner"
+          ? [
+              { op: "replace", path: "/templateId", value: "bottom-card" },
+              { op: "replace", path: "/layout/verticalAnchor", value: pin },
+            ]
+          : [{ op: "replace", path: "/layout/verticalAnchor", value: pin }];
+      await onCommitVideoSpecOps(ops);
+    },
+    [onCommitVideoSpecOps, pendingTemplate, previewVideoSpec, session],
+  );
+
+  const onCommitAppearanceOps = useCallback(
+    async (ops: AppearanceOp[]) => {
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!session || !cs || !os || ops.length === 0) return;
+      const meaningful = ops.filter(({ key, value }) => {
+        const valN = value === "" || value === undefined ? null : value;
+        const curRaw = sessionAppearance[key] as string | undefined | null;
+        const curN = curRaw === "" || curRaw === undefined || curRaw === null ? null : String(curRaw);
+        return curN !== valN;
+      });
+      if (meaningful.length === 0) return;
+      setAppearanceDraft((d) => mergeAppearanceOpsIntoDraft(d, meaningful));
+      styleTouchedRef.current = true;
+      setSpecInFlight((n) => n + 1);
+      const reqId = ++specReqIdRef.current;
+      try {
+        const res = await patchSessionVideoSpec(cs, os, session.id, {
+          ops: appearanceOpsToPatchOps(meaningful),
+        });
+        if (reqId !== specReqIdRef.current) return;
+        if (!res.ok) {
+          show(res.error, "error");
+          setAppearanceDraft(sessionAppearance);
+          return;
+        }
+        applySession(res.data);
+      } finally {
+        setSpecInFlight((n) => Math.max(0, n - 1));
+      }
+    },
+    [applySession, clientSlug, orgSlug, session, sessionAppearance, show],
+  );
+
+  const onClearAppearance = useCallback(async () => {
+    const cs = clientSlug.trim();
+    const os = orgSlug.trim();
+    if (!session || !cs || !os) return;
+    if (!appearanceHasSavedOverrides(sessionAppearance)) return;
+    styleTouchedRef.current = false;
+    setAppearanceDraft(DEFAULT_APPEARANCE);
+    setSpecInFlight((n) => n + 1);
+    const reqId = ++specReqIdRef.current;
+    const keys = ["fontId", "cardTextColor", "overlayTextColor", "cardBg", "overlayStroke"] as const;
+    try {
+      const res = await patchSessionVideoSpec(cs, os, session.id, {
+        ops: keys.map((k) => ({ op: "replace" as const, path: `/appearance/${k}`, value: null })),
+      });
+      if (reqId !== specReqIdRef.current) return;
+      if (!res.ok) {
+        show(res.error, "error");
+        setAppearanceDraft(sessionAppearance);
+        return;
+      }
+      applySession(res.data);
+    } finally {
+      setSpecInFlight((n) => Math.max(0, n - 1));
+    }
+  }, [applySession, clientSlug, orgSlug, session, sessionAppearance, show]);
 
   const onCommitPauseBeforeBeat = useCallback(
     async (pauseIdx: number, value: number) => {
@@ -1607,7 +1922,7 @@ export function VideoCreateWorkspace({
   /** Persist a duration edit. Generates the same atomic multi-op patch that
    *  the live preview math used (push-cascade or compress-cascade), so what
    *  the user releases on is exactly what gets stored. Stale-guard same as
-   *  layout/template/theme so rapid edits don't clobber each other. */
+   *  layout/template/look so rapid edits don't clobber each other. */
   const onCommitTiming = useCallback(
     async (segmentId: string, newDurationSec: number) => {
       const cs = clientSlug.trim();
@@ -1652,6 +1967,7 @@ export function VideoCreateWorkspace({
     const instruction = refineVideoPrompt.trim();
     if (!session || !cs || !os || !instruction) return;
     setAiRefineBusy(true);
+    setAiRefinePhase("thinking");
     setSpecInFlight((n) => n + 1);
     const reqId = ++specReqIdRef.current;
     try {
@@ -1667,6 +1983,7 @@ export function VideoCreateWorkspace({
         show("AI couldn't translate that into a change — try being more specific.", "error");
         return;
       }
+      setAiRefinePhase("applying");
       const res = await patchSessionVideoSpec(cs, os, session.id, { ops: pe.data.ops });
       if (reqId !== specReqIdRef.current) return;
       if (!res.ok) {
@@ -1680,6 +1997,7 @@ export function VideoCreateWorkspace({
       show(e instanceof Error ? e.message : "AI refine failed unexpectedly.", "error");
     } finally {
       setAiRefineBusy(false);
+      setAiRefinePhase("idle");
       setSpecInFlight((n) => Math.max(0, n - 1));
     }
   }, [applySession, clientSlug, orgSlug, refineVideoPrompt, session, show]);
@@ -2274,21 +2592,51 @@ export function VideoCreateWorkspace({
         ) : null}
 
         {/* Preview column (sticky) + edit column: preview stays visible while scrolling
-            template/theme/layout/timing — matches NLE / Figma mental model. */}
+            template/look/layout/timing — matches NLE / Figma mental model. */}
         <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:gap-8">
-          <div className="mx-auto flex w-full max-w-[300px] shrink-0 flex-col gap-3 lg:sticky lg:top-4 lg:mx-0 lg:self-start">
+          <div className="mx-auto flex w-full max-w-[320px] shrink-0 flex-col gap-2 lg:sticky lg:top-4 lg:mx-0 lg:basis-[340px] lg:max-w-none lg:self-start xl:basis-[380px]">
             {bgBusy ? (
-              <div className="flex aspect-[9/16] w-full max-w-[280px] flex-col items-center justify-center gap-2 self-center rounded-xl border border-app-divider bg-app-chip-bg/40">
+              <div className="flex aspect-[9/16] w-full max-w-[300px] flex-col items-center justify-center gap-2 self-center rounded-xl border border-app-divider bg-app-chip-bg/40">
                 <Loader2 className="h-6 w-6 animate-spin text-app-fg-subtle" />
                 <p className="text-[10px] text-app-fg-muted">~30–60s</p>
               </div>
             ) : (
               <>
+                <div className="flex items-center justify-end gap-1">
+                  <button
+                    type="button"
+                    aria-pressed={safeZonePreview}
+                    title="Instagram safe zone (4:5 crop)"
+                    onClick={() => setSafeZonePreview((v) => !v)}
+                    className={`inline-flex h-8 w-8 items-center justify-center rounded-lg border text-app-fg-muted transition hover:text-app-fg ${
+                      safeZonePreview
+                        ? "border-amber-500/50 bg-amber-500/15 text-amber-200"
+                        : "border-app-divider/60 bg-app-chip-bg/30"
+                    }`}
+                  >
+                    <Shield className="h-4 w-4" aria-hidden />
+                    <span className="sr-only">Toggle IG safe zone overlay</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={layoutGuides}
+                    title="Layout guides"
+                    onClick={() => setLayoutGuides((v) => !v)}
+                    className={`inline-flex h-8 w-8 items-center justify-center rounded-lg border text-app-fg-muted transition hover:text-app-fg ${
+                      layoutGuides
+                        ? "border-amber-500/50 bg-amber-500/15 text-amber-200"
+                        : "border-app-divider/60 bg-app-chip-bg/30"
+                    }`}
+                  >
+                    <Grid3x3 className="h-4 w-4" aria-hidden />
+                    <span className="sr-only">Toggle layout guides</span>
+                  </button>
+                </div>
                 <VideoSpecPreview
                   spec={livePreviewSpec}
                   safeZone={safeZonePreview}
                   layoutGuides={layoutGuides}
-                  width={280}
+                  width={300}
                   selectedSegmentId={selectedSegmentId}
                   onSelectSegment={setSelectedSegmentId}
                   onResizeSegmentDraft={onResizeSegmentDraft}
@@ -2339,7 +2687,7 @@ export function VideoCreateWorkspace({
             )}
           </div>
 
-          <div className="flex min-w-0 flex-1 flex-col gap-4 lg:max-w-[480px]">
+          <div className="flex min-w-0 flex-1 flex-col gap-4">
             {isTextOverlay && (bgSource === "ai" || bgSource === "image") ? (
               <div className="space-y-3 rounded-xl border border-app-divider/50 bg-app-chip-bg/15 p-3.5">
                 <div>
@@ -2401,72 +2749,62 @@ export function VideoCreateWorkspace({
               ) : null}
             </div>
 
-            <div className="space-y-1">
-              <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">View</p>
-              <p className="text-[9px] text-app-fg-subtle">Preview overlays only — not burned into export</p>
-              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-app-fg-muted">
-                <label
-                  className="flex cursor-pointer items-center gap-1.5"
-                  title="Margins where Instagram UI (likes, captions) can cover the frame — keep key text inside."
+            <div
+              className={`mb-3 space-y-2 rounded-xl border px-2.5 py-2 transition-colors ${
+                aiRefineBusy
+                  ? "border-violet-500/45 bg-violet-500/[0.09] shadow-[0_0_0_1px_rgba(139,92,246,0.18)]"
+                  : "border-transparent"
+              }`}
+            >
+              {aiRefineBusy ? (
+                <div className="flex items-center gap-2 text-[10px] font-semibold text-violet-100">
+                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden />
+                  <span>
+                    {aiRefinePhase === "applying"
+                      ? "Applying changes to your video…"
+                      : "Generating edits from your prompt…"}
+                  </span>
+                </div>
+              ) : null}
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+                <input
+                  value={refineVideoPrompt}
+                  onChange={(e) => setRefineVideoPrompt(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey && !aiRefineBusy && refineVideoPrompt.trim()) {
+                      e.preventDefault();
+                      void onVideoRefineApply();
+                    }
+                  }}
+                  disabled={aiRefineBusy}
+                  placeholder="make it cleaner · move card to top · easier to read…"
+                  className="glass-inset min-h-[36px] flex-1 rounded-lg border border-app-divider/50 bg-app-surface/60 px-2.5 py-1.5 text-[11px] text-app-fg placeholder:text-app-fg-subtle disabled:opacity-50"
+                />
+                <button
+                  type="button"
+                  disabled={aiRefineBusy || !refineVideoPrompt.trim() || !session.background_url}
+                  onClick={() => void onVideoRefineApply()}
+                  className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-violet-500/25 px-3 py-1.5 text-[10px] font-bold text-violet-100 hover:bg-violet-500/35 disabled:opacity-40 sm:self-stretch"
                 >
-                  <input
-                    type="checkbox"
-                    checked={safeZonePreview}
-                    onChange={(e) => setSafeZonePreview(e.target.checked)}
-                    className="accent-amber-500"
-                  />
-                  IG safe zone
-                </label>
-                <label
-                  className="flex cursor-pointer items-center gap-1.5"
-                  title="Light guides for margins and alignment while you tune layout."
-                >
-                  <input
-                    type="checkbox"
-                    checked={layoutGuides}
-                    onChange={(e) => setLayoutGuides(e.target.checked)}
-                    className="accent-amber-500"
-                  />
-                  Layout guides
-                </label>
+                  {aiRefineBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null}
+                  {aiRefineBusy ? (aiRefinePhase === "applying" ? "Applying" : "Please wait") : "Apply"}
+                </button>
               </div>
             </div>
 
-                <div className="space-y-1">
-                  <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Template</p>
-                  <p className="text-[9px] text-app-fg-subtle">Where the text sits on the frame</p>
+            <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
+              <div className="min-w-0 space-y-4">
+                <div className="space-y-1.5">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Format</p>
                   <div className="flex flex-wrap gap-1.5">
                     {(
                       [
-                        {
-                          id: "centered-pop" as const,
-                          label: "Centered",
-                          title: "Headline-style stack in the middle of the frame",
-                        },
-                        {
-                          id: "bottom-card" as const,
-                          label: "Bottom card",
-                          title: "Lower-third card with supporting lines above it",
-                        },
-                        {
-                          id: "top-banner" as const,
-                          label: "Top banner",
-                          title: "Title strip along the top with body text below",
-                        },
-                        {
-                          id: "capcut-highlight" as const,
-                          label: "Bold stroke",
-                          title: "High-contrast outline style for punchy short clips",
-                        },
-                        {
-                          id: "stacked-cards" as const,
-                          label: "Stacked",
-                          title:
-                            "One white card per beat, stacked top-to-bottom — Layout gets Left/Center/Right + space between cards",
-                        },
+                        { id: "center" as const, label: "Center", title: "Headline stack in the middle" },
+                        { id: "card" as const, label: "Card", title: "Caption on a card — use Position for top / middle / bottom" },
+                        { id: "stack" as const, label: "Stack", title: "One card per beat in a vertical stack" },
                       ] as const
                     ).map((t) => {
-                      const active = livePreviewSpec?.templateId === t.id;
+                      const active = formatChipSelection === t.id;
                       return (
                         <button
                           key={t.id}
@@ -2474,75 +2812,49 @@ export function VideoCreateWorkspace({
                           aria-pressed={active}
                           title={t.title}
                           disabled={!session.background_url}
-                          onClick={() => void onPatchVideoTemplate(t.id)}
-                          className={`rounded-lg border px-2 py-1 text-[10px] font-semibold transition disabled:opacity-40 ${
-                            active
-                              ? "border-amber-500 bg-amber-500/15 text-amber-200 shadow-[0_0_0_1px_rgba(245,158,11,0.4)]"
-                              : "border-app-divider text-app-fg-muted hover:border-amber-500/40 hover:text-app-fg"
+                          onClick={() => void onSetUiFormat(t.id)}
+                          className={`inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[10px] font-semibold transition disabled:opacity-40 ${
+                            active ? STYLE_CHIP_ON : STYLE_CHIP_OFF
                           }`}
                         >
-                          {t.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <p className="mt-1.5 max-w-md text-[9px] leading-snug text-app-fg-subtle">
-                    <span className="font-semibold text-app-fg-muted">Stacked</span> = one white card per beat,
-                    stacked vertically (spacing control in Layout).{" "}
-                    <span className="font-semibold text-app-fg-muted">Bottom card</span> = one card at a time in a
-                    lower-third band. <span className="font-semibold text-app-fg-muted">Text alignment</span>{" "}
-                    (left/center/right) works for every template — see Layout.
-                  </p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Theme</p>
-                  <p className="text-[9px] text-app-fg-subtle">Font, color, and weight</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {(
-                      [
-                        {
-                          id: "bold-modern" as const,
-                          label: "Bold",
-                          title: "Heavy sans, high contrast — good for promos",
-                        },
-                        {
-                          id: "editorial" as const,
-                          label: "Editorial",
-                          title: "Magazine-style serif mix, refined spacing",
-                        },
-                        {
-                          id: "casual-hand" as const,
-                          label: "Hand",
-                          title: "Friendly handwritten feel",
-                        },
-                        {
-                          id: "clean-minimal" as const,
-                          label: "Minimal",
-                          title: "Thin weights, lots of air, understated",
-                        },
-                      ] as const
-                    ).map((t) => {
-                      const active = livePreviewSpec?.themeId === t.id;
-                      return (
-                        <button
-                          key={t.id}
-                          type="button"
-                          aria-pressed={active}
-                          title={t.title}
-                          disabled={!session.background_url}
-                          onClick={() => void onPatchVideoTheme(t.id)}
-                          className={`rounded-lg border px-2 py-1 text-[10px] font-semibold transition disabled:opacity-40 ${
-                            active
-                              ? "border-amber-500 bg-amber-500/15 text-amber-200 shadow-[0_0_0_1px_rgba(245,158,11,0.4)]"
-                              : "border-app-divider text-app-fg-muted hover:border-amber-500/40 hover:text-app-fg"
-                          }`}
-                        >
+                          <FormatGlyph format={t.id} />
                           {t.label}
                         </button>
                       );
                     })}
                   </div>
                 </div>
+                {(formatChipSelection === "card" || formatChipSelection === "stack") && (
+                  <div className="space-y-1.5">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Position</p>
+                    <div className="flex flex-wrap gap-1">
+                      {(
+                        [
+                          { id: "top" as const, label: "Top" },
+                          { id: "center" as const, label: "Middle" },
+                          { id: "bottom" as const, label: "Bottom" },
+                        ] as const
+                      ).map((p) => {
+                        const active = uiPinForPositionRow === p.id;
+                        return (
+                          <button
+                            key={p.id}
+                            type="button"
+                            aria-pressed={active}
+                            disabled={!session.background_url}
+                            title="Where the caption block sits vertically"
+                            onClick={() => void onSetUiPin(p.id)}
+                            className={`rounded-md border px-2 py-1 text-[10px] font-semibold transition disabled:opacity-40 ${
+                              active ? STYLE_CHIP_ON : STYLE_CHIP_OFF
+                            }`}
+                          >
+                            {p.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
                 <div className="space-y-2 border-t border-app-divider/30 pt-4">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
@@ -2564,7 +2876,7 @@ export function VideoCreateWorkspace({
                         ) : null}
                       </div>
                       <p className="mt-0.5 text-[9px] text-app-fg-subtle">
-                        Vertical pin + nudge (where supported), text left/center/right, size, and side margins
+                        Alignment, nudge, and size — use Format → Position for top / middle / bottom on cards.
                       </p>
                     </div>
                     <button
@@ -2596,206 +2908,325 @@ export function VideoCreateWorkspace({
                       Reset
                     </button>
                   </div>
-                  {(() => {
-                    const tpl = pendingTemplate ?? previewVideoSpec?.templateId ?? "centered-pop";
-                    const isBottomCard = tpl === "bottom-card";
-                    const isStackedCards = tpl === "stacked-cards";
-                    const showVerticalAnchor = isBottomCard || isStackedCards;
-                    const anchor = layoutDraft.verticalAnchor ?? "bottom";
-                    return (
-                      <div className="space-y-2">
-                        {showVerticalAnchor ? (
-                          <>
-                            <p className="text-[9px] leading-snug text-app-fg-subtle">
-                              <span className="font-semibold text-app-fg-muted">Pin</span> chooses which vertical band
-                              the caption block attaches to (bottom safe area, middle of the frame, or top).{" "}
-                              <span className="font-semibold text-app-fg-muted">Nudge</span> (below) shifts it a bit
-                              up or down in small steps.
-                            </p>
-                            <AppSelect
-                              label="Pin on screen"
-                              value={anchor}
+                  <div className="space-y-2">
+                    <div className="space-y-1">
+                      <p className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-muted">
+                        Text alignment
+                      </p>
+                      <div className="flex flex-wrap gap-1">
+                        {(
+                          [
+                            { id: "left" as const, label: "Left" },
+                            { id: "center" as const, label: "Center" },
+                            { id: "right" as const, label: "Right" },
+                          ] as const
+                        ).map((opt) => {
+                          const active = layoutDraft.textAlign === opt.id;
+                          return (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              aria-pressed={active}
                               disabled={!session.background_url}
-                              onChange={(v) => {
-                                const next = v as VideoSpecLayout["verticalAnchor"];
-                                setLayoutDraft((s) => ({ ...s, verticalAnchor: next }));
-                                void onCommitLayout("verticalAnchor", next);
+                              onClick={() => {
+                                setLayoutDraft((s) => ({ ...s, textAlign: opt.id }));
+                                void onCommitLayout("textAlign", opt.id);
                               }}
-                              options={[
-                                { value: "bottom", label: "Bottom (safe area)" },
-                                { value: "center", label: "Middle (Y axis)" },
-                                { value: "top", label: "Top" },
-                              ]}
-                              className="w-full"
-                              triggerClassName="min-w-0 w-full py-1.5 text-[10px] font-semibold"
-                              dense
-                            />
-                          </>
-                        ) : (
-                          <p className="text-[9px] leading-snug text-app-fg-subtle">
-                            This template uses a fixed vertical band. Use{" "}
-                            <span className="font-semibold text-app-fg-muted">Nudge up / down</span> for a small shift.
-                            Pick <span className="font-semibold text-app-fg-muted">Bottom card</span> or{" "}
-                            <span className="font-semibold text-app-fg-muted">Stacked</span> if you need bottom /
-                            middle / top <span className="font-semibold text-app-fg-muted">Pin</span>.
-                          </p>
-                        )}
-                        <div className="space-y-1">
-                          <p className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-muted">
-                            Text alignment
-                          </p>
-                          <p className="text-[9px] leading-snug text-app-fg-subtle">
-                            Left, center, or right — applies to every template (how lines sit inside the caption area).
-                          </p>
-                          <div className="flex flex-wrap gap-1">
-                            {(
-                              [
-                                { id: "left" as const, label: "Left" },
-                                { id: "center" as const, label: "Center" },
-                                { id: "right" as const, label: "Right" },
-                              ] as const
-                            ).map((opt) => {
-                              const active = layoutDraft.textAlign === opt.id;
-                              return (
-                                <button
-                                  key={opt.id}
-                                  type="button"
-                                  aria-pressed={active}
-                                  disabled={!session.background_url}
-                                  onClick={() => {
-                                    setLayoutDraft((s) => ({ ...s, textAlign: opt.id }));
-                                    void onCommitLayout("textAlign", opt.id);
-                                  }}
-                                  className={`rounded-md border px-2 py-1 text-[10px] font-semibold transition disabled:opacity-40 ${
-                                    active
-                                      ? "border-amber-500 bg-amber-500/15 text-amber-200"
-                                      : "border-app-divider text-app-fg-muted hover:border-amber-500/40"
-                                  }`}
-                                >
-                                  {opt.label}
-                                </button>
-                              );
-                            })}
+                              className={`rounded-md border px-2 py-1 text-[10px] font-semibold transition disabled:opacity-40 ${
+                                active
+                                  ? "border-amber-500 bg-amber-500/15 text-amber-200"
+                                  : "border-app-divider text-app-fg-muted hover:border-amber-500/40"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <LayoutSlider
+                      label="Nudge up / down"
+                      title="Fine vertical move for the whole caption area: fraction of frame height (negative = up, positive = down). Works on every template."
+                      leftHint="Up"
+                      rightHint="Down"
+                      min={-0.2}
+                      max={0.2}
+                      step={0.01}
+                      value={layoutDraft.verticalOffset}
+                      disabled={!session.background_url}
+                      formatValue={(v) =>
+                        v === 0 ? "0" : `${v > 0 ? "+" : ""}${Math.round(v * 100)}%`
+                      }
+                      onChange={(v) => setLayoutDraft((s) => ({ ...s, verticalOffset: v }))}
+                      onCommit={(v) => void onCommitLayout("verticalOffset", v)}
+                    />
+                    <LayoutSlider
+                      label="Size"
+                      leftHint="Smaller"
+                      rightHint="Larger"
+                      min={0.7}
+                      max={1.3}
+                      step={0.05}
+                      value={layoutDraft.scale}
+                      disabled={!session.background_url}
+                      formatValue={(v) => `${v.toFixed(2)}x`}
+                      onChange={(v) => setLayoutDraft((s) => ({ ...s, scale: v }))}
+                      onCommit={(v) => void onCommitLayout("scale", v)}
+                    />
+                  </div>
+                  <details className="group rounded-lg border border-app-divider/50 bg-app-chip-bg/10 px-2 py-1.5">
+                    <summary className="cursor-pointer select-none text-[9px] font-bold uppercase tracking-wide text-app-fg-muted marker:text-app-fg-subtle">
+                      Advanced layout
+                    </summary>
+                    <div className="mt-2 space-y-3 border-t border-app-divider/30 pt-2">
+                      <LayoutSlider
+                        label="Side padding"
+                        title="Horizontal inset: space between the left/right frame edge and the text block (not top/bottom)."
+                        leftHint="Tight"
+                        rightHint="Roomy"
+                        min={0.02}
+                        max={0.12}
+                        step={0.005}
+                        value={layoutDraft.sidePadding}
+                        disabled={!session.background_url}
+                        formatValue={(v) => `${Math.round(v * 100)}%`}
+                        onChange={(v) => setLayoutDraft((s) => ({ ...s, sidePadding: v }))}
+                        onCommit={(v) => void onCommitLayout("sidePadding", v)}
+                      />
+                      <div
+                        className={`space-y-1.5 rounded-md border px-2 py-2 ${
+                          styleTemplateId === "stacked-cards"
+                            ? "border-amber-500/25 bg-amber-500/5"
+                            : "border-app-divider/60 bg-app-chip-bg/20"
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-muted">
+                              Stack layout
+                            </p>
+                            <p className="mt-0.5 text-[9px] text-app-fg-subtle">
+                              {styleTemplateId === "stacked-cards"
+                                ? "Gap and growth between stacked caption cards."
+                                : "Choose Stack in Format for one card per beat."}
+                            </p>
                           </div>
-                        </div>
-                        <div
-                          className={`space-y-1.5 rounded-md border px-2 py-2 ${
-                            isStackedCards
-                              ? "border-amber-500/25 bg-amber-500/5"
-                              : "border-app-divider/60 bg-app-chip-bg/20"
-                          }`}
-                        >
-                          <div className="flex flex-wrap items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <p className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-muted">
-                                Stacked template only
-                              </p>
-                              <p className="mt-0.5 text-[9px] leading-snug text-app-fg-subtle">
-                                {isStackedCards
-                                  ? "One white card per beat, stacked in a column. Spacing is between those cards."
-                                  : "Switch to Stacked to show one card per beat in a vertical stack (in addition to text alignment above)."}
-                              </p>
-                            </div>
-                            {!isStackedCards && session.background_url ? (
-                              <button
-                                type="button"
-                                onClick={() => void onPatchVideoTemplate("stacked-cards")}
-                                className="shrink-0 rounded-md border border-amber-500/50 bg-amber-500/10 px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-amber-200 hover:bg-amber-500/20"
-                              >
-                                Use Stacked
-                              </button>
-                            ) : null}
-                          </div>
-                          <LayoutSlider
-                            label="Space between cards"
-                            title="Vertical gap between stacked caption boxes (fraction of frame height). Only when template is Stacked."
-                            leftHint="Tight"
-                            rightHint="Spaced"
-                            min={0}
-                            max={0.06}
-                            step={0.002}
-                            value={layoutDraft.stackGap}
-                            disabled={!session.background_url || !isStackedCards}
-                            formatValue={(v) => `${Math.round(v * 1920)}px`}
-                            onChange={(v) => setLayoutDraft((s) => ({ ...s, stackGap: v }))}
-                            onCommit={(v) => void onCommitLayout("stackGap", v)}
-                          />
-                          <p className="text-[9px] leading-snug text-app-fg-subtle">
-                            <span className="font-semibold text-app-fg-muted">Add below</span> keeps earlier cards
-                            from moving when a new beat appears.{" "}
-                            <span className="font-semibold text-app-fg-muted">Hug bottom</span> keeps the stack on
-                            the lower safe area (earlier lines shift up as the list grows).
-                          </p>
-                          <AppSelect
-                            label="New beats"
-                            value={layoutDraft.stackGrowth}
-                            disabled={!session.background_url || !isStackedCards}
-                            onChange={(v) => {
-                              const next = v as VideoSpecLayout["stackGrowth"];
-                              setLayoutDraft((s) => ({ ...s, stackGrowth: next }));
-                              void onCommitLayout("stackGrowth", next);
-                            }}
-                            options={[
-                              {
-                                value: "down",
-                                label: "Add below — first line stays put",
-                              },
-                              {
-                                value: "up",
-                                label: "Hug bottom — stack shifts up",
-                              },
-                            ]}
-                            className="w-full"
-                            triggerClassName="min-w-0 w-full py-1.5 text-[10px] font-semibold"
-                            dense
-                          />
+                          {styleTemplateId !== "stacked-cards" && session.background_url ? (
+                            <button
+                              type="button"
+                              onClick={() => void onPatchVideoTemplate("stacked-cards")}
+                              className="shrink-0 rounded-md border border-amber-500/50 bg-amber-500/10 px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-amber-200 hover:bg-amber-500/20"
+                            >
+                              Use Stack
+                            </button>
+                          ) : null}
                         </div>
                         <LayoutSlider
-                          label="Nudge up / down"
-                          title="Fine vertical move for the whole caption area: fraction of frame height (negative = up, positive = down). Works on every template."
-                          leftHint="Up"
-                          rightHint="Down"
-                          min={-0.2}
-                          max={0.2}
-                          step={0.01}
-                          value={layoutDraft.verticalOffset}
-                          disabled={!session.background_url}
-                          formatValue={(v) =>
-                            v === 0 ? "0" : `${v > 0 ? "+" : ""}${Math.round(v * 100)}%`
-                          }
-                          onChange={(v) => setLayoutDraft((s) => ({ ...s, verticalOffset: v }))}
-                          onCommit={(v) => void onCommitLayout("verticalOffset", v)}
+                          label="Gap between cards"
+                          title="Vertical gap between stacked caption boxes (fraction of frame height). Only when template is Stacked."
+                          leftHint="Tight"
+                          rightHint="Spaced"
+                          min={0}
+                          max={0.06}
+                          step={0.002}
+                          value={layoutDraft.stackGap}
+                          disabled={!session.background_url || styleTemplateId !== "stacked-cards"}
+                          formatValue={(v) => `${Math.round(v * 1920)}px`}
+                          onChange={(v) => setLayoutDraft((s) => ({ ...s, stackGap: v }))}
+                          onCommit={(v) => void onCommitLayout("stackGap", v)}
+                        />
+                        <AppSelect
+                          label="New beats"
+                          title="Add below: first line stays put, new beats stack under (often with Position: Top). Hug bottom: stack stays in the lower safe area."
+                          value={layoutDraft.stackGrowth}
+                          disabled={!session.background_url || styleTemplateId !== "stacked-cards"}
+                          onChange={(v) => {
+                            const next = v as VideoSpecLayout["stackGrowth"];
+                            setLayoutDraft((s) => ({ ...s, stackGrowth: next }));
+                            void onCommitLayout("stackGrowth", next);
+                          }}
+                          options={[
+                            {
+                              value: "down",
+                              label: "Add below — first line stays put",
+                            },
+                            {
+                              value: "up",
+                              label: "Hug bottom — stack shifts up",
+                            },
+                          ]}
+                          className="w-full"
+                          triggerClassName="min-w-0 w-full py-1.5 text-[10px] font-semibold"
+                          dense
                         />
                       </div>
-                    );
-                  })()}
-                  <LayoutSlider
-                    label="Text size"
-                    leftHint="Smaller"
-                    rightHint="Larger"
-                    min={0.7}
-                    max={1.3}
-                    step={0.05}
-                    value={layoutDraft.scale}
-                    disabled={!session.background_url}
-                    formatValue={(v) => `${v.toFixed(2)}x`}
-                    onChange={(v) => setLayoutDraft((s) => ({ ...s, scale: v }))}
-                    onCommit={(v) => void onCommitLayout("scale", v)}
-                  />
-                  <LayoutSlider
-                    label="Padding"
-                    title="Horizontal inset: space between the left/right frame edge and the text block (not top/bottom)."
-                    leftHint="Tight"
-                    rightHint="Roomy"
-                    min={0.02}
-                    max={0.12}
-                    step={0.005}
-                    value={layoutDraft.sidePadding}
-                    disabled={!session.background_url}
-                    formatValue={(v) => `${Math.round(v * 100)}%`}
-                    onChange={(v) => setLayoutDraft((s) => ({ ...s, sidePadding: v }))}
-                    onCommit={(v) => void onCommitLayout("sidePadding", v)}
-                  />
+                    </div>
+                  </details>
+                </div>
+              </div>
+              <div className="min-w-0 space-y-4">
+                <div className="space-y-1.5">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Look</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {LOOK_VISUAL.map((t) => {
+                      const active = livePreviewSpec?.themeId === t.id;
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          aria-pressed={active}
+                          title={t.title}
+                          disabled={!session.background_url}
+                          onClick={() => void onPatchVideoTheme(t.id)}
+                          className={`inline-flex min-w-0 items-center gap-1.5 rounded-lg border px-2 py-1 text-[10px] font-semibold transition disabled:opacity-40 ${
+                            active ? STYLE_CHIP_ON : STYLE_CHIP_OFF
+                          }`}
+                        >
+                          <span className="flex shrink-0 gap-0.5" aria-hidden>
+                            {t.swatches.map((c) => (
+                              <span
+                                key={c}
+                                className="h-3 w-1.5 rounded-sm border border-white/10"
+                                style={{ background: c }}
+                              />
+                            ))}
+                          </span>
+                          <span
+                            className="text-[11px] font-bold leading-none text-app-fg-muted"
+                            style={{ fontFamily: t.fontFamily }}
+                          >
+                            Aa
+                          </span>
+                          <span className="truncate">{t.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="space-y-2 border-t border-app-divider/30 pt-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Style</p>
+                    <button
+                      type="button"
+                      disabled={!session.background_url || !appearanceHasSavedOverrides(sessionAppearance)}
+                      title="Reset to look defaults"
+                      onClick={() => void onClearAppearance()}
+                      className="inline-flex items-center gap-1 rounded-md border border-app-divider/60 px-1.5 py-1 text-app-fg-muted transition hover:border-amber-500/40 hover:text-app-fg disabled:opacity-30"
+                    >
+                      <RotateCcw className="h-3 w-3" aria-hidden />
+                      <span className="text-[9px] font-semibold uppercase tracking-wide">Reset</span>
+                    </button>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-muted">Font</p>
+                    <div className="flex flex-wrap gap-1">
+                      {(
+                        [
+                          { id: "auto" as const, label: "Auto" },
+                          { id: "modern" as const, label: "Modern" },
+                          { id: "clean" as const, label: "Clean" },
+                          { id: "editorial" as const, label: "Serif" },
+                          { id: "hand" as const, label: "Hand" },
+                        ] as const
+                      ).map((row) => {
+                        const active = styleFontMood === row.id;
+                        return (
+                          <button
+                            key={row.id}
+                            type="button"
+                            aria-pressed={active}
+                            disabled={!session.background_url}
+                            onClick={() => void onCommitAppearanceOps(opsForFontMood(row.id))}
+                            className={`rounded-md border px-2 py-1 text-[10px] font-semibold transition disabled:opacity-40 ${
+                              active ? STYLE_CHIP_ON : STYLE_CHIP_OFF
+                            }`}
+                          >
+                            {row.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-muted">Contrast</p>
+                    <div className="flex flex-wrap gap-1">
+                      {(
+                        [
+                          { id: "auto" as const, label: "Auto" },
+                          { id: "light" as const, label: "Light on dark" },
+                          { id: "dark" as const, label: "Dark on light" },
+                        ] as const
+                      ).map((row) => {
+                        const active = styleContrast === row.id;
+                        return (
+                          <button
+                            key={row.id}
+                            type="button"
+                            aria-pressed={active}
+                            disabled={!session.background_url}
+                            onClick={() =>
+                              void onCommitAppearanceOps(
+                                opsForContrast(row.id, {
+                                  templateId: styleTemplateId,
+                                  themeId: styleThemeForCard,
+                                }),
+                              )
+                            }
+                            className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-semibold transition disabled:opacity-40 ${
+                              active ? STYLE_CHIP_ON : STYLE_CHIP_OFF
+                            }`}
+                          >
+                            {row.id !== "auto" ? (
+                              <span
+                                className="h-3 w-3 shrink-0 rounded-full border border-white/15"
+                                style={{
+                                  background:
+                                    row.id === "light"
+                                      ? "linear-gradient(90deg,#0a0a0a 50%,#f8fafc 50%)"
+                                      : "linear-gradient(90deg,#f8fafc 50%,#0a0a0a 50%)",
+                                }}
+                                aria-hidden
+                              />
+                            ) : null}
+                            {row.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-muted">Text treatment</p>
+                    <p className="text-[9px] text-app-fg-subtle">
+                      Outline adds a heavy outer stroke on top of your format (Center, Card, or Stack).
+                    </p>
+                    <div className="flex flex-wrap gap-1">
+                      <button
+                        type="button"
+                        aria-pressed={!isBoldOutline}
+                        disabled={!session.background_url}
+                        title="Standard caption lettering for the selected format"
+                        onClick={() => void onSetOutlineLayout(false)}
+                        className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-semibold transition disabled:opacity-40 ${
+                          !isBoldOutline ? STYLE_CHIP_ON : STYLE_CHIP_OFF
+                        }`}
+                      >
+                        Default
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={isBoldOutline}
+                        disabled={!session.background_url}
+                        title="Punchy heavy-stroke lettering — works with Center, Card, and Stack"
+                        onClick={() => void onSetOutlineLayout(true)}
+                        className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] font-semibold transition disabled:opacity-40 ${
+                          isBoldOutline ? STYLE_CHIP_ON : STYLE_CHIP_OFF
+                        }`}
+                      >
+                        <OutlineGlyph />
+                        Outline
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
                 {/* Timing: select a segment in the timeline strip above and tune its
@@ -2827,9 +3258,11 @@ export function VideoCreateWorkspace({
                     <div className="space-y-2 border-t border-app-divider/30 pt-4">
                       <div className="flex flex-wrap items-start justify-between gap-2">
                         <div className="min-w-0">
-                          <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Timing</p>
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">
+                            Selected beat
+                          </p>
                           <p className="mt-0.5 text-[9px] text-app-fg-subtle">
-                            Tap a segment on the bar under the preview, then adjust duration here
+                            Tap the timeline under the preview, then set duration here
                           </p>
                         </div>
                         <span
@@ -2904,6 +3337,11 @@ export function VideoCreateWorkspace({
                           ) : null}
                         </div>
                       ) : null}
+                      <details className="rounded-lg border border-app-divider/50 bg-app-chip-bg/10 px-2 py-1.5">
+                        <summary className="cursor-pointer select-none text-[9px] font-bold uppercase tracking-wide text-app-fg-muted marker:text-app-fg-subtle">
+                          Advanced timing
+                        </summary>
+                        <div className="mt-2 space-y-2 border-t border-app-divider/30 pt-2">
                       {(() => {
                         const chrono = [...previewVideoSpec.blocks].sort(
                           (a, b) => a.startSec - b.startSec,
@@ -2991,14 +3429,25 @@ export function VideoCreateWorkspace({
                         );
                       })()}
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-muted">
-                          When changed
+                        <span
+                          className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-muted"
+                          title="What happens when you change a beat’s length"
+                        >
+                          Ripple mode
                         </span>
                         <div className="inline-flex overflow-hidden rounded-md border border-app-divider/60 text-[9px] font-bold uppercase tracking-wide">
                           {(
                             [
-                              { id: "push" as const, label: "Push", title: "Later blocks shift right; total grows" },
-                              { id: "compress" as const, label: "Compress", title: "Next block absorbs the change; total stays" },
+                              {
+                                id: "push" as const,
+                                label: "Push later",
+                                title: "Later blocks shift right; total grows",
+                              },
+                              {
+                                id: "compress" as const,
+                                label: "Compress next",
+                                title: "Next block absorbs the change; total stays",
+                              },
                             ] as const
                           ).map((m) => (
                             <button
@@ -3018,44 +3467,24 @@ export function VideoCreateWorkspace({
                           ))}
                         </div>
                       </div>
-                      <p className="text-[9px] leading-snug text-app-fg-subtle">
-                        Push: longer segments grow total time and shift what comes after. Compress: the next
-                        segment shortens so total stays the same when a following block exists.
+                      <p
+                        className="text-[9px] leading-snug text-app-fg-subtle"
+                        title="Push: timeline grows and shifts following beats. Compress: the next beat shortens so total length stays the same when possible."
+                      >
+                        Hover labels for detail. Compress needs a following beat.
                       </p>
                       {compressIneffective ? (
                         <p className="text-[9px] italic text-app-fg-subtle">
                           No segment after this one — Compress falls back to Push.
                         </p>
                       ) : null}
+                        </div>
+                      </details>
                     </div>
                   );
                 })()}
-
-                <div className="space-y-1.5 border-t border-app-divider/30 pt-4">
-                  <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Refine with AI</p>
-                  <p className="text-[9px] text-app-fg-subtle">Plain-language tweaks to layout, theme, or copy</p>
-                  <input
-                    value={refineVideoPrompt}
-                    onChange={(e) => setRefineVideoPrompt(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey && !aiRefineBusy && refineVideoPrompt.trim()) {
-                        e.preventDefault();
-                        void onVideoRefineApply();
-                      }
-                    }}
-                    disabled={aiRefineBusy}
-                    placeholder='e.g. "make text bigger", "move text up", "use editorial theme"'
-                    className="glass-inset w-full rounded-lg px-2 py-1.5 text-[11px] text-app-fg placeholder:text-app-fg-subtle disabled:opacity-50"
-                  />
-                  <button
-                    type="button"
-                    disabled={aiRefineBusy || !refineVideoPrompt.trim() || !session.background_url}
-                    onClick={() => void onVideoRefineApply()}
-                    className="w-full rounded-lg bg-violet-500/20 py-1.5 text-[10px] font-bold text-violet-200 hover:bg-violet-500/30 disabled:opacity-40"
-                  >
-                    {aiRefineBusy ? "Applying…" : "Apply (↵)"}
-                  </button>
-                </div>
+              </div>
+            </div>
           </div>
         </div>
 

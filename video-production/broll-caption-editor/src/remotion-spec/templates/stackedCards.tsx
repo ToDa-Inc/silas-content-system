@@ -1,16 +1,16 @@
 import React from 'react';
 import { AbsoluteFill } from 'remotion';
 import type { VideoSpecWithTimeline } from '../templateProps';
-import { resolveTheme } from '../themes';
+import { resolveAppearance } from '../appearance';
 import { blockEntranceStyle } from '../animations';
 import { flexAlignForTextAlign } from '../alignLayout';
 import { resolveLayoutPx } from '../layout';
+import { cardBoldOutlineCaptionStyle, isBoldOutlineTreatment } from '../textTreatment';
 
 export default function StackedCardsTemplate({ spec, frame, fps }: VideoSpecWithTimeline) {
   const sec = frame / fps;
-  const theme = resolveTheme(spec);
+  const theme = resolveAppearance(spec);
   const layout = resolveLayoutPx(spec);
-  const hookDur = spec.hook.durationSec;
 
   type Row = {
     key: string;
@@ -21,23 +21,23 @@ export default function StackedCardsTemplate({ spec, frame, fps }: VideoSpecWith
   };
 
   const rows: Row[] = [];
-  if (sec < hookDur) {
-    const t = String(spec.hook.text ?? '').trim();
-    if (t) {
-      rows.push({ key: 'hook', text: spec.hook.text, isCTA: false, startSec: 0, anim: 'fade' });
-    }
-  } else {
-    const sorted = [...spec.blocks].sort((a, b) => a.startSec - b.startSec);
-    for (const b of sorted) {
-      if (b.startSec <= sec && String(b.text ?? '').trim()) {
-        rows.push({
-          key: b.id,
-          text: b.text,
-          isCTA: b.isCTA,
-          startSec: b.startSec,
-          anim: (b.animation ?? 'fade') as Row['anim'],
-        });
-      }
+  const hookText = String(spec.hook.text ?? '').trim();
+  // Cumulative stack: hook is always the first card (when present); beats that have
+  // started by ``sec`` append below. Previously we used if/else so the hook vanished
+  // after ``hookDur`` and only blocks stacked — that excluded the hook from the stack.
+  if (hookText) {
+    rows.push({ key: 'hook', text: spec.hook.text, isCTA: false, startSec: 0, anim: 'fade' });
+  }
+  const sorted = [...spec.blocks].sort((a, b) => a.startSec - b.startSec);
+  for (const b of sorted) {
+    if (b.startSec <= sec && String(b.text ?? '').trim()) {
+      rows.push({
+        key: b.id,
+        text: b.text,
+        isCTA: b.isCTA,
+        startSec: b.startSec,
+        anim: (b.animation ?? 'fade') as Row['anim'],
+      });
     }
   }
 
@@ -72,6 +72,7 @@ export default function StackedCardsTemplate({ spec, frame, fps }: VideoSpecWith
             margin: 0,
             lineHeight: 1.25,
             letterSpacing: '-0.01em',
+            ...(isBoldOutlineTreatment(spec) ? cardBoldOutlineCaptionStyle(spec) : {}),
             WebkitFontSmoothing: 'antialiased',
             textRendering: 'optimizeLegibility',
             wordWrap: 'break-word',
@@ -114,10 +115,16 @@ export default function StackedCardsTemplate({ spec, frame, fps }: VideoSpecWith
     />
   ) : null;
 
-  const centerVignette = stack ? (
-    <AbsoluteFill
+  /** Same visual weight as the 48% edge bands — avoids full-frame scrim when Pin = middle. */
+  const centerBandOverlay = stack ? (
+    <div
       style={{
-        background: 'radial-gradient(ellipse at center, rgba(0,0,0,0.06) 0%, rgba(0,0,0,0.2) 100%)',
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        top: '26%',
+        height: '48%',
+        background: 'radial-gradient(ellipse at center, rgba(0,0,0,0.05) 0%, rgba(0,0,0,0.12) 55%, rgba(0,0,0,0) 100%)',
         pointerEvents: 'none',
       }}
     />
@@ -138,11 +145,10 @@ export default function StackedCardsTemplate({ spec, frame, fps }: VideoSpecWith
   ) : null;
 
   const anchor = layout.verticalAnchor;
-  const growDown = layout.stackGrowth === 'down';
 
   let overlay: React.ReactNode = null;
   if (anchor === 'center') {
-    overlay = centerVignette;
+    overlay = centerBandOverlay;
   } else if (anchor === 'top') {
     overlay = topGradient;
   } else {
@@ -150,7 +156,7 @@ export default function StackedCardsTemplate({ spec, frame, fps }: VideoSpecWith
   }
 
   let textWrap: React.ReactNode = null;
-  if (growDown || anchor === 'top') {
+  if (anchor === 'top') {
     textWrap = (
       <div
         style={{
@@ -174,14 +180,20 @@ export default function StackedCardsTemplate({ spec, frame, fps }: VideoSpecWith
       <div
         style={{
           position: 'absolute',
-          left: 0,
+          top: 0,
           right: 0,
-          top: '50%',
+          bottom: 0,
+          left: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'center',
+          paddingTop: pad,
+          paddingBottom: pad,
           paddingLeft: layout.paddingPx,
           paddingRight: layout.paddingPx,
           boxSizing: 'border-box',
           pointerEvents: 'none',
-          transform: `translateY(calc(-50% + ${layout.offsetPx}px))`,
+          transform: layout.translateY,
         }}
       >
         {stack}

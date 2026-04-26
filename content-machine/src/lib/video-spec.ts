@@ -37,6 +37,22 @@ export const videoSpecLayoutZ = z.object({
 
 export type VideoSpecLayout = z.infer<typeof videoSpecLayoutZ>;
 
+const appearanceFontIdZ = z.enum(["poppins", "inter", "playfair", "patrick"]);
+
+const videoSpecAppearanceFields = z.object({
+  fontId: appearanceFontIdZ.nullish(),
+  cardTextColor: z.string().max(40).nullish(),
+  overlayTextColor: z.string().max(40).nullish(),
+  cardBg: z.string().max(40).nullish(),
+  overlayStroke: z.string().max(40).nullish(),
+});
+
+export type VideoSpecAppearance = z.infer<typeof videoSpecAppearanceFields>;
+
+export const videoSpecAppearanceZ = videoSpecAppearanceFields.default({});
+
+export const DEFAULT_APPEARANCE: VideoSpecAppearance = {};
+
 export const DEFAULT_LAYOUT: VideoSpecLayout = {
   verticalAnchor: "bottom",
   verticalOffset: 0,
@@ -47,10 +63,17 @@ export const DEFAULT_LAYOUT: VideoSpecLayout = {
   stackGrowth: "up",
 };
 
+const textTreatmentZ = z
+  .union([z.literal("bold-outline"), z.null()])
+  .optional()
+  .transform((v): "bold-outline" | undefined => (v == null ? undefined : v));
+
 export const videoSpecZ = z.object({
   v: z.literal(1),
   templateId: templateIdZ,
   themeId: themeIdZ,
+  textTreatment: textTreatmentZ,
+  appearance: videoSpecAppearanceZ,
   brand: z.object({
     primary: z.string(),
     // Backend serializes `Optional[str]` as JSON `null`, NOT `undefined` — use
@@ -85,6 +108,12 @@ export const videoSpecZ = z.object({
 
 export type VideoSpec = z.infer<typeof videoSpecZ>;
 
+/** Legacy ``capcut-highlight`` was a whole template; it now maps to centered + bold-outline treatment. */
+export function normalizeVideoSpecForRender(spec: VideoSpec): VideoSpec {
+  if (spec.templateId !== "capcut-highlight") return spec;
+  return { ...spec, templateId: "centered-pop", textTreatment: "bold-outline" };
+}
+
 export function parseVideoSpec(raw: unknown): VideoSpec | null {
   const r = videoSpecZ.safeParse(raw);
   if (!r.success) {
@@ -95,7 +124,7 @@ export function parseVideoSpec(raw: unknown): VideoSpec | null {
     }
     return null;
   }
-  return r.data;
+  return normalizeVideoSpecForRender(r.data);
 }
 
 /** Same resolution order as backend ``_session_hook_text`` (video_spec_defaults.py):
@@ -127,7 +156,7 @@ export function sessionPrimaryHookText(s: {
 
 export function applyVideoSpecPatch(spec: VideoSpec, ops: Operation[]): VideoSpec {
   const next = applyPatch(structuredClone(spec), ops, false, true).newDocument;
-  return videoSpecZ.parse(next);
+  return normalizeVideoSpecForRender(videoSpecZ.parse(next));
 }
 
 /** Rough client preview when API has not persisted `video_spec` yet. */
@@ -184,6 +213,7 @@ export function buildPreviewSpecFromSession(s: {
     v: 1,
     templateId: templateId as VideoSpec["templateId"],
     themeId: "bold-modern",
+    appearance: DEFAULT_APPEARANCE,
     brand: { primary: "#ffffff" },
     background: { url: bg, kind, focalPoint: "center" },
     hook: { text: hookText, durationSec: hookS },

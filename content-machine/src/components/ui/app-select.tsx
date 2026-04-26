@@ -22,6 +22,8 @@ type Props = {
   menuAbove?: boolean;
   /** Smaller chevron + tighter trigger (e.g. competitor card inline pickers). */
   dense?: boolean;
+  /** Native tooltip on the trigger (keep help text out of the layout). */
+  title?: string;
 };
 
 export function AppSelect({
@@ -37,6 +39,7 @@ export function AppSelect({
   ariaLabel,
   menuAbove,
   dense,
+  title,
 }: Props) {
   const autoId = useId();
   const listId = `${autoId}-list`;
@@ -79,6 +82,7 @@ export function AppSelect({
         type="button"
         id={btnId}
         disabled={disabled}
+        title={title}
         aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}

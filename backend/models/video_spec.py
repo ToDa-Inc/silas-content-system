@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 VideoTemplateId = Literal["bottom-card", "centered-pop", "top-banner", "capcut-highlight", "stacked-cards"]
 VideoThemeId = Literal["bold-modern", "editorial", "casual-hand", "clean-minimal"]
+VideoTextTreatmentId = Literal["bold-outline"]
+AppearanceFontId = Literal["poppins", "inter", "playfair", "patrick"]
 VideoAnimation = Literal["pop", "fade", "slide-up", "none"]
 BackgroundKind = Literal["video", "image"]
 FocalPoint = Literal["top", "center", "bottom"]
@@ -139,6 +141,39 @@ class VideoSpecLayout(BaseModel):
         return s if s in ("up", "down") else "up"
 
 
+class VideoSpecAppearance(BaseModel):
+    """Optional overrides on top of ``themeId`` presets (font + colors).
+
+    ``None`` / omitted fields mean “use the active look (theme) default”.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    fontId: Optional[AppearanceFontId] = None
+    cardTextColor: Optional[str] = Field(default=None, max_length=40)
+    overlayTextColor: Optional[str] = Field(default=None, max_length=40)
+    cardBg: Optional[str] = Field(default=None, max_length=40)
+    overlayStroke: Optional[str] = Field(default=None, max_length=40)
+
+    @field_validator("fontId", mode="before")
+    @classmethod
+    def _font_id(cls, v: Any) -> Optional[str]:
+        if v is None or v == "":
+            return None
+        s = str(v).strip().lower()
+        return s if s in ("poppins", "inter", "playfair", "patrick") else None
+
+    @field_validator("cardTextColor", "overlayTextColor", "cardBg", "overlayStroke", mode="before")
+    @classmethod
+    def _colorish(cls, v: Any) -> Optional[str]:
+        if v is None or v == "":
+            return None
+        s = str(v).strip()
+        if not s or len(s) > 40:
+            return None
+        return s
+
+
 class VideoSpecV1(BaseModel):
     """Top-level props for Remotion composition `video-spec`."""
 
@@ -147,6 +182,9 @@ class VideoSpecV1(BaseModel):
     v: Literal[1] = 1
     templateId: VideoTemplateId = "centered-pop"
     themeId: VideoThemeId = "bold-modern"
+    """Heavy outer-stroke caption style; composes with any ``templateId`` (legacy ``capcut-highlight`` maps here)."""
+    textTreatment: Optional[VideoTextTreatmentId] = None
+    appearance: VideoSpecAppearance = Field(default_factory=VideoSpecAppearance)
     brand: VideoSpecBrand = Field(default_factory=VideoSpecBrand)
     background: VideoSpecBackground
     hook: VideoSpecHook = Field(default_factory=VideoSpecHook)
@@ -185,6 +223,15 @@ class VideoSpecV1(BaseModel):
         if v is None:
             return []
         return v
+
+    @model_validator(mode="after")
+    def _migrate_legacy_capcut(self) -> "VideoSpecV1":
+        """``capcut-highlight`` was a separate template; it is now ``textTreatment`` + ``centered-pop``."""
+        if self.templateId != "capcut-highlight":
+            return self
+        return self.model_copy(
+            update={"templateId": "centered-pop", "textTreatment": "bold-outline"}
+        )
 
     @model_validator(mode="after")
     def _sorted_and_total(self) -> "VideoSpecV1":

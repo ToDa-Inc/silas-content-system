@@ -1,13 +1,14 @@
 import { AbsoluteFill } from 'remotion';
 import type { VideoSpecWithTimeline } from '../templateProps';
-import { resolveTheme } from '../themes';
+import { resolveAppearance } from '../appearance';
 import { blockEntranceStyle } from '../animations';
 import { flexAlignForTextAlign } from '../alignLayout';
 import { resolveLayoutPx } from '../layout';
+import { isBoldOutlineTreatment, overlayBoldOutlineCaptionStyle } from '../textTreatment';
 
 export default function CenteredPopTemplate({ spec, frame, fps }: VideoSpecWithTimeline) {
   const sec = frame / fps;
-  const theme = resolveTheme(spec);
+  const theme = resolveAppearance(spec);
   const layout = resolveLayoutPx(spec);
   const hookDur = spec.hook.durationSec;
   const showHook = sec < hookDur;
@@ -42,8 +43,9 @@ export default function CenteredPopTemplate({ spec, frame, fps }: VideoSpecWithT
     >
       <AbsoluteFill
         style={{
-          background:
-            'radial-gradient(ellipse at center, rgba(0,0,0,0.2) 0%, rgba(0,0,0,0.5) 100%)',
+          background: isBoldOutlineTreatment(spec)
+            ? 'radial-gradient(ellipse at center, rgba(0,0,0,0.25) 0%, rgba(0,0,0,0.55) 100%)'
+            : 'radial-gradient(ellipse at center, rgba(0,0,0,0.2) 0%, rgba(0,0,0,0.5) 100%)',
           pointerEvents: 'none',
         }}
       />
@@ -79,8 +81,12 @@ export default function CenteredPopTemplate({ spec, frame, fps }: VideoSpecWithT
                 lineHeight: showHook ? 1.1 : 1.15,
                 letterSpacing: showHook ? '-1.5px' : '-1px',
                 maxWidth: '100%',
-                WebkitTextStroke: `2.5px ${theme.overlayStroke}`,
-                paintOrder: 'stroke fill',
+                ...(isBoldOutlineTreatment(spec)
+                  ? overlayBoldOutlineCaptionStyle(spec)
+                  : {
+                      WebkitTextStroke: `2.5px ${theme.overlayStroke}`,
+                      paintOrder: 'stroke fill' as const,
+                    }),
                 WebkitFontSmoothing: 'antialiased',
                 textRendering: 'optimizeLegibility',
                 wordWrap: 'break-word',

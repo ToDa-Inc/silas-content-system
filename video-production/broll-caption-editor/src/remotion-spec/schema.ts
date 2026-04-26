@@ -14,6 +14,17 @@ export type VideoThemeId =
   | 'casual-hand'
   | 'clean-minimal';
 
+export type VideoTextTreatmentId = 'bold-outline';
+
+/** Optional overrides on top of ``themeId`` (Look preset). */
+export type VideoSpecAppearance = {
+  fontId?: 'poppins' | 'inter' | 'playfair' | 'patrick' | null;
+  cardTextColor?: string | null;
+  overlayTextColor?: string | null;
+  cardBg?: string | null;
+  overlayStroke?: string | null;
+};
+
 export type VideoAnimation = 'pop' | 'fade' | 'slide-up' | 'none';
 
 export type BackgroundKind = 'video' | 'image';
@@ -87,6 +98,9 @@ export type VideoSpec = {
   v: 1;
   templateId: VideoTemplateId;
   themeId: VideoThemeId;
+  textTreatment?: VideoTextTreatmentId;
+  /** Optional font/color overrides; omitted or empty = use Look defaults only. */
+  appearance?: VideoSpecAppearance;
   brand: VideoSpecBrand;
   background: VideoSpecBackground;
   hook: VideoSpecHook;
@@ -138,6 +152,7 @@ export const defaultStudioSpec: VideoSpec = {
   v: 1,
   templateId: 'centered-pop',
   themeId: 'bold-modern',
+  appearance: {},
   brand: { primary: '#ffffff' },
   background: {
     url: 'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
@@ -176,3 +191,9 @@ export const defaultStudioSpec: VideoSpec = {
   pausesSec: [0, 0, 0],
   totalSec: 11,
 };
+
+/** Legacy ``capcut-highlight`` template → centered layout + bold-outline treatment. */
+export function normalizeVideoSpecForRender(spec: VideoSpec): VideoSpec {
+  if (spec.templateId !== 'capcut-highlight') return spec;
+  return { ...spec, templateId: 'centered-pop', textTreatment: 'bold-outline' };
+}

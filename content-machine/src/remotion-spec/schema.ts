@@ -1,6 +1,8 @@
 /** VideoSpec v1 — shared contract with backend (Pydantic). */
 /* Mirror: video-production/broll-caption-editor/src/remotion-spec/schema.ts (Remotion CLI render). */
 
+import type { VideoSpec as LibVideoSpec } from '@/lib/video-spec';
+
 export type VideoTemplateId =
   | 'bottom-card'
   | 'centered-pop'
@@ -13,6 +15,15 @@ export type VideoThemeId =
   | 'editorial'
   | 'casual-hand'
   | 'clean-minimal';
+
+/** Optional overrides on top of ``themeId`` (Look preset). */
+export type VideoSpecAppearance = {
+  fontId?: 'poppins' | 'inter' | 'playfair' | 'patrick' | null;
+  cardTextColor?: string | null;
+  overlayTextColor?: string | null;
+  cardBg?: string | null;
+  overlayStroke?: string | null;
+};
 
 export type VideoAnimation = 'pop' | 'fade' | 'slide-up' | 'none';
 
@@ -83,10 +94,17 @@ export const DEFAULT_LAYOUT: VideoSpecLayout = {
   stackGrowth: 'up',
 };
 
+/** Optional punchy caption lettering; composes with any ``templateId`` (not a layout swap). */
+export type VideoTextTreatmentId = 'bold-outline';
+
 export type VideoSpec = {
   v: 1;
   templateId: VideoTemplateId;
   themeId: VideoThemeId;
+  /** When set, templates apply a heavier outer stroke (legacy ``capcut-highlight`` maps here). */
+  textTreatment?: VideoTextTreatmentId;
+  /** Optional font/color overrides; omitted or empty = use Look defaults only. */
+  appearance?: VideoSpecAppearance;
   brand: VideoSpecBrand;
   background: VideoSpecBackground;
   hook: VideoSpecHook;
@@ -134,10 +152,37 @@ export function resolveLayout(spec: VideoSpec): VideoSpecLayout {
   };
 }
 
+/**
+ * Zod-parsed studio specs allow JSON ``null`` on optional numeric fields; the Remotion
+ * contract uses ``undefined`` only. Narrow so templates + Background stay typed.
+ */
+export function coerceLibVideoSpecForRemotion(spec: LibVideoSpec): VideoSpec {
+  const { background, layout, ...rest } = spec;
+  const { durationSec, ...bgRest } = background;
+  const layoutCoerced: VideoSpec['layout'] | undefined = layout
+    ? (() => {
+        const { verticalAnchor: _drop, ...lRest } = layout;
+        const a = layout.verticalAnchor;
+        const verticalAnchor: VerticalAnchor | undefined =
+          a === 'center' || a === 'top' || a === 'bottom' ? a : undefined;
+        return { ...lRest, verticalAnchor };
+      })()
+    : undefined;
+  return {
+    ...rest,
+    ...(layoutCoerced !== undefined ? { layout: layoutCoerced } : {}),
+    background: {
+      ...bgRest,
+      ...(durationSec != null ? { durationSec } : {}),
+    },
+  };
+}
+
 export const defaultStudioSpec: VideoSpec = {
   v: 1,
   templateId: 'centered-pop',
   themeId: 'bold-modern',
+  appearance: {},
   brand: { primary: '#ffffff' },
   background: {
     url: 'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',

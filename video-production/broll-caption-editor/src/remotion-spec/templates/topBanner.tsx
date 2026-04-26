@@ -1,13 +1,13 @@
 import { AbsoluteFill } from 'remotion';
 import type { VideoSpecWithTimeline } from '../templateProps';
-import { resolveTheme } from '../themes';
+import { resolveAppearance } from '../appearance';
 import { blockEntranceStyle } from '../animations';
 import { flexAlignForTextAlign } from '../alignLayout';
 import { resolveLayoutPx } from '../layout';
 
 export default function TopBannerTemplate({ spec, frame, fps }: VideoSpecWithTimeline) {
   const sec = frame / fps;
-  const theme = resolveTheme(spec);
+  const theme = resolveAppearance(spec);
   const layout = resolveLayoutPx(spec);
   const hookDur = spec.hook.durationSec;
   const showHook = sec < hookDur;
@@ -73,6 +73,7 @@ export default function TopBannerTemplate({ spec, frame, fps }: VideoSpecWithTim
                 margin: 0,
                 lineHeight: 1.2,
                 letterSpacing: '-0.02em',
+                ...(isBoldOutlineTreatment(spec) ? cardBoldOutlineCaptionStyle(spec) : {}),
                 wordWrap: 'break-word',
                 overflowWrap: 'break-word',
                 textAlign: ta,

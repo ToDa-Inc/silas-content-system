@@ -1,6 +1,6 @@
 import { AbsoluteFill } from 'remotion';
 import type { VideoSpecWithTimeline } from '../templateProps';
-import { resolveTheme } from '../themes';
+import { resolveAppearance } from '../appearance';
 import { blockEntranceStyle } from '../animations';
 import { flexAlignForTextAlign } from '../alignLayout';
 import { resolveLayoutPx } from '../layout';
@@ -17,7 +17,7 @@ import { resolveLayoutPx } from '../layout';
  */
 export default function CapcutHighlightTemplate({ spec, frame, fps }: VideoSpecWithTimeline) {
   const sec = frame / fps;
-  const theme = resolveTheme(spec);
+  const theme = resolveAppearance(spec);
   const layout = resolveLayoutPx(spec);
   const hookDur = spec.hook.durationSec;
   const showHook = sec < hookDur;
