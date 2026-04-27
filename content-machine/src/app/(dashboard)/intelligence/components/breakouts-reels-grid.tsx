@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Clapperboard } from "lucide-react";
 import { ReelThumbnail } from "@/components/reel-thumbnail";
 import type { ScrapedReelRow } from "@/lib/api";
+import { formatTheirUsualMultiplier, getReelProvenance } from "@/lib/reel-provenance";
 import { ReelCardWithAnalysis } from "./reel-card-with-analysis";
 import { ReelEngagementInline } from "./reel-engagement-inline";
 import { RecreateReelModal } from "./recreate-reel-modal";
@@ -73,9 +74,12 @@ export function BreakoutsReelsGrid({ reels, clientSlug, orgSlug }: Props) {
               ))}
             </div>
             <p className="mt-1 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
-              {row.outlier_ratio != null
-                ? `${Number(row.outlier_ratio).toFixed(1)}× peak vs their average (strongest metric)`
-                : "—"}
+              {(() => {
+                const p = getReelProvenance(row);
+                return row.outlier_ratio != null
+                  ? `${formatTheirUsualMultiplier(row.outlier_ratio) ?? `${Number(row.outlier_ratio).toFixed(1)}×`} · ${p.reason}`
+                  : p.reason;
+              })()}
             </p>
             <p className="mt-1 line-clamp-2 text-xs text-zinc-600 dark:text-app-fg-muted">
               {row.hook_text || row.caption || "—"}

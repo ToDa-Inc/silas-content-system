@@ -37,6 +37,12 @@ import {
   getContentApiBase,
 } from "@/lib/api-client";
 import { analysisSortScore, formatSilasScoreSummary } from "@/lib/silas-score-display";
+import {
+  formatNicheMatchPercent,
+  formatTheirUsualMultiplier,
+  getReelProvenance,
+  NICHE_SIMILARITY_SCORE_TOOLTIP,
+} from "@/lib/reel-provenance";
 import { AnalyzeReelModal } from "../components/analyze-reel-modal";
 import { RecreateReelModal } from "../components/recreate-reel-modal";
 import { IntelligenceProgressBar } from "../components/intelligence-progress-bar";
@@ -64,6 +70,7 @@ type ServerState = {
   pageSize: number;
   creator: string;
   outliersOnly: boolean;
+  ownReelsOnly: boolean;
   source: string;
   competitorId: string;
   minViews: number | null;
@@ -110,8 +117,8 @@ const SORT_KEY_LABELS: Record<AnySortKey, string> = {
   comments: "Comments",
   saves: "Saves",
   shares: "Shares",
-  outlier_ratio: "Signal",
-  similarity_score: "Signal",
+  outlier_ratio: "Breakout / niche",
+  similarity_score: "Breakout / niche",
   video_duration: "Duration",
   first_seen_at: "First seen",
   total_score: "Score",
@@ -1386,8 +1393,8 @@ export function IntelligenceReelsTable({
                 onClick={(s) => handleSort("views", s)}
               />
               <SortHeader
-                label="Signal"
-                hint="Why this reel surfaced. ↗ N× = competitor breakout (beat the creator's own average by that multiple). ◎ N% = niche-keyword match score. Each row shows only one — they're independent signals."
+                label="Breakout / niche"
+                hint="Competitor breakouts: views vs that account’s recent average (N× their usual). Niche: keyword match as a percent. One or the other per row."
                 serverSortable
                 primaryActive={
                   !localPrimarySort &&
@@ -1523,13 +1530,11 @@ export function IntelligenceReelsTable({
                   <td className="py-2.5 pr-2 align-middle font-medium text-zinc-900 dark:text-app-fg">
                     <div className="flex flex-col gap-0.5">
                       <span>@{row.account_username}</span>
-                      {row.source === "keyword_similarity" ? (
-                        <Tooltip content="Found via your niche keywords, not from a tracked competitor.">
-                          <span className="w-fit text-[10px] font-normal text-purple-600 dark:text-purple-400">
-                            niche
-                          </span>
-                        </Tooltip>
-                      ) : null}
+                      <Tooltip content={getReelProvenance(row).trustHint}>
+                        <span className="w-fit rounded-md bg-zinc-200/80 px-1.5 py-px text-[10px] font-semibold text-zinc-700 dark:bg-white/12 dark:text-app-fg-muted">
+                          {getReelProvenance(row).sourceLabel}
+                        </span>
+                      </Tooltip>
                     </div>
                   </td>
                   <td className="py-2.5 pr-2 align-middle">
@@ -1612,9 +1617,7 @@ export function IntelligenceReelsTable({
                   <td className="py-2.5 pr-2 align-middle">
                     {row.outlier_ratio != null ? (
                       <Tooltip
-                        content={`Beat @${row.account_username}'s recent average by ${Number(
-                          row.outlier_ratio,
-                        ).toFixed(1)}×. This is a competitor breakout.`}
+                        content={`Views vs this account’s recent average — a competitor breakout when clearly above 1×.`}
                       >
                         <span
                           className={`inline-flex items-center gap-1 font-bold tabular-nums ${
@@ -1624,14 +1627,14 @@ export function IntelligenceReelsTable({
                           }`}
                         >
                           <TrendingUp className="h-3 w-3 shrink-0" aria-hidden />
-                          {Number(row.outlier_ratio).toFixed(1)}×
+                          {formatTheirUsualMultiplier(row.outlier_ratio) ?? `${Number(row.outlier_ratio).toFixed(1)}×`}
                         </span>
                       </Tooltip>
-                    ) : row.similarity_score != null ? (
-                      <Tooltip content={`Matches your niche keywords by ${row.similarity_score}%.`}>
+                    ) : formatNicheMatchPercent(row.similarity_score) != null ? (
+                      <Tooltip content={NICHE_SIMILARITY_SCORE_TOOLTIP}>
                         <span className="inline-flex items-center gap-1 font-bold tabular-nums text-purple-600 dark:text-purple-400">
                           <Target className="h-3 w-3 shrink-0" aria-hidden />
-                          {row.similarity_score}%
+                          {formatNicheMatchPercent(row.similarity_score)}
                         </span>
                       </Tooltip>
                     ) : (

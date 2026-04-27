@@ -38,6 +38,7 @@ from services.content_generation import (
     angles_from_session_row,
     fetch_reel_analyses_for_generation,
     get_chosen_angle,
+    merge_source_reference_into_patterns,
     run_adaptation_synthesis,
     run_auto_video_idea,
     run_angle_generation,
@@ -444,6 +445,7 @@ def generation_start(
             )
             if not isinstance(patterns, dict):
                 patterns = {}
+            patterns = merge_source_reference_into_patterns(patterns, packed)
             extra_adapt = (
                 body.extra_instruction.strip()
                 if body.extra_instruction and body.extra_instruction.strip()
@@ -536,6 +538,8 @@ def generation_start(
             if not isinstance(patterns, dict):
                 patterns = {}
             single_reference_outlier = st == "outlier" and len(rows) == 1
+            if single_reference_outlier and len(packed) == 1:
+                patterns = merge_source_reference_into_patterns(patterns, packed[0])
             angles = run_angle_generation(
                 settings,
                 client_row=client_row,

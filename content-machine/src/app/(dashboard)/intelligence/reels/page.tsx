@@ -1,6 +1,7 @@
 import Link from "next/link";
 import {
   fetchBaseline,
+  fetchClient,
   fetchCompetitors,
   fetchReelsList,
   getCachedServerApiContext,
@@ -17,6 +18,7 @@ import { SourceFilterPills } from "./source-filter-pills";
  */
 type ReelsSearchParams = {
   outliers?: string;
+  own?: string;
   competitor?: string;
   source?: string;
   creator?: string;
@@ -71,8 +73,9 @@ export default async function IntelligenceReelsPage({ searchParams }: PageProps)
   const sp = await searchParams;
 
   const outliersOnly = sp.outliers === "1" || sp.outliers === "true";
+  const ownOnly = sp.own === "1" || sp.own === "true";
   const competitorId = (sp.competitor ?? "").trim();
-  const source = (sp.source ?? "").trim();
+  const source = ownOnly ? "" : (sp.source ?? "").trim();
   const creator = (sp.creator ?? "").trim();
   const sortRaw = (sp.sort ?? "").trim() as ReelsListSortBy;
   const sortBy: ReelsListSortBy = SORT_WHITELIST.includes(sortRaw) ? sortRaw : "posted_at";
@@ -101,7 +104,7 @@ export default async function IntelligenceReelsPage({ searchParams }: PageProps)
           ? "Pick a creator in the header or finish onboarding."
           : null;
 
-  const [reelsRes, compRes, baselineRes] = await Promise.all([
+  const [reelsRes, compRes, baselineRes, clientRes] = await Promise.all([
     fetchReelsList({
       includeAnalysis: true,
       limit: pageSize,
@@ -109,6 +112,7 @@ export default async function IntelligenceReelsPage({ searchParams }: PageProps)
       sortBy,
       sortDir,
       outlierOnly: outliersOnly || undefined,
+      ownReelsOnly: ownOnly || undefined,
       source: source || undefined,
       creator: creator || undefined,
       competitorId: competitorId || undefined,
@@ -123,6 +127,7 @@ export default async function IntelligenceReelsPage({ searchParams }: PageProps)
     }),
     fetchCompetitors(),
     fetchBaseline(),
+    fetchClient(),
   ]);
 
   const lastSyncedAt = baselineRes.ok && baselineRes.data ? baselineRes.data.scraped_at : null;
@@ -134,34 +139,54 @@ export default async function IntelligenceReelsPage({ searchParams }: PageProps)
       ? competitors.find((c) => c.id === competitorId)?.username ?? null
       : null;
 
+  const igHandleRaw =
+    clientRes.ok && clientRes.data?.instagram_handle
+      ? clientRes.data.instagram_handle.replace(/^@/, "").trim()
+      : "";
+  const ownCatalogLabel = igHandleRaw ? `@${igHandleRaw}` : "Your reels";
+
   const buildHref = (opts: {
     outliers?: boolean;
     competitor?: string | null;
     source?: string | null;
+    own?: boolean;
   }) => {
     const p = new URLSearchParams();
     if (opts.outliers) p.set("outliers", "1");
     if (opts.competitor) p.set("competitor", opts.competitor);
-    if (opts.source) p.set("source", opts.source);
+    if (opts.own) {
+      p.set("own", "1");
+    } else if (opts.source) {
+      p.set("source", opts.source);
+    }
     const q = p.toString();
     return q ? `/intelligence/reels?${q}` : "/intelligence/reels";
   };
 
   return (
-    <main className="mx-auto max-w-[1200px] px-4 py-8 md:px-8">
-      <header className="mb-8 flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
-        <div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-          <div className="flex flex-wrap items-center gap-3 text-sm">
-            <Link
-              href="/intelligence"
-              className="font-medium text-app-fg-muted transition-colors hover:text-amber-400"
-            >
-              ← Intelligence
-            </Link>
-            <span className="text-zinc-400 dark:text-zinc-600">|</span>
-            <span className="font-semibold text-app-fg">Reels</span>
+    <main className="mx-auto max-w-[min(100%,1400px)] px-4 py-6 md:px-8 md:py-8">
+      <header className="mb-6 overflow-hidden rounded-2xl border border-zinc-200/80 bg-zinc-50/70 shadow-sm dark:border-white/10 dark:bg-zinc-950/40">
+        <div className="flex flex-col gap-4 border-b border-zinc-200/70 p-4 dark:border-white/[0.08] md:flex-row md:items-start md:justify-between md:p-5">
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+              <Link
+                href="/intelligence"
+                className="font-medium text-app-fg-muted transition-colors hover:text-zinc-800 dark:hover:text-app-fg-secondary"
+              >
+                ← Intelligence
+              </Link>
+              <span className="text-zinc-300 dark:text-zinc-600" aria-hidden>
+                /
+              </span>
+              <span className="font-semibold tracking-tight text-app-fg">Reels catalog</span>
+            </div>
+            <p className="max-w-xl text-xs leading-relaxed text-app-fg-muted md:text-sm">
+              Scope what you&apos;re optimizing for, then pick which slice of the library to
+              browse — your synced baseline, competitors, niche scan hits, or saved links.
+            </p>
           </div>
           <IntelligenceToolbar
+            variant="embedded"
             clientSlug={clientSlug}
             orgSlug={orgSlug}
             disabled={syncDisabled}
@@ -169,34 +194,110 @@ export default async function IntelligenceReelsPage({ searchParams }: PageProps)
             lastSyncedAt={lastSyncedAt}
           />
         </div>
-        <SourceFilterPills
-          pills={[
-            {
-              href: buildHref({ outliers: false, competitor: competitorId || null, source: null }),
-              label: "All sources",
-              active: !source && !outliersOnly,
-              variant: "neutral",
-            },
-            {
-              href: buildHref({ outliers: true, competitor: competitorId || null, source: source || null }),
-              label: "Breakouts only",
-              active: outliersOnly,
-              variant: "amber",
-            },
-            {
-              href: buildHref({ outliers: false, competitor: competitorId || null, source: "profile" }),
-              label: "Competitors",
-              active: source === "profile",
-              variant: "neutral",
-            },
-            {
-              href: buildHref({ outliers: false, competitor: competitorId || null, source: "keyword_similarity" }),
-              label: "Niche reels",
-              active: source === "keyword_similarity",
-              variant: "purple",
-            },
-          ]}
-        />
+
+        <div className="flex flex-col gap-4 p-4 md:flex-row md:flex-wrap md:items-end md:gap-6 md:p-5">
+          <div className="min-w-0 shrink-0 space-y-2">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-app-fg-muted">
+              Scope
+            </p>
+            <SourceFilterPills
+              layout="segmented"
+              pills={[
+                {
+                  href: buildHref({
+                    outliers: false,
+                    competitor: competitorId || null,
+                    own: ownOnly ? true : undefined,
+                    source: ownOnly ? undefined : source ? source : undefined,
+                  }),
+                  label: "All reels",
+                  active: !outliersOnly,
+                  variant: "neutral",
+                },
+                {
+                  href: buildHref({
+                    outliers: true,
+                    competitor: competitorId || null,
+                    own: ownOnly ? true : undefined,
+                    source: ownOnly ? undefined : source ? source : undefined,
+                  }),
+                  label: "Breakouts only",
+                  active: outliersOnly,
+                  variant: "amber",
+                },
+              ]}
+            />
+          </div>
+          <div className="min-w-0 flex-1 space-y-2">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-app-fg-muted">
+              Catalog
+            </p>
+            <SourceFilterPills
+              layout="segmented"
+              pills={[
+                {
+                  href: buildHref({
+                    outliers: outliersOnly,
+                    competitor: competitorId || null,
+                  }),
+                  label: "Everything",
+                  active: !source && !ownOnly,
+                  variant: "neutral",
+                },
+                {
+                  href: buildHref({
+                    outliers: outliersOnly,
+                    competitor: competitorId || null,
+                    own: true,
+                  }),
+                  label: ownCatalogLabel,
+                  active: ownOnly,
+                  variant: "neutral",
+                },
+                {
+                  href: buildHref({
+                    outliers: outliersOnly,
+                    competitor: competitorId || null,
+                    source: "profile",
+                  }),
+                  label: "Competitors",
+                  active: source === "profile",
+                  variant: "neutral",
+                },
+                {
+                  href: buildHref({
+                    outliers: outliersOnly,
+                    competitor: competitorId || null,
+                    source: "keyword_similarity",
+                  }),
+                  label: "Niche finds",
+                  active: source === "keyword_similarity",
+                  variant: "purple",
+                },
+                {
+                  href: buildHref({
+                    outliers: outliersOnly,
+                    competitor: competitorId || null,
+                    source: "url_paste",
+                  }),
+                  label: "Saved",
+                  active: source === "url_paste",
+                  variant: "neutral",
+                },
+                {
+                  href: buildHref({
+                    outliers: outliersOnly,
+                    competitor: competitorId || null,
+                    source: "niche_search",
+                  }),
+                  label: "Legacy",
+                  active: source === "niche_search",
+                  variant: "neutral",
+                },
+              ]}
+            />
+          </div>
+        </div>
       </header>
 
       {(competitorId && competitorLabel) || competitorId ? (
@@ -210,7 +311,15 @@ export default async function IntelligenceReelsPage({ searchParams }: PageProps)
               <>Filtered by competitor</>
             )}
           </span>
-          <Link href={buildHref({ outliers: outliersOnly, competitor: null })} className="font-semibold text-amber-600 hover:underline dark:text-amber-400">
+          <Link
+            href={buildHref({
+              outliers: outliersOnly,
+              competitor: null,
+              own: ownOnly ? true : undefined,
+              source: ownOnly ? undefined : source ? source : undefined,
+            })}
+            className="font-semibold text-amber-600 hover:underline dark:text-amber-400"
+          >
             Clear account filter
           </Link>
         </div>
@@ -231,6 +340,7 @@ export default async function IntelligenceReelsPage({ searchParams }: PageProps)
             pageSize,
             creator,
             outliersOnly,
+            ownReelsOnly: ownOnly,
             source,
             competitorId,
             minViews,

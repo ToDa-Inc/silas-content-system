@@ -5,7 +5,7 @@ import type {
   OwnReelsMetricsSeries,
   ReelAnalysisDetail,
 } from "@/lib/reel-types";
-import type { ScrapedReelRow } from "@/lib/api";
+import type { ClientRow, ReelsListSortBy, ScrapedReelRow } from "@/lib/api";
 import { getContentApiBase } from "@/lib/env";
 import type { Operation } from "fast-json-patch";
 import type { VideoSpec } from "@/lib/video-spec";
@@ -291,6 +291,118 @@ export function fetchDashboardCompetitorWinsClient(
   limit = DASHBOARD_LANE_LIMIT,
 ) {
   return fetchDashboardLaneClient("competitor-wins", clientSlug, orgSlug, days, limit);
+}
+
+/** Browser GET /reels?own_reels_only — creator baseline rows only. */
+export async function fetchOwnReelsClient(
+  clientSlug: string,
+  orgSlug: string,
+  limit = 24,
+): Promise<{ ok: true; data: ScrapedReelRow[] } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  const params = new URLSearchParams({
+    own_reels_only: "true",
+    include_analysis: "true",
+    limit: String(limit),
+    sort_by: "posted_at",
+    sort_dir: "desc",
+  });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/reels?${params}`,
+      { headers },
+    );
+    const json = (await res.json().catch(() => [])) as unknown;
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(json as Record<string, unknown>, `Request failed (${res.status})`),
+      };
+    }
+    return { ok: true, data: Array.isArray(json) ? (json as ScrapedReelRow[]) : [] };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+/** Browser GET /clients/{slug} — workspace creator row (e.g. instagram_handle for own-reels copy). */
+export async function fetchClientRowClient(
+  clientSlug: string,
+  orgSlug: string,
+): Promise<{ ok: true; data: ClientRow } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}`,
+      { headers },
+    );
+    const json = (await res.json().catch(() => null)) as unknown;
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(json as Record<string, unknown>, `Request failed (${res.status})`),
+      };
+    }
+    if (!json || typeof json !== "object") {
+      return { ok: false, error: "Invalid client response" };
+    }
+    return { ok: true, data: json as ClientRow };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export type ReelsListClientQuery = {
+  limit?: number;
+  offset?: number;
+  sortBy?: ReelsListSortBy;
+  sortDir?: "asc" | "desc";
+  source?: string;
+  outlierOnly?: boolean;
+  ownReelsOnly?: boolean;
+  includeAnalysis?: boolean;
+};
+
+/** Browser GET /reels with filters — mirrors server `fetchReelsList`. */
+export async function fetchReelsListClient(
+  clientSlug: string,
+  orgSlug: string,
+  query: ReelsListClientQuery = {},
+): Promise<
+  { ok: true; data: ScrapedReelRow[]; total: number } | { ok: false; error: string }
+> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  const params = new URLSearchParams();
+  params.set("include_analysis", String(query.includeAnalysis ?? true));
+  params.set("limit", String(query.limit ?? 48));
+  if (query.offset && query.offset > 0) params.set("offset", String(query.offset));
+  if (query.sortBy) params.set("sort_by", query.sortBy);
+  if (query.sortDir) params.set("sort_dir", query.sortDir);
+  if (query.outlierOnly) params.set("outlier_only", "true");
+  if (query.ownReelsOnly) params.set("own_reels_only", "true");
+  if (query.source) params.set("source", query.source);
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/reels?${params}`,
+      { headers },
+    );
+    const json = (await res.json().catch(() => [])) as unknown;
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(json as Record<string, unknown>, `Request failed (${res.status})`),
+      };
+    }
+    const data = Array.isArray(json) ? (json as ScrapedReelRow[]) : [];
+    const totalHeader = res.headers.get("x-total-count");
+    const total = totalHeader != null ? Number.parseInt(totalHeader, 10) : data.length;
+    return { ok: true, data, total: Number.isFinite(total) ? total : data.length };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
 }
 
 export type ActiveReelAnalysisJobResponse =

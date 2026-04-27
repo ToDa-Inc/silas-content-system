@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-PROMPT_VERSION = "silas_v2_3_carousel_2026_04"
+PROMPT_VERSION = "silas_v2_4_caption_8k_2026_04_27"
 
 # ---------------------------------------------------------------------------
 # Weight map: criterion → multiplier applied to the 1-10 raw score.
@@ -321,7 +321,7 @@ def build_reel_analysis_prompt(
     has no public view counter — the prompt is patched to use likes/comments as the
     only performance signal and to expect a multi-slide static-image format.
     """
-    cap = (caption or "")[:500]
+    cap = (caption or "")[:8000]
     ctx = niche_context or _FALLBACK_NICHE_CONTEXT
 
     t = (

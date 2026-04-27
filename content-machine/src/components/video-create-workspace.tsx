@@ -2223,14 +2223,14 @@ export function VideoCreateWorkspace({
           </div>
           <p className="mb-3 text-xs leading-relaxed text-app-fg-muted">
             Talking-head format — film yourself reading this script. Edit freely; markdown headings
-            (##&nbsp;Hook, ##&nbsp;Insight 1, …) help you remember structure on camera.
+            (##&nbsp;Hook, ##&nbsp;Build-up, ##&nbsp;Reframe, ##&nbsp;Clarity, ##&nbsp;CTA) match the Silas brief.
           </p>
           <textarea
             value={scriptDraft}
             onChange={(e) => setScriptDraft(e.target.value)}
             rows={Math.min(28, Math.max(10, scriptDraft.split("\n").length + 1))}
             className="glass-inset w-full resize-y rounded-xl px-3 py-3 font-mono text-[13px] leading-relaxed text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
-            placeholder="## Hook&#10;Did you know…&#10;&#10;## Situation&#10;…"
+            placeholder="## Hook&#10;…&#10;&#10;## Build-up&#10;…&#10;&#10;## Reframe&#10;…"
           />
           <div className="mt-3 flex items-center gap-2">
             <button

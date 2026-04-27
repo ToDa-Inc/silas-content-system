@@ -2324,7 +2324,10 @@ def list_reels(
     outlier_only: bool = Query(False),
     own_reels_only: bool = Query(
         False,
-        description="Only reels scraped from the client's own profile (competitor_id IS NULL).",
+        description=(
+            "Only this creator's baseline reels: source=client_baseline, competitor_id NULL, and "
+            "account_username matches clients.instagram_handle when that handle is set."
+        ),
     ),
     include_analysis: bool = Query(
         False,
@@ -2382,15 +2385,22 @@ def list_reels(
     a bare list for back-compat with existing callers.
     """
     base_filters = supabase.table("scraped_reels").select("*").eq("client_id", client_id)
+    ig_for_own: Optional[str] = None
     if own_reels_only:
+        # Own catalog = recurring baseline / own-handle scrape only. competitor_id NULL
+        # alone would still include niche keyword rows and pasted URLs.
         base_filters = base_filters.is_("competitor_id", "null")
+        base_filters = base_filters.eq("source", "client_baseline")
+        ig_for_own = _client_instagram_handle(supabase, client_id)
+        if ig_for_own:
+            base_filters = base_filters.ilike("account_username", ig_for_own)
     if outlier_only:
         base_filters = base_filters.eq("is_outlier", True)
-    if source:
+    if source and not own_reels_only:
         base_filters = base_filters.eq("source", source)
-    if competitor_id:
+    if competitor_id and not own_reels_only:
         base_filters = base_filters.eq("competitor_id", competitor_id)
-    if creator:
+    if creator and not own_reels_only:
         # ilike with no wildcard = case-insensitive equality, matches Postgres
         # citext semantics without needing a column type change.
         base_filters = base_filters.ilike("account_username", creator)
@@ -2441,13 +2451,16 @@ def list_reels(
         )
         if own_reels_only:
             count_q = count_q.is_("competitor_id", "null")
+            count_q = count_q.eq("source", "client_baseline")
+            if ig_for_own:
+                count_q = count_q.ilike("account_username", ig_for_own)
         if outlier_only:
             count_q = count_q.eq("is_outlier", True)
-        if source:
+        if source and not own_reels_only:
             count_q = count_q.eq("source", source)
-        if competitor_id:
+        if competitor_id and not own_reels_only:
             count_q = count_q.eq("competitor_id", competitor_id)
-        if creator:
+        if creator and not own_reels_only:
             count_q = count_q.ilike("account_username", creator)
         if min_views is not None:
             count_q = count_q.gte("views", min_views)

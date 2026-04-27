@@ -54,11 +54,18 @@ type TrendTimeRange = PresetTimeRange | "custom";
 
 type ChartRow = Record<string, string | number | null | undefined>;
 
-function reelDisplayLabel(r: OwnReelsMetricsSeries, index: number): string {
+const IG_POST_PATH = /instagram\.com\/(?:reel|reels|p|tv)\/([^/?#]+)/i;
+
+/** Legend label from synced data only — no synthetic titles. */
+function reelDisplayLabel(r: OwnReelsMetricsSeries): string {
   const hook = (r.hook_text || "").trim().replace(/\s+/g, " ");
   if (hook.length > 28) return `${hook.slice(0, 26)}…`;
   if (hook.length > 0) return hook;
-  return `Reel ${index + 1}`;
+  const url = (r.post_url || "").trim();
+  const m = url.match(IG_POST_PATH);
+  if (m?.[1]) return m[1].length > 22 ? `${m[1].slice(0, 20)}…` : m[1];
+  if (url.length > 0) return url.length > 28 ? `${url.slice(0, 26)}…` : url;
+  return r.reel_id.length >= 8 ? `id:${r.reel_id.slice(0, 8)}…` : r.reel_id;
 }
 
 function metricAtPoint(
@@ -176,7 +183,7 @@ function buildMergedRows(
     (a, b) => new Date(a).getTime() - new Date(b).getTime(),
   );
   const dataKeys = series.map((_, i) => `s${i}`);
-  const labels = series.map((r, i) => reelDisplayLabel(r, i));
+  const labels = series.map((r) => reelDisplayLabel(r));
 
   const sortedPoints = series.map((r) =>
     [...r.points].sort(

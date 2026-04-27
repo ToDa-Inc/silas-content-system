@@ -15,7 +15,7 @@ from services.reel_metrics import enrich_engagement_metrics
 
 logger = logging.getLogger(__name__)
 
-GENERATION_PROMPT_VERSION = "silas_gen_v5_2026_04_21"
+GENERATION_PROMPT_VERSION = "silas_gen_v7_2026_04_27"
 COVER_PROMPT_VERSION = "silas_covers_v1_2026_04_21"
 
 GermanPolishMode = Literal["none", "full", "script", "caption", "stories"]
@@ -24,6 +24,43 @@ _SYSTEM_JSON = (
     "You are Silas — a senior Instagram Reels strategist. "
     "Reply with a single valid JSON object only (no markdown fences, no commentary)."
 )
+
+
+def _talking_head_script_package_bullet(*, german_client: bool) -> str:
+    """Silas talking-head script brief. Human-readable spec: docs/TALKING_HEAD_PROMPT.md — keep in sync."""
+    de_extra = ""
+    if german_client:
+        de_extra = (
+            "For OUTPUT LANGUAGE German: do not translate word-for-word from any English in the inputs — "
+            "ADAPT so it feels originally written in German. Natural spoken German (DE/AT/CH professional); "
+            "calm authority; slightly provocative where it fits; no fluff, no AI tone. "
+            "Replace cultural references, English-thought phrasing, and anything that sounds translated.\n"
+        )
+    return (
+        "\nTALKING_HEAD_SCRIPT (non-negotiable — Silas talking-head brief; see docs/TALKING_HEAD_PROMPT.md):\n"
+        "- This reel is face-to-camera the whole time. The script is what the creator speaks aloud.\n"
+        f"{de_extra}"
+        "- Base voice, tone, philosophy, and ICP fit on CLIENT_CONTEXT (communication guideline + ICP). "
+        "The viewer should feel the client is speaking directly to them.\n"
+        "- Preserve what makes the angle perform: hook strength, emotional tension, the reframe (core insight), "
+        "rhythm and pacing implied by PATTERNS_JSON / CHOSEN_ANGLE_JSON. When PATTERNS_JSON comes from a single "
+        "source reel or pasted script, treat it as a blueprint: keep sequence and payoff; localize examples and language.\n"
+        "- Slightly optimize for clarity and impact in the OUTPUT LANGUAGE; sharpen ICP identification; keep "
+        "sentences concise and punchy; must sound natural when read aloud.\n"
+        "- Duration: follow PATTERNS_JSON.format_insights (and NICHE_BENCHMARKS if present). "
+        "Default ~45 seconds spoken only if format_insights is empty.\n"
+        "- Markdown structure — use these exact ## headings, prose under each (no sub-headings):\n"
+        "  ## Hook\n"
+        "  ## Build-up\n"
+        "  ## Reframe\n"
+        "  ## Clarity\n"
+        "  ## CTA\n"
+        "  Sequence is Hook → Build-up → Reframe → Clarity → CTA (Build-up through Clarity carry tension → insight → usable clarity).\n"
+        "- CTA: match the client's funnel per OFFER_DOCUMENTATION (e.g. clear comment-keyword instruction when a "
+        "lead magnet is named); benefit specific to the ICP.\n"
+        "- Before returning JSON, verify: (1) Sounds native in the OUTPUT LANGUAGE — not translated or generic. "
+        "(2) Matches client voice and ICP from CLIENT_CONTEXT. (3) Would retain attention as well as the blueprint angle.\n"
+    )
 
 
 def _lang_instruction(language: str) -> str:
@@ -239,6 +276,61 @@ def _pack_client_row_for_llm(client_row: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def _caption_text_from_reel_meta(reel_meta: Optional[Dict[str, Any]], *, max_chars: int = 8000) -> str:
+    """Scraped Instagram caption from a scraped_reels row (same cap as URL analyze ingest)."""
+    if not isinstance(reel_meta, dict):
+        return ""
+    c = reel_meta.get("caption")
+    if isinstance(c, dict):
+        s = str(c.get("text") or "").strip()
+    else:
+        s = str(c or "").strip() if c is not None else ""
+    return s[:max_chars] if s else ""
+
+
+def build_source_reference_for_patterns(packed: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Factual template-reel fields from compact analysis for synthesized_patterns (no inference)."""
+    if not isinstance(packed, dict):
+        return None
+    ref: Dict[str, Any] = {}
+    sc = str(packed.get("source_caption") or "").strip()
+    if sc:
+        ref["source_caption"] = sc[:8000]
+    for key in (
+        "post_url",
+        "why_it_worked",
+        "caption_structure",
+        "hook_type",
+        "emotional_trigger",
+        "content_angle",
+        "full_text_excerpt",
+    ):
+        v = packed.get(key)
+        if v is None:
+            continue
+        if isinstance(v, str) and not v.strip():
+            continue
+        ref[key] = v
+    repl = packed.get("replicable_elements")
+    if isinstance(repl, dict) and repl:
+        ref["replicable_elements"] = repl
+    sugg = packed.get("suggested_adaptations")
+    if isinstance(sugg, list) and sugg:
+        ref["suggested_adaptations"] = sugg
+    return ref if ref else None
+
+
+def merge_source_reference_into_patterns(
+    patterns: Dict[str, Any], packed: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Attach template evidence after LLM pattern synthesis so generation prompts retain captions."""
+    out = dict(patterns) if isinstance(patterns, dict) else {}
+    factual = build_source_reference_for_patterns(packed)
+    if factual:
+        out["source_reference"] = factual
+    return out
+
+
 def compact_analysis_for_prompt(
     row: Dict[str, Any],
     reel_meta: Optional[Dict[str, Any]] = None,
@@ -264,6 +356,9 @@ def compact_analysis_for_prompt(
         "suggested_adaptations": row.get("suggested_adaptations"),
         "full_text_excerpt": full_text,
     }
+    cap_src = _caption_text_from_reel_meta(reel_meta)
+    if cap_src:
+        out["source_caption"] = cap_src
     if reel_meta:
         out["performance"] = {
             "views": reel_meta.get("views"),
@@ -344,6 +439,9 @@ def run_pattern_synthesis(
         '  "one_paragraph_synthesis": string\n'
         "}\n\n"
         "Use 3–5 items per list where possible. Be concrete; quote mechanisms from the data.\n\n"
+        "Each analysis may include `source_caption` (scraped Instagram caption under the post). When present, "
+        "treat it as factual creator copy: hooks may live on-video while frameworks, examples, or CTAs may live "
+        "primarily in the caption — synthesize patterns across both layers.\n\n"
         "Use the PERFORMANCE block in each analysis to weight your synthesis: patterns from "
         "high-engagement reels (e.g. save_rate above ~0.03 or engagement_rate above ~0.05 when present) "
         "matter more than patterns from low-engagement ones. Note which insights come from reels "
@@ -414,7 +512,7 @@ def run_angle_generation(
         '  "angle_role": string (optional; use "blueprint" for angle 1 only, "variant" for angles 2–5 when adapting one source reel)\n'
         "}\n\n"
         f"CLIENT_CONTEXT:\n{_pack_client_row_for_llm(client_row)[:100_000]}\n\n"
-        f"PATTERNS_JSON:\n{json.dumps(synthesized_patterns, ensure_ascii=False)[:60_000]}\n"
+        f"PATTERNS_JSON:\n{json.dumps(synthesized_patterns, ensure_ascii=False)[:72_000]}\n"
     )
     if extra_instruction and extra_instruction.strip():
         user += f"\n\nEXTRA_FOCUS:\n{extra_instruction.strip()[:2000]}\n"
@@ -501,11 +599,11 @@ _TARGET_FORMAT_DESCRIPTIONS: Dict[str, str] = {
         "text beats + a CTA. The viewer reads + watches; the script is mostly the "
         "voice-over / silent narrative, while the text_blocks are the spine."
     ),
-    "talking_head": (
-        "Talking-head reel: a single person speaking directly to camera the whole time. "
-        "No on-screen text blocks, no B-roll cutaways. Structure the script in clear "
-        "spoken sections (## Hook / ## Insight / ## CTA) the creator will read aloud."
-    ),
+        "talking_head": (
+            "Talking-head reel: a single person speaking directly to camera the whole time. "
+            "No on-screen text blocks, no B-roll cutaways. Structure the script in clear "
+            "spoken sections (## Hook / ## Insight / ## CTA) the creator will read aloud."
+        ),
     "carousel": (
         "Instagram carousel (NOT a video): 3–10 swipeable PNG slides. Slide 1 is the "
         "cover/hook, last slide is the CTA. Each slide carries one short idea. The "
@@ -1034,6 +1132,28 @@ def run_content_package(
             "- Hooks, script, caption, and text_blocks must all feel like the same adapted reel, not a new "
             "unrelated concept.\n\n"
         )
+    ref_note = ""
+    if adapt_single_reference_reel and isinstance(synthesized_patterns, dict):
+        sr0 = synthesized_patterns.get("source_reference")
+        if isinstance(sr0, dict) and str(sr0.get("source_caption") or "").strip():
+            ref_note = (
+                "\nSOURCE_REFERENCE: PATTERNS_JSON includes `source_reference` with the scraped template caption "
+                "and stored analysis excerpts. The blueprint is the combined on-reel content plus caption — preserve "
+                "the same viewer payoff and information depth when adapting.\n"
+            )
+    caption_src_tail = ""
+    if isinstance(synthesized_patterns, dict):
+        sr1 = synthesized_patterns.get("source_reference")
+        if isinstance(sr1, dict) and str(sr1.get("source_caption") or "").strip():
+            caption_src_tail = (
+                " When PATTERNS_JSON.source_reference.source_caption is present, ground caption_body in that text "
+                "and in source_reference fields (why_it_worked, caption_structure, replicable_elements, "
+                "suggested_adaptations): preserve the strategic role the original caption played (e.g. expanded "
+                "teaching, examples, framework, CTA style) while rewriting fully for this client's ICP, language, "
+                "voice, and OFFER_DOCUMENTATION. Do not copy phrasing. Do not add facts, numbers, promises, or "
+                "specifics unless they appear in source_reference, CLIENT_CONTEXT, CHOSEN_ANGLE_JSON, or the script "
+                "you generate for this package."
+            )
     blueprint_note = ""
     if adapt_single_reference_reel and str(chosen_angle.get("angle_role") or "").strip().lower() == "blueprint":
         blueprint_note = (
@@ -1041,10 +1161,62 @@ def run_content_package(
             "reel's structure, hook type, narrative arc, tension → payoff, and CTA mechanism in PATTERNS_JSON. "
             "Do not drift to a different topic or format; only localize and ICP-fit the same blueprint.\n"
         )
+    fk = canonicalize_stored_format_key(source_format_key or "") or (source_format_key or "").strip()
+    is_talking_head = fk == "talking_head"
+    if is_talking_head:
+        script_bullet = _talking_head_script_package_bullet(german_client=_is_german_client(client_row))
+    else:
+        script_bullet = (
+            "- script: Use the optimal format and duration implied by PATTERNS_JSON.format_insights "
+            "(and NICHE_BENCHMARKS if present). If format_insights suggests talking-head ~30s, write ~30s; "
+            "if text-overlay, write overlay copy. Default to ~45 second talking head only if format_insights is empty. "
+            "Use markdown with headings: "
+            "## Hook, ## Situation, ## Insight 1, ## Insight 2, ## Insight 3, ## Conclusion, ## CTA.\n"
+        )
+    if is_talking_head:
+        hard_script_rules = (
+            "HARD RULES FOR THE SPOKEN SCRIPT (non-negotiable):\n"
+            "1. ## Reframe and ## Clarity together MUST include at least one sentence the viewer can say out loud "
+            "in a real situation tomorrow. Not an explanation of a technique — the actual words. "
+            "If those sections only explain a concept without giving a usable sentence, it fails.\n"
+            "2. Whenever a method or framework is named (e.g. WWW Method, 3-step feedback, any "
+            "named tool), you MUST show it being used in one concrete example sentence. "
+            "\"I noticed X, it affects me by Y, I want Z\" — that level of specificity. "
+            "Naming the method without demonstrating it in a real sentence is not allowed.\n"
+            "3. ## Build-up through ## Clarity MUST contain at least one of these three tension patterns:\n"
+            "   a) WRONG-TO-RIGHT: Show the common wrong reaction first, then the better one.\n"
+            "   b) HIDDEN COST: Name what staying in the current pattern actually costs the viewer "
+            "(\"you lose the project lead, not just the moment\").\n"
+            "   c) COUNTERINTUITIVE REFRAME: Challenge what the viewer currently believes "
+            "(\"The problem isn't that you can't speak up — it's that you think you need confidence first\").\n"
+            "   Pick whichever fits the angle best. At least one must appear.\n"
+            "4. ## Clarity must reference the specific scenario from THIS script. "
+            "Generic motivational lines that could end any video are not acceptable.\n\n"
+        )
+    else:
+        hard_script_rules = (
+            "HARD RULES FOR SCRIPT INSIGHTS (non-negotiable):\n"
+            "1. Every insight MUST include at least one sentence the viewer can say out loud "
+            "in a real situation tomorrow. Not an explanation of a technique — the actual words. "
+            "If an insight only explains a concept without giving a usable sentence, it fails.\n"
+            "2. Whenever a method or framework is named (e.g. WWW Method, 3-step feedback, any "
+            "named tool), you MUST show it being used in one concrete example sentence. "
+            "\"I noticed X, it affects me by Y, I want Z\" — that level of specificity. "
+            "Naming the method without demonstrating it in a real sentence is not allowed.\n"
+            "3. The script body MUST contain at least one of these three tension patterns:\n"
+            "   a) WRONG-TO-RIGHT: Show the common wrong reaction first, then the better one.\n"
+            "   b) HIDDEN COST: Name what staying in the current pattern actually costs the viewer "
+            "(\"you lose the project lead, not just the moment\").\n"
+            "   c) COUNTERINTUITIVE REFRAME: Challenge what the viewer currently believes "
+            "(\"The problem isn't that you can't speak up — it's that you think you need confidence first\").\n"
+            "   Pick whichever fits the angle best. At least one must appear.\n"
+            "4. The conclusion must reference the specific scenario from THIS script. "
+            "Generic motivational lines that could end any video are not acceptable.\n\n"
+        )
     user = (
         f"{lang}\n\n"
         "TASK: Write a full Instagram Reels copy package for ONE chosen angle.\n\n"
-        f"{adapt_block}{blueprint_note}"
+        f"{adapt_block}{ref_note}{blueprint_note}"
         "Output JSON with this exact shape:\n"
         f"{json_shape}\n"
         "Rules:\n"
@@ -1052,11 +1224,7 @@ def run_content_package(
         "- hooks: exactly 5 alternative hooks for the same video. Mix styles freely "
         "(direct question, insight/tension, concrete say-out-loud line). Each hook is the FIRST line "
         "spoken/shown in the reel and must work on its own. No tiers, no labels.\n"
-        "- script: Use the optimal format and duration implied by PATTERNS_JSON.format_insights "
-        "(and NICHE_BENCHMARKS if present). If format_insights suggests talking-head ~30s, write ~30s; "
-        "if text-overlay, write overlay copy. Default to ~45 second talking head only if format_insights is empty. "
-        "Use markdown with headings: "
-        "## Hook, ## Situation, ## Insight 1, ## Insight 2, ## Insight 3, ## Conclusion, ## CTA.\n"
+        f"{script_bullet}"
         "- caption_body: High-converting IG caption in the output language. Do NOT repeat or summarize "
         "the Reel script — deepen the message with new psychological insight and perspective. "
         "Write for one specific reader (ICP): every sentence should feel personally relevant; "
@@ -1068,27 +1236,11 @@ def run_content_package(
         "(5) Authority transition — solution direction without over-explaining; "
         "(6) CTA — clear action (e.g. comment keyword for webinar/training) aligned with OFFER_DOCUMENTATION. "
         "Tone: direct, emotionally precise, psychologically sharp; slight provocation where it fits; "
-        "1–3 emojis max if natural. Final check: would this stop a scroll and make the ICP feel understood?\n"
+        f"1–3 emojis max if natural. Final check: would this stop a scroll and make the ICP feel understood?{caption_src_tail}\n"
         "- hashtags: at most 5 entries, niche-relevant; align with NICHE_BENCHMARKS and PATTERNS_JSON when available.\n\n"
-        "HARD RULES FOR SCRIPT INSIGHTS (non-negotiable):\n"
-        "1. Every insight MUST include at least one sentence the viewer can say out loud "
-        "in a real situation tomorrow. Not an explanation of a technique — the actual words. "
-        "If an insight only explains a concept without giving a usable sentence, it fails.\n"
-        "2. Whenever a method or framework is named (e.g. WWW Method, 3-step feedback, any "
-        "named tool), you MUST show it being used in one concrete example sentence. "
-        "\"I noticed X, it affects me by Y, I want Z\" — that level of specificity. "
-        "Naming the method without demonstrating it in a real sentence is not allowed.\n"
-        "3. The script body MUST contain at least one of these three tension patterns:\n"
-        "   a) WRONG-TO-RIGHT: Show the common wrong reaction first, then the better one.\n"
-        "   b) HIDDEN COST: Name what staying in the current pattern actually costs the viewer "
-        "(\"you lose the project lead, not just the moment\").\n"
-        "   c) COUNTERINTUITIVE REFRAME: Challenge what the viewer currently believes "
-        "(\"The problem isn't that you can't speak up — it's that you think you need confidence first\").\n"
-        "   Pick whichever fits the angle best. At least one must appear.\n"
-        "4. The conclusion must reference the specific scenario from THIS script. "
-        "Generic motivational lines that could end any video are not acceptable.\n\n"
+        f"{hard_script_rules}"
         f"CLIENT_CONTEXT:\n{_pack_client_row_for_llm(client_row)[:100_000]}\n\n"
-        f"PATTERNS_JSON:\n{json.dumps(synthesized_patterns, ensure_ascii=False)[:40_000]}\n\n"
+        f"PATTERNS_JSON:\n{json.dumps(synthesized_patterns, ensure_ascii=False)[:52_000]}\n\n"
         f"CHOSEN_ANGLE_JSON:\n{json.dumps(chosen_angle, ensure_ascii=False)[:8000]}\n"
         f"{prev_note}{fb}"
     )
@@ -1222,9 +1374,18 @@ def run_adaptation_synthesis(
     # "same format" instruction so the LLM rebuilds the FORMAT RECIPE for the new
     # target instead of mirroring the source's production format.
     same_format_note = "" if target_block else "same format and "
+    source_grounding = (
+        "SOURCE_POST_GROUNDING:\n"
+        "SOURCE_REEL_ANALYSIS_JSON may include `source_caption` (scraped Instagram caption text). When present, "
+        "it is factual surface copy from the creator — often lists, frameworks, examples, or CTAs that are not "
+        "fully spoken in the video. Treat on-reel content and caption together as the full template when inferring "
+        "CORE IDEA and value delivery. Do not invent facts, numbers, case studies, or claims beyond what appears "
+        "in SOURCE_REEL_ANALYSIS_JSON or CLIENT_CONTEXT.\n\n"
+    )
     user = (
         f"{lang}\n\n"
         f"{target_block}"
+        f"{source_grounding}"
         f"TASK: This reel is the sole TEMPLATE to adapt for the client below — {same_format_note}same creative idea, "
         "rewritten for the client's world (language, ICP, offer). Separate three layers in your reasoning "
         "(reflect this in the JSON fields):\n"

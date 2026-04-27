@@ -6,6 +6,8 @@ from typing import Any, Dict, List
 
 from supabase import Client
 
+from services.reel_provenance import attach_provenance_to_row
+
 
 def _int_metric_val(val: Any) -> int:
     try:
@@ -20,6 +22,7 @@ def normalize_scraped_reel_row_for_api(reel: dict) -> dict:
         reel["saves"] = 0
     if reel.get("shares") is None:
         reel["shares"] = 0
+    attach_provenance_to_row(reel)
     return reel
 
 

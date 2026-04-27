@@ -178,6 +178,17 @@ export type DnaChatApplyResponse = {
   client: ClientRow;
 };
 
+/** Populated by `normalize_scraped_reel_row_for_api` when present; mirrors `lib/reel-provenance.ts`. */
+export type ApiReelProvenance = {
+  kind: string;
+  source_label: string;
+  reason: string;
+  trust: string;
+  trust_hint: string;
+  primary_action: string;
+  secondary_actions: string[];
+};
+
 export type ScrapedReelRow = {
   id: string;
   client_id: string;
@@ -229,6 +240,8 @@ export type ScrapedReelRow = {
   outbreaker_ratio_source?: "milestone_avg" | "account_avg_fallback" | null;
   /** GET /dashboard/competitor-wins — views ÷ that competitor's account_avg_views. */
   win_ratio?: number | null;
+  /** Computed server-side for consistent UX labels (optional on older API builds). */
+  provenance?: ApiReelProvenance | null;
 };
 
 export type ScrapeQueueStats = {

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { ArrowRight, Compass, Flame, Loader2, Sparkles } from "lucide-react";
 import { ReelThumbnail } from "@/components/reel-thumbnail";
 import type { ScrapedReelRow } from "@/lib/api";
+import { formatTheirUsualMultiplier, theirUsualMultiplierTooltip } from "@/lib/reel-provenance";
 import {
   fetchDashboardCompetitorWinsClient,
   fetchDashboardFreshNicheClient,
@@ -33,7 +34,7 @@ type LaneConfig = {
   icon: ReactNode;
   iconBgClass: string;
   emptyCopy: string;
-  badgeFor: (reel: ScrapedReelRow) => string | null;
+  badgeFor: (reel: ScrapedReelRow) => ReactNode;
   reelsPageHref: (days: number) => string;
 };
 
@@ -266,8 +267,7 @@ export function FreshFromNiche({ reels, ...rest }: WrapperProps) {
       config={{
         kind: "fresh-niche",
         title: "Fresh from your niche",
-        subtitle:
-          "New reels from random accounts matching your client's style — found via the daily keyword scan",
+        subtitle: "Reels from non-tracked accounts that match your keywords — possible leads, not proven competitors until you add them.",
         icon: <Compass className="h-4 w-4 text-sky-500 dark:text-sky-400" aria-hidden />,
         iconBgClass: "bg-sky-500/15",
         emptyCopy: "No new niche reels in this range. Widen the window or wait for tomorrow's scrape.",
@@ -288,16 +288,20 @@ export function CompetitorWins({ reels, ...rest }: WrapperProps) {
       {...rest}
       config={{
         kind: "competitor-wins",
-        title: "Competitors are blowing up",
+        title: "Competitor breakouts",
         subtitle:
-          "Recent reels from tracked competitors scaling past their usual — copy before the curve flattens",
+          "Recent reels from tracked accounts outpacing their usual reach — prioritize these for remakes.",
         icon: <Flame className="h-4 w-4 text-rose-500 dark:text-rose-400" aria-hidden />,
         iconBgClass: "bg-rose-500/15",
         emptyCopy: "No competitor breakouts in this range. Tomorrow's daily scrape will pick them up.",
         badgeFor: (reel) => {
           const r = reel.win_ratio;
-          if (r == null || !Number.isFinite(Number(r))) return null;
-          return `${Number(r).toFixed(1)}× @${reel.account_username || "competitor"}'s usual`;
+          if (r == null || !Number.isFinite(Number(r))) return formatViews(reel.views);
+          return (
+            <span title={theirUsualMultiplierTooltip({ variant: "win_ratio" })}>
+              {formatTheirUsualMultiplier(r) ?? `${Number(r).toFixed(1)}×`}
+            </span>
+          );
         },
         reelsPageHref: (days) =>
           `/intelligence/reels?source=profile&posted_after=${encodeURIComponent(

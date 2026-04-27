@@ -6,6 +6,7 @@ import { Loader2, Sparkles } from "lucide-react";
 import { ReelThumbnail } from "@/components/reel-thumbnail";
 import type { ScrapedReelRow } from "@/lib/api";
 import { fetchReplicateSuggestions } from "@/lib/api-client";
+import { formatTheirUsualMultiplier, theirUsualMultiplierTooltip } from "@/lib/reel-provenance";
 import { ReelCardWithAnalysis } from "./reel-card-with-analysis";
 import { RecreateReelModal } from "./recreate-reel-modal";
 
@@ -14,11 +15,19 @@ type Props = {
   orgSlug: string;
   disabled?: boolean;
   disabledHint?: string | null;
+  /** Hide outer title when wrapped by Intelligence overview (“Make today”). */
+  embedded?: boolean;
 };
 
 const HOUR_OPTIONS = [24, 48, 72] as const;
 
-export function ReplicateSection({ clientSlug, orgSlug, disabled, disabledHint }: Props) {
+export function ReplicateSection({
+  clientSlug,
+  orgSlug,
+  disabled,
+  disabledHint,
+  embedded = true,
+}: Props) {
   const [hours, setHours] = useState<number>(24);
   const [reels, setReels] = useState<ScrapedReelRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -56,7 +65,11 @@ export function ReplicateSection({ clientSlug, orgSlug, disabled, disabledHint }
     <>
       <div className="mb-6">
         <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-xs font-semibold text-app-fg">Replicate</h3>
+          {embedded ? (
+            <span className="sr-only">Breakout picks</span>
+          ) : (
+            <h3 className="text-xs font-semibold text-app-fg">Make today</h3>
+          )}
           <div className="flex gap-1">
             {HOUR_OPTIONS.map((h) => (
               <button
@@ -75,9 +88,9 @@ export function ReplicateSection({ clientSlug, orgSlug, disabled, disabledHint }
           </div>
         </div>
         <p className="mb-3 text-[11px] leading-relaxed text-app-fg-muted">
-          Competitor reels posted in the last {hours}h compared against what their account&apos;s
-          reels typically get at the {hours}h mark. Ranked by outbreaker ratio. Click to adapt
-          for your client.
+          Tracked competitor reels from the last {hours}h. We compare views to what that account
+          usually earns by the {hours}h mark — ranked so the strongest breakouts float up.{" "}
+          <span className="text-app-fg-subtle">Hover the badge for the exact math.</span>
         </p>
 
         {showLoading ? (
@@ -89,7 +102,7 @@ export function ReplicateSection({ clientSlug, orgSlug, disabled, disabledHint }
         ) : reels.length === 0 ? (
           <div className="rounded-xl border border-dashed border-zinc-300/60 bg-zinc-50/30 px-4 py-6 text-center dark:border-white/10 dark:bg-white/[0.02]">
             <p className="text-xs font-semibold text-app-fg-muted">
-              No outbreaker reels in the last {hours}h
+              No competitor breakouts in the last {hours}h
             </p>
             <p className="mt-1 text-[11px] leading-relaxed text-app-fg-subtle">
               Run a sync to refresh competitor data, or use{" "}
@@ -119,13 +132,13 @@ export function ReplicateSection({ clientSlug, orgSlug, disabled, disabledHint }
                   {reel.outbreaker_ratio != null ? (
                     <span
                       className="pointer-events-none absolute left-0 right-0 bottom-0 z-10 rounded-b-[inherit] bg-gradient-to-t from-zinc-950/95 via-zinc-950/75 to-transparent px-1 pb-0.5 pt-3 text-center text-[7px] font-semibold leading-tight text-amber-300/95 opacity-0 shadow-sm transition-opacity duration-200 group-hover/thumb:opacity-100 group-focus-within/thumb:opacity-100"
-                      title={
-                        reel.outbreaker_ratio_source === "milestone_avg"
-                          ? `Views ÷ this account's avg views at ${hours}h`
-                          : "Views ÷ account avg (milestone data insufficient)"
-                      }
+                      title={theirUsualMultiplierTooltip({
+                        variant:
+                          reel.outbreaker_ratio_source === "milestone_avg" ? "milestone" : "lifetime_avg",
+                        hours,
+                      })}
                     >
-                      {reel.outbreaker_ratio.toFixed(1)}× @{hours}h
+                      {formatTheirUsualMultiplier(reel.outbreaker_ratio) ?? `${reel.outbreaker_ratio.toFixed(1)}×`}
                     </span>
                   ) : null}
                 </div>
@@ -148,9 +161,15 @@ export function ReplicateSection({ clientSlug, orgSlug, disabled, disabledHint }
                   </div>
                   <div className="mt-1.5 flex items-center gap-2">
                     {reel.outbreaker_ratio != null ? (
-                      <span className="rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-bold tabular-nums text-amber-700 dark:text-amber-400">
-                        {reel.outbreaker_ratio.toFixed(1)}×
-                        {reel.outbreaker_ratio_source === "account_avg_fallback" ? " avg" : ` @${hours}h`}
+                      <span
+                        className="rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-bold tabular-nums text-amber-700 dark:text-amber-400"
+                        title={theirUsualMultiplierTooltip({
+                          variant:
+                            reel.outbreaker_ratio_source === "milestone_avg" ? "milestone" : "lifetime_avg",
+                          hours,
+                        })}
+                      >
+                        {formatTheirUsualMultiplier(reel.outbreaker_ratio) ?? `${reel.outbreaker_ratio.toFixed(1)}×`}
                       </span>
                     ) : null}
                     <button
