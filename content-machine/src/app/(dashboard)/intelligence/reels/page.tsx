@@ -5,6 +5,7 @@ import {
   fetchCompetitors,
   fetchReelsList,
   getCachedServerApiContext,
+  type ReelsMediaType,
   type ReelsListSortBy,
 } from "@/lib/api";
 import { IntelligenceToolbar } from "../components/intelligence-toolbar";
@@ -21,6 +22,7 @@ type ReelsSearchParams = {
   own?: string;
   competitor?: string;
   source?: string;
+  media_type?: string;
   creator?: string;
   sort?: string;
   dir?: string;
@@ -55,6 +57,7 @@ const SORT_WHITELIST: readonly ReelsListSortBy[] = [
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
+const MEDIA_TYPE_WHITELIST: readonly ReelsMediaType[] = ["all", "short", "long", "carousel"];
 
 function clampInt(raw: string | undefined, fallback: number, min: number, max: number) {
   if (!raw) return fallback;
@@ -76,6 +79,10 @@ export default async function IntelligenceReelsPage({ searchParams }: PageProps)
   const ownOnly = sp.own === "1" || sp.own === "true";
   const competitorId = (sp.competitor ?? "").trim();
   const source = ownOnly ? "" : (sp.source ?? "").trim();
+  const mediaTypeRaw = (sp.media_type ?? "").trim() as ReelsMediaType;
+  const mediaType: ReelsMediaType = MEDIA_TYPE_WHITELIST.includes(mediaTypeRaw)
+    ? mediaTypeRaw
+    : "all";
   const creator = (sp.creator ?? "").trim();
   const sortRaw = (sp.sort ?? "").trim() as ReelsListSortBy;
   const sortBy: ReelsListSortBy = SORT_WHITELIST.includes(sortRaw) ? sortRaw : "posted_at";
@@ -114,6 +121,7 @@ export default async function IntelligenceReelsPage({ searchParams }: PageProps)
       outlierOnly: outliersOnly || undefined,
       ownReelsOnly: ownOnly || undefined,
       source: source || undefined,
+      mediaType,
       creator: creator || undefined,
       competitorId: competitorId || undefined,
       minViews,
@@ -342,6 +350,7 @@ export default async function IntelligenceReelsPage({ searchParams }: PageProps)
             outliersOnly,
             ownReelsOnly: ownOnly,
             source,
+            mediaType,
             competitorId,
             minViews,
             maxViews,

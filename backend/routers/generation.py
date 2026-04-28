@@ -337,6 +337,19 @@ def generation_start(
     angles: List[Dict[str, Any]] = []
     analysis_ids: List[str] = []
     reel_ids: List[str] = []
+    cta_payload: Optional[Dict[str, Any]] = (
+        body.selected_cta.model_dump() if body.selected_cta is not None else None
+    )
+    carousel_template_payload: Optional[Dict[str, Any]] = (
+        body.selected_carousel_template.model_dump()
+        if body.selected_carousel_template is not None
+        else None
+    )
+    cover_template_payload: Optional[Dict[str, Any]] = (
+        body.selected_cover_template.model_dump()
+        if body.selected_cover_template is not None
+        else None
+    )
 
     try:
         if st in ("format_pick", "idea_match"):
@@ -369,6 +382,7 @@ def generation_start(
                 client_row=client_row,
                 synthesized_patterns=patterns,
                 extra_instruction=extra_focus,
+                selected_cta=cta_payload,
             )
             tr = drow.get("top_reel_ids")
             if isinstance(tr, list):
@@ -458,6 +472,7 @@ def generation_start(
                 extra_instruction=extra_adapt,
                 adapt_single_reference_reel=True,
                 target_format_key=user_target_fk,
+                selected_cta=cta_payload,
             )
             if one.get("id"):
                 analysis_ids.append(str(one["id"]))
@@ -501,6 +516,7 @@ def generation_start(
                 synthesized_patterns=patterns,
                 extra_instruction=extra_script,
                 adapt_single_reference_reel=True,
+                selected_cta=cta_payload,
             )
 
         else:
@@ -546,6 +562,7 @@ def generation_start(
                 synthesized_patterns=patterns,
                 extra_instruction=body.extra_instruction,
                 adapt_single_reference_reel=single_reference_outlier,
+                selected_cta=cta_payload,
             )
     except HTTPException:
         raise
@@ -590,6 +607,12 @@ def generation_start(
         insert_row["source_idea"] = source_idea
     if st == "script_adapt" and body.source_script and str(body.source_script).strip():
         insert_row["source_script"] = str(body.source_script).strip()[:16_000]
+    if cta_payload is not None:
+        insert_row["selected_cta"] = cta_payload
+    if carousel_template_payload is not None:
+        insert_row["selected_carousel_template"] = carousel_template_payload
+    if cover_template_payload is not None:
+        insert_row["selected_cover_template"] = cover_template_payload
     try:
         ins = supabase.table("generation_sessions").insert(insert_row).execute()
     except Exception as e:
@@ -632,6 +655,7 @@ def generation_choose_angle(
 
     raw_fk = str(row.get("source_format_key") or "").strip()
     fk = canonicalize_stored_format_key(raw_fk) or raw_fk or None
+    selected_cta = row.get("selected_cta") if isinstance(row.get("selected_cta"), dict) else None
     try:
         package = run_content_package(
             settings,
@@ -640,6 +664,7 @@ def generation_choose_angle(
             chosen_angle=chosen,
             source_format_key=fk,
             adapt_single_reference_reel=_session_adapts_single_reference_reel(row),
+            selected_cta=selected_cta,
         )
     except Exception as e:
         logger.exception("generation choose-angle failed")
@@ -790,6 +815,7 @@ def generation_regenerate(
 
     raw_fk = str(row.get("source_format_key") or "").strip()
     fk = canonicalize_stored_format_key(raw_fk) or raw_fk or None
+    selected_cta = row.get("selected_cta") if isinstance(row.get("selected_cta"), dict) else None
     try:
         package = run_regenerate(
             settings,
@@ -806,6 +832,7 @@ def generation_regenerate(
             source_format_key=fk,
             current_text_blocks=cur_tb,
             adapt_single_reference_reel=_session_adapts_single_reference_reel(row),
+            selected_cta=selected_cta,
         )
     except Exception as e:
         logger.exception("generation regenerate failed")
@@ -1027,6 +1054,11 @@ def generation_generate_thumbnail(
             settings.freepik_api_key,
             text,
             angle_context=angle_context,
+            template_id=body.template_id,
+            theme_id=body.theme_id,
+            text_treatment=body.text_treatment,
+            layout=body.layout,
+            appearance=body.appearance,
         )
     except Exception as e:
         logger.exception("Thumbnail generation failed")
@@ -1114,7 +1146,18 @@ def generation_compose_thumbnail(
         raise HTTPException(status_code=502, detail=f"Could not fetch client image: {e}") from e
 
     try:
-        png = compose_thumbnail_from_image(src_bytes, text, wash=body.wash)
+        png = compose_thumbnail_from_image(
+            src_bytes,
+            text,
+            wash=body.wash,
+            crop_y=body.crop_y,
+            zoom=body.zoom,
+            template_id=body.template_id,
+            theme_id=body.theme_id,
+            text_treatment=body.text_treatment,
+            layout=body.layout,
+            appearance=body.appearance,
+        )
     except Exception as e:
         logger.exception("Thumbnail composition failed")
         raise HTTPException(status_code=502, detail=f"Thumbnail composition failed: {e}") from e

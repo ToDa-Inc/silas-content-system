@@ -60,6 +60,7 @@ from services.reel_metrics import (
     enrich_engagement_metrics,
     normalize_scraped_reel_row_for_api,
 )
+from services.reels_media_type_filter import apply_reels_media_type_filter
 
 router = APIRouter(prefix="/api/v1", tags=["intelligence"])
 logger = logging.getLogger(__name__)
@@ -184,9 +185,10 @@ def _own_reel_metas_batch(
         return {}
     rc = (
         supabase.table("scraped_reels")
-        .select("id, post_url, thumbnail_url, hook_text")
+        .select("id, post_url, thumbnail_url, hook_text, posted_at")
         .eq("client_id", client_id)
         .is_("competitor_id", "null")
+        .eq("source", "client_baseline")
         .in_("id", reel_ids)
         .execute()
     )
@@ -206,7 +208,7 @@ def _client_scraped_reel_meta(
     """One scraped_reels row for this client (own or competitor)."""
     rc = (
         supabase.table("scraped_reels")
-        .select("id, post_url, thumbnail_url, hook_text, competitor_id")
+        .select("id, post_url, thumbnail_url, hook_text, posted_at, competitor_id")
         .eq("client_id", client_id)
         .eq("id", reel_id)
         .limit(1)
@@ -2363,6 +2365,10 @@ def list_reels(
         None,
         description="Filter to a single tracked competitor.",
     ),
+    media_type: Optional[str] = Query(
+        None,
+        description="Filter by media type: all, short (<15s), long (>15s), or carousel.",
+    ),
     min_views: Optional[int] = Query(None, ge=0),
     max_views: Optional[int] = Query(None, ge=0),
     min_comments: Optional[int] = Query(None, ge=0),
@@ -2404,6 +2410,7 @@ def list_reels(
         # ilike with no wildcard = case-insensitive equality, matches Postgres
         # citext semantics without needing a column type change.
         base_filters = base_filters.ilike("account_username", creator)
+    base_filters = apply_reels_media_type_filter(base_filters, media_type)
     if min_views is not None:
         base_filters = base_filters.gte("views", min_views)
     if max_views is not None:
@@ -2462,6 +2469,7 @@ def list_reels(
             count_q = count_q.eq("competitor_id", competitor_id)
         if creator and not own_reels_only:
             count_q = count_q.ilike("account_username", creator)
+        count_q = apply_reels_media_type_filter(count_q, media_type)
         if min_views is not None:
             count_q = count_q.gte("views", min_views)
         if max_views is not None:
@@ -2671,7 +2679,8 @@ def replicate_suggestions(
 
 
 _METRICS_MAX_REEL_IDS = 10
-_METRICS_DEFAULT_OWN_LIMIT = 30
+_METRICS_DEFAULT_OWN_LIMIT = 8
+_METRICS_MAX_OWN_LIMIT = 100
 _ANALYSIS_IN_CHUNK = 80
 
 
@@ -2682,14 +2691,45 @@ def list_own_reels_metrics(
     supabase: Annotated[Client, Depends(get_supabase)],
     reel_ids: Optional[str] = Query(
         None,
-        description="Comma-separated reel ids (max 10). Omit to use up to 30 own reels by posted_at.",
+        description=(
+            "Comma-separated reel ids (max 10). Omit to page own reels by posted_at desc using "
+            "limit/offset."
+        ),
+    ),
+    limit: int = Query(
+        _METRICS_DEFAULT_OWN_LIMIT,
+        ge=1,
+        le=_METRICS_MAX_OWN_LIMIT,
+        description="Page size for own-reel selection (newest by posted_at). Ignored when reel_ids is set.",
+    ),
+    offset: int = Query(
+        0,
+        ge=0,
+        description="Skip N own reels for pagination (Load more). Ignored when reel_ids is set.",
+    ),
+    posted_after: Optional[str] = Query(
+        None,
+        description="ISO date/timestamp — include only reels posted on or after this point.",
+    ),
+    posted_before: Optional[str] = Query(
+        None,
+        description="ISO date/timestamp — include only reels posted on or before this point.",
     ),
     from_: Optional[str] = Query(None, alias="from", description="ISO8601 lower bound on scraped_at"),
     to: Optional[str] = Query(None, description="ISO8601 upper bound on scraped_at"),
 ) -> ReelMetricsListOut:
-    """Snapshot time series for own reels (competitor_id NULL) — dashboard / compare charts."""
+    """Snapshot time series for own reels (competitor_id NULL) — dashboard / compare charts.
+
+    Pagination is server-side over scraped_reels.posted_at desc so the dashboard
+    can render newest-first and `Load more` older reels without a hard 30-reel cap.
+    Snapshot range (`from`/`to`) still narrows the time series within the chosen reels.
+    """
     from_dt, to_dt = _metrics_range_bounds(from_, to)
     target_ids: List[str] = []
+    total = 0
+    page_limit = limit
+    page_offset = offset
+    has_more = False
     if reel_ids and reel_ids.strip():
         seen: set[str] = set()
         for part in reel_ids.split(","):
@@ -2702,20 +2742,51 @@ def list_own_reels_metrics(
                 status_code=400,
                 detail=f"reel_ids accepts at most {_METRICS_MAX_REEL_IDS} reel ids",
             )
+        total = len(target_ids)
+        page_limit = total
+        page_offset = 0
+        has_more = False
     else:
         ig_handle = _client_instagram_handle(supabase, client_id)
-        fetch_n = _METRICS_DEFAULT_OWN_LIMIT * 4 if ig_handle else _METRICS_DEFAULT_OWN_LIMIT
-        own = (
+
+        # Only own baseline reels belong in this dashboard. Other discovery rows
+        # also have competitor_id NULL, but are not the creator's own history.
+        base = (
             supabase.table("scraped_reels")
-            .select("id, account_username")
+            .select("id, account_username, posted_at")
             .eq("client_id", client_id)
             .is_("competitor_id", "null")
-            .order("posted_at", desc=True)
-            .limit(fetch_n)
-            .execute()
+            .eq("source", "client_baseline")
         )
-        filtered = _filter_scraped_rows_to_configured_handle(own.data or [], ig_handle)
-        target_ids = [str(x["id"]) for x in filtered[:_METRICS_DEFAULT_OWN_LIMIT]]
+        if ig_handle:
+            base = base.eq("account_username", ig_handle)
+        if posted_after:
+            base = base.gte("posted_at", posted_after)
+        if posted_before:
+            base = base.lte("posted_at", posted_before)
+
+        page_end = page_offset + page_limit - 1
+        res = base.order("posted_at", desc=True).range(page_offset, page_end).execute()
+        target_ids = [str(x["id"]) for x in (res.data or [])]
+        try:
+            count_q = (
+                supabase.table("scraped_reels")
+                .select("id", count="exact", head=True)
+                .eq("client_id", client_id)
+                .is_("competitor_id", "null")
+                .eq("source", "client_baseline")
+            )
+            if ig_handle:
+                count_q = count_q.eq("account_username", ig_handle)
+            if posted_after:
+                count_q = count_q.gte("posted_at", posted_after)
+            if posted_before:
+                count_q = count_q.lte("posted_at", posted_before)
+            count_res = count_q.execute()
+            total = int(count_res.count or 0)
+        except Exception:
+            total = page_offset + len(target_ids)
+        has_more = (page_offset + len(target_ids)) < total
 
     metas = _own_reel_metas_batch(supabase, client_id, target_ids)
     snap_ids = list(metas.keys())
@@ -2727,12 +2798,14 @@ def list_own_reels_metrics(
             continue
         points = points_by.get(str(rid), [])
         summ = _snapshot_series_summary(points)
+        posted_at_val = meta.get("posted_at")
         series.append(
             ReelMetricsSeriesOut(
                 reel_id=str(meta["id"]),
                 post_url=meta.get("post_url"),
                 thumbnail_url=meta.get("thumbnail_url"),
                 hook_text=meta.get("hook_text"),
+                posted_at=str(posted_at_val) if posted_at_val else None,
                 points=points,
                 competitor_id=None,
                 latest_snapshot_at=summ.get("latest_snapshot_at"),
@@ -2745,7 +2818,13 @@ def list_own_reels_metrics(
                 comments_delta_7d=summ.get("comments_delta_7d"),
             )
         )
-    return ReelMetricsListOut(reels=series)
+    return ReelMetricsListOut(
+        reels=series,
+        total=total,
+        limit=page_limit,
+        offset=page_offset,
+        has_more=has_more,
+    )
 
 
 @router.get("/clients/{slug}/reels/{reel_id}/metrics", response_model=ReelMetricsSeriesOut)
@@ -2766,11 +2845,13 @@ def get_client_reel_metrics(
     summary = _snapshot_series_summary(points)
     cid = meta.get("competitor_id")
     competitor_id = str(cid) if cid is not None else None
+    posted_at_val = meta.get("posted_at")
     return ReelMetricsSeriesOut(
         reel_id=str(meta["id"]),
         post_url=meta.get("post_url"),
         thumbnail_url=meta.get("thumbnail_url"),
         hook_text=meta.get("hook_text"),
+        posted_at=str(posted_at_val) if posted_at_val else None,
         points=points,
         competitor_id=competitor_id,
         latest_snapshot_at=summary.get("latest_snapshot_at"),
@@ -2894,7 +2975,7 @@ def scrape_client_reels(
 # Intentionally simple — no milestone logic, no toggles, no fallbacks.
 
 _DASHBOARD_LOOKBACK_DAYS = 3
-_DASHBOARD_LIMIT = 3
+_DASHBOARD_LIMIT = 12
 _COMPETITOR_WIN_MIN_RATIO = 1.5
 
 
@@ -2907,7 +2988,7 @@ def dashboard_fresh_niche(
     client_id: Annotated[str, Depends(resolve_client_id)],
     supabase: Annotated[Client, Depends(get_supabase)],
     days: int = Query(_DASHBOARD_LOOKBACK_DAYS, ge=1, le=14),
-    limit: int = Query(_DASHBOARD_LIMIT, ge=1, le=10),
+    limit: int = Query(_DASHBOARD_LIMIT, ge=1, le=_DASHBOARD_LIMIT),
 ) -> list[dict]:
     """Recent keyword-similarity reels, ranked by views.
 
@@ -2952,7 +3033,7 @@ def dashboard_competitor_wins(
     client_id: Annotated[str, Depends(resolve_client_id)],
     supabase: Annotated[Client, Depends(get_supabase)],
     days: int = Query(_DASHBOARD_LOOKBACK_DAYS, ge=1, le=14),
-    limit: int = Query(_DASHBOARD_LIMIT, ge=1, le=10),
+    limit: int = Query(_DASHBOARD_LIMIT, ge=1, le=_DASHBOARD_LIMIT),
     min_ratio: float = Query(_COMPETITOR_WIN_MIN_RATIO, ge=1.0, le=100.0),
 ) -> list[dict]:
     """Recent competitor reels outperforming their own account average.

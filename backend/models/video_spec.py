@@ -56,7 +56,7 @@ class VideoSpecHook(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     text: str = Field("", max_length=500)
-    durationSec: float = Field(default=3.0, ge=1.0, le=30.0)
+    durationSec: float = Field(default=3.0, ge=0.05, le=600.0)
 
 
 class VideoSpecBlock(BaseModel):
@@ -191,8 +191,8 @@ class VideoSpecV1(BaseModel):
     blocks: List[VideoSpecBlock] = Field(default_factory=list)
     # Existing rows in DB never had this field; default_factory backfills them on parse.
     layout: VideoSpecLayout = Field(default_factory=VideoSpecLayout)
-    totalSec: float = Field(default=12.0, ge=2.0, le=120.0)
-    # Per-pause / legacy gap cap. The real ceiling is ``totalSec`` ≤ 120; 5s
+    totalSec: float = Field(default=12.0, ge=2.0, le=600.0)
+    # Per-pause / legacy gap cap. The real ceiling is ``totalSec`` ≤ 600; 5s
     # per gap is plenty for breathing room without being abusable.
     gapBetweenBlocksSec: float = Field(default=0.0, ge=0.0, le=5.0)
     """When set and len == len(blocks), pause before each block in sorted order (index 0 = after hook).
@@ -235,17 +235,29 @@ class VideoSpecV1(BaseModel):
 
     @model_validator(mode="after")
     def _sorted_and_total(self) -> "VideoSpecV1":
-        blocks = sorted(self.blocks, key=lambda b: b.startSec)
-        for b in blocks:
-            if b.startSec < 0:
-                raise ValueError("block startSec must be >= 0")
-        max_end = max((b.endSec for b in blocks), default=0.0)
-        min_total = max(max_end, self.hook.durationSec + 0.5)
         cap: Optional[float] = None
         if self.background.kind == "video" and self.background.durationSec is not None:
             c = float(self.background.durationSec)
             if c > 0:
                 cap = c
+        hook = self.hook
+        if cap is not None and hook.durationSec > cap:
+            hook = hook.model_copy(update={"durationSec": max(0.05, cap)})
+        blocks = sorted(self.blocks, key=lambda b: b.startSec)
+        if cap is not None:
+            capped_blocks: List[VideoSpecBlock] = []
+            for b in blocks:
+                start = min(float(b.startSec), float(cap))
+                end = min(float(b.endSec), float(cap))
+                if end <= start:
+                    start = max(0.0, end - 0.05)
+                capped_blocks.append(b.model_copy(update={"startSec": start, "endSec": end}))
+            blocks = capped_blocks
+        for b in blocks:
+            if b.startSec < 0:
+                raise ValueError("block startSec must be >= 0")
+        max_end = max((b.endSec for b in blocks), default=0.0)
+        min_total = max(max_end, hook.durationSec + 0.5)
         # Align with ``relayout_spec``: when B-roll length is known, composition
         # length is min(content end, clip) — never keep a stale ``totalSec``
         # above the clip after blocks were fitted.
@@ -253,7 +265,7 @@ class VideoSpecV1(BaseModel):
             new_total = max(float(self.totalSec), min_total)
         else:
             new_total = min(min_total, float(cap))
-        return self.model_copy(update={"blocks": blocks, "totalSec": new_total})
+        return self.model_copy(update={"hook": hook, "blocks": blocks, "totalSec": new_total})
 
     def model_dump_for_remotion(self) -> Dict[str, Any]:
         return self.model_dump(mode="json", by_alias=True)

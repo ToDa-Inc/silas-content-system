@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import base64
 import io
+import re
 import textwrap
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 
@@ -45,19 +46,16 @@ def _load_font(size: int) -> "ImageFont.FreeTypeFont":
     return ImageFont.truetype(str(_FONT_CACHE), size)
 
 
-def _wash_image(img: "Image.Image", w: int = 1080, h: int = 1920) -> "Image.Image":
+def _wash_image(
+    img: "Image.Image",
+    w: int = 1080,
+    h: int = 1920,
+    *,
+    crop_y: float = 0.5,
+    zoom: float = 1.0,
+) -> "Image.Image":
     """Resize/center-crop to target, desaturate, apply white wash — Conny style."""
-    img = img.convert("RGB")
-    src_r = img.width / img.height
-    tgt_r = w / h
-    if src_r > tgt_r:
-        new_h, new_w = h, int(h * src_r)
-    else:
-        new_w, new_h = w, int(w / src_r)
-    img = img.resize((new_w, new_h), Image.LANCZOS)
-    left = (new_w - w) // 2
-    top = (new_h - h) // 2
-    img = img.crop((left, top, left + w, top + h))
+    img = _resize_cover(img, w, h, crop_y=crop_y, zoom=zoom)
 
     # 70% desaturation: blend toward grayscale
     gray = img.convert("L").convert("RGB")
@@ -70,32 +68,136 @@ def _wash_image(img: "Image.Image", w: int = 1080, h: int = 1920) -> "Image.Imag
     return img
 
 
-def _overlay_text(img: "Image.Image", text: str) -> "Image.Image":
-    """Draw centered dark serif headline over the image."""
+def _as_dict(value: Any) -> Dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        return dump(mode="json")
+    return {}
+
+
+def _parse_color(value: Any, fallback: Tuple[int, int, int, int]) -> Tuple[int, int, int, int]:
+    s = str(value or "").strip()
+    if not s:
+        return fallback
+    if s.startswith("#") and len(s) in (4, 7):
+        if len(s) == 4:
+            r, g, b = [int(ch * 2, 16) for ch in s[1:]]
+        else:
+            r, g, b = int(s[1:3], 16), int(s[3:5], 16), int(s[5:7], 16)
+        return (r, g, b, 255)
+    m = re.match(r"rgba?\(([^)]+)\)", s)
+    if m:
+        parts = [p.strip() for p in m.group(1).split(",")]
+        if len(parts) >= 3:
+            r, g, b = [max(0, min(255, int(float(parts[i])))) for i in range(3)]
+            a = int(max(0.0, min(1.0, float(parts[3]))) * 255) if len(parts) >= 4 else 255
+            return (r, g, b, a)
+    return fallback
+
+
+def _overlay_text(
+    img: "Image.Image",
+    text: str,
+    *,
+    text_position: str = "center",
+    text_size: str = "medium",
+    text_theme: str = "dark",
+    template_id: str = "centered-pop",
+    theme_id: str = "bold-modern",
+    text_treatment: Optional[str] = None,
+    layout: Any = None,
+    appearance: Any = None,
+) -> "Image.Image":
+    """Draw cover text using the same controls exposed by the video editor."""
     W, H = img.size
-    font_size = max(64, int(W * 0.082))  # ~88px at 1080px wide
+    layout_d = _as_dict(layout)
+    appearance_d = _as_dict(appearance)
+    legacy_size = {"small": 0.82, "medium": 1.0, "large": 1.18}.get(str(text_size).lower(), 1.0)
+    scale = float(layout_d.get("scale") or legacy_size)
+    size_scale = 0.082 * max(0.7, min(1.3, scale))
+    font_size = max(42, int(W * size_scale))
 
     try:
         font = _load_font(font_size)
     except Exception:
         font = ImageFont.load_default()
 
-    # Wrap to ~12 chars per line (≈2–3 short German words)
-    wrapped_lines = textwrap.wrap(text, width=12) or [text]
+    side_padding = max(0.02, min(0.12, float(layout_d.get("sidePadding") or 0.05)))
+    text_area_w = max(1, int(W * (1.0 - side_padding * 2.0)))
+    wrap_width = max(8, int(12 / max(0.7, min(1.3, scale))))
+    wrapped_lines = textwrap.wrap(text, width=wrap_width) or [text]
 
     draw = ImageDraw.Draw(img)
     line_spacing = int(font_size * 1.28)
     total_h = line_spacing * len(wrapped_lines)
 
-    # Center vertically (slightly above true center for visual balance)
-    y = (H - total_h) // 2 - int(H * 0.03)
-    color = (20, 20, 20)
+    template = str(template_id or "centered-pop")
+    vertical_anchor = str(layout_d.get("verticalAnchor") or "").lower()
+    pos = vertical_anchor if vertical_anchor in ("top", "center", "bottom") else str(text_position).lower()
+    if template == "top-banner":
+        pos = "top"
+    vertical_offset = max(-0.2, min(0.2, float(layout_d.get("verticalOffset") or 0.0)))
+    if pos == "top":
+        y = int(H * 0.16)
+    elif pos == "bottom":
+        y = H - total_h - int(H * 0.16)
+    else:
+        y = (H - total_h) // 2 - int(H * 0.03)
+    y = int(y + vertical_offset * H)
+
+    light = str(text_theme).lower() == "light"
+    fallback_text = (248, 248, 248, 255) if light else (20, 20, 20, 255)
+    color = _parse_color(
+        appearance_d.get("overlayTextColor") or appearance_d.get("cardTextColor"),
+        fallback_text,
+    )
+    stroke_fill = None
+    if text_treatment == "bold-outline" or appearance_d.get("overlayStroke"):
+        stroke_fill = _parse_color(appearance_d.get("overlayStroke"), (20, 20, 20, 255) if light else (255, 255, 255, 230))
+    card_like = template in ("bottom-card", "top-banner", "stacked-cards")
+    align = str(layout_d.get("textAlign") or "center").lower()
+    if align not in ("left", "center", "right"):
+        align = "center"
+    left = int(W * side_padding)
+    card_pad = max(10, int(font_size * 0.38))
+    if card_like:
+        card_fill = _parse_color(
+            appearance_d.get("cardBg"),
+            (20, 20, 20, 184) if light else (255, 255, 255, 224),
+        )
+        card_top = max(0, y - card_pad)
+        card_bottom = min(H, y + total_h + card_pad)
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        overlay_draw.rounded_rectangle(
+            (left - card_pad, card_top, W - left + card_pad, card_bottom),
+            radius=max(16, int(font_size * 0.28)),
+            fill=card_fill,
+        )
+        img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+        draw = ImageDraw.Draw(img)
 
     for line in wrapped_lines:
         bbox = draw.textbbox((0, 0), line, font=font)
         text_w = bbox[2] - bbox[0]
-        x = (W - text_w) // 2
-        draw.text((x, y), line, font=font, fill=color)
+        if align == "left":
+            x = left
+        elif align == "right":
+            x = W - left - text_w
+        else:
+            x = (W - text_w) // 2
+        draw.text(
+            (x, y),
+            line,
+            font=font,
+            fill=color,
+            stroke_width=max(2, font_size // 18) if stroke_fill is not None else 0,
+            stroke_fill=stroke_fill,
+        )
         y += line_spacing
 
     return img
@@ -120,6 +222,14 @@ def generate_thumbnail_freepik_pillow(
     angle_context: str = "",
     target_w: int = 1080,
     target_h: int = 1920,
+    text_position: str = "center",
+    text_size: str = "medium",
+    text_theme: str = "dark",
+    template_id: str = "centered-pop",
+    theme_id: str = "bold-modern",
+    text_treatment: Optional[str] = None,
+    layout: Any = None,
+    appearance: Any = None,
 ) -> bytes:
     """Generate a reel thumbnail using Freepik + Pillow.
 
@@ -185,7 +295,18 @@ def generate_thumbnail_freepik_pillow(
     # 4. Wash + overlay text with Pillow
     bg = Image.open(io.BytesIO(bg_bytes))
     bg = _wash_image(bg, target_w, target_h)
-    bg = _overlay_text(bg, text)
+    bg = _overlay_text(
+        bg,
+        text,
+        text_position=text_position,
+        text_size=text_size,
+        text_theme=text_theme,
+        template_id=template_id,
+        theme_id=theme_id,
+        text_treatment=text_treatment,
+        layout=layout,
+        appearance=appearance,
+    )
 
     out = io.BytesIO()
     bg.save(out, format="PNG", optimize=True)
@@ -198,6 +319,16 @@ def compose_thumbnail_from_image(
     target_w: int = 1080,
     target_h: int = 1920,
     wash: bool = True,
+    crop_y: float = 0.5,
+    zoom: float = 1.0,
+    text_position: str = "center",
+    text_size: str = "medium",
+    text_theme: str = "dark",
+    template_id: str = "centered-pop",
+    theme_id: str = "bold-modern",
+    text_treatment: Optional[str] = None,
+    layout: Any = None,
+    appearance: Any = None,
 ) -> bytes:
     """Compose a 9:16 reel cover from a user-supplied image + text overlay.
 
@@ -214,10 +345,21 @@ def compose_thumbnail_from_image(
 
     bg = Image.open(io.BytesIO(image_bytes))
     if wash:
-        bg = _wash_image(bg, target_w, target_h)
+        bg = _wash_image(bg, target_w, target_h, crop_y=crop_y, zoom=zoom)
     else:
-        bg = _resize_cover(bg, target_w, target_h)
-    bg = _overlay_text(bg, text)
+        bg = _resize_cover(bg, target_w, target_h, crop_y=crop_y, zoom=zoom)
+    bg = _overlay_text(
+        bg,
+        text,
+        text_position=text_position,
+        text_size=text_size,
+        text_theme=text_theme,
+        template_id=template_id,
+        theme_id=theme_id,
+        text_treatment=text_treatment,
+        layout=layout,
+        appearance=appearance,
+    )
 
     out = io.BytesIO()
     bg.save(out, format="PNG", optimize=True)
@@ -231,11 +373,12 @@ def generate_slide_image(
     total: int,
     freepik_key: str = "",
     style: str = "",
+    visual_prompt: str = "",
     client_image_bytes: bytes | None = None,
     target_w: int = 1080,
-    target_h: int = 1920,
+    target_h: int = 1350,
 ) -> bytes:
-    """Render one carousel slide as a 9:16 PNG.
+    """Render one carousel slide as a 4:5 PNG (1080×1350 by default).
 
     Two modes (mutually exclusive):
     - ``client_image_bytes`` provided → uses :func:`compose_thumbnail_from_image` (same editorial
@@ -257,7 +400,15 @@ def generate_slide_image(
     if not freepik_key:
         raise RuntimeError("generate_slide_image: freepik_key required when no client_image_bytes")
     role = "cover" if idx == 0 else ("cta" if idx == total - 1 else "body")
-    ctx_parts = [p for p in (style.strip(), f"slide {idx + 1}/{total} ({role})") if p]
+    ctx_parts = [
+        p
+        for p in (
+            style.strip(),
+            visual_prompt.strip(),
+            f"slide {idx + 1}/{total} ({role})",
+        )
+        if p
+    ]
     return generate_thumbnail_freepik_pillow(
         freepik_key,
         text,
@@ -267,8 +418,15 @@ def generate_slide_image(
     )
 
 
-def _resize_cover(img: "Image.Image", w: int, h: int) -> "Image.Image":
-    """Resize + center-crop to (w, h) keeping original colours."""
+def _resize_cover(
+    img: "Image.Image",
+    w: int,
+    h: int,
+    *,
+    crop_y: float = 0.5,
+    zoom: float = 1.0,
+) -> "Image.Image":
+    """Resize + crop to (w, h) keeping original colours."""
     img = img.convert("RGB")
     src_r = img.width / img.height
     tgt_r = w / h
@@ -276,9 +434,13 @@ def _resize_cover(img: "Image.Image", w: int, h: int) -> "Image.Image":
         new_h, new_w = h, int(h * src_r)
     else:
         new_w, new_h = w, int(w / src_r)
+    z = max(1.0, min(2.0, float(zoom or 1.0)))
+    new_w = int(new_w * z)
+    new_h = int(new_h * z)
     img = img.resize((new_w, new_h), Image.LANCZOS)
     left = (new_w - w) // 2
-    top = (new_h - h) // 2
+    y = max(0.0, min(1.0, float(crop_y if crop_y is not None else 0.5)))
+    top = int((new_h - h) * y)
     return img.crop((left, top, left + w, top + h))
 
 

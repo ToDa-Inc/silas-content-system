@@ -7,19 +7,31 @@ import {
   ChevronRight,
   FileText,
   Loader2,
+  Plus,
   Save,
   Sparkles,
+  Trash2,
   Upload,
 } from "lucide-react";
 import {
   clientApiHeaders,
+  clientImagesList,
   contentApiFetch,
   formatFastApiError,
   getContentApiBase,
+  normalizeCarouselTemplates,
+  normalizeCoverTemplates,
+  type ClientImageRow,
 } from "@/lib/api-client";
 import type {
+  ClientCarouselTemplate,
+  ClientCarouselTemplateSlide,
+  ClientCarouselTemplateSlideRole,
+  ClientCoverTemplate,
   ClientContextData,
   ClientContextSection,
+  ClientCta,
+  ClientCtaType,
   DnaChatApplyResponse,
   DnaChatPreviewResponse,
 } from "@/lib/api";
@@ -130,16 +142,137 @@ function normalizeFullContext(raw: ClientContextData | null | undefined): Record
 
 function toPayload(
   state: Record<ContextSectionKey, ClientContextSection>,
+  ctaLibrary: ClientCta[],
+  carouselTemplates: ClientCarouselTemplate[],
+  coverTemplates: ClientCoverTemplate[],
 ): ClientContextData {
   const o: ClientContextData = {};
   for (const k of SECTION_ORDER) {
     o[k] = state[k];
   }
+  if (ctaLibrary.length > 0) {
+    o.cta_library = ctaLibrary;
+  }
+  if (carouselTemplates.length > 0) {
+    o.carousel_templates = carouselTemplates;
+  }
+  if (coverTemplates.length > 0) {
+    o.cover_thumbnail_templates = coverTemplates;
+  }
   return o;
 }
 
-function serializeContext(state: Record<ContextSectionKey, ClientContextSection>): string {
-  return JSON.stringify(toPayload(state));
+function serializeContext(
+  state: Record<ContextSectionKey, ClientContextSection>,
+  ctaLibrary: ClientCta[],
+  carouselTemplates: ClientCarouselTemplate[],
+  coverTemplates: ClientCoverTemplate[],
+): string {
+  return JSON.stringify(toPayload(state, ctaLibrary, carouselTemplates, coverTemplates));
+}
+
+const CTA_TYPES: { id: ClientCtaType; label: string; helper: string }[] = [
+  { id: "website", label: "Website", helper: "Sales page, landing, blog post." },
+  { id: "newsletter", label: "Newsletter", helper: "Email list, lead magnet form." },
+  { id: "video", label: "Another video", helper: "YouTube, IG live, on-account series." },
+  { id: "lead_magnet", label: "Lead magnet", helper: "Free PDF, training, freebie via comment keyword." },
+  { id: "booking", label: "Booking / call", helper: "Call, demo, consultation slot." },
+  { id: "other", label: "Other", helper: "Anything else — describe in destination + goal." },
+];
+
+const VALID_CTA_TYPES = new Set<ClientCtaType>(CTA_TYPES.map((t) => t.id));
+
+function generateCtaId(): string {
+  if (typeof globalThis !== "undefined" && globalThis.crypto && "randomUUID" in globalThis.crypto) {
+    return globalThis.crypto.randomUUID();
+  }
+  return `cta_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function generateCarouselTemplateId(): string {
+  if (typeof globalThis !== "undefined" && globalThis.crypto && "randomUUID" in globalThis.crypto) {
+    return globalThis.crypto.randomUUID();
+  }
+  return `carousel_template_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function generateCoverTemplateId(): string {
+  if (typeof globalThis !== "undefined" && globalThis.crypto && "randomUUID" in globalThis.crypto) {
+    return globalThis.crypto.randomUUID();
+  }
+  return `cover_template_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function generateCarouselTemplateSlide(
+  idx: number,
+  image?: ClientImageRow,
+): ClientCarouselTemplateSlide {
+  return {
+    idx,
+    role: idx === 0 ? "cover" : "body",
+    reference_image_id: image?.id ?? null,
+    reference_image_url: image?.file_url ?? null,
+    reference_label: image?.label ?? null,
+    instruction: "",
+  };
+}
+
+function generateCoverTemplateFromImage(
+  image: ClientImageRow,
+  name: string,
+): ClientCoverTemplate {
+  return {
+    id: generateCoverTemplateId(),
+    name,
+    reference_image_id: image.id,
+    reference_image_url: image.file_url,
+    reference_label: image.label ?? null,
+    instruction: "",
+  };
+}
+
+const CAROUSEL_TEMPLATE_ROLES: {
+  id: ClientCarouselTemplateSlideRole;
+  label: string;
+}[] = [
+  { id: "cover", label: "Cover" },
+  { id: "body", label: "Body" },
+  { id: "screenshot", label: "Screenshot" },
+  { id: "quote", label: "Quote" },
+  { id: "cta", label: "CTA" },
+  { id: "other", label: "Other" },
+];
+
+function normalizeCtaItem(raw: unknown): ClientCta | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const label = typeof o.label === "string" ? o.label.trim() : "";
+  if (!label) return null;
+  const id = typeof o.id === "string" && o.id.trim() ? o.id.trim() : generateCtaId();
+  const typeRaw = typeof o.type === "string" ? (o.type as ClientCtaType) : "other";
+  const type: ClientCtaType = VALID_CTA_TYPES.has(typeRaw) ? typeRaw : "other";
+  const destination = typeof o.destination === "string" ? o.destination : "";
+  const traffic_goal = typeof o.traffic_goal === "string" ? o.traffic_goal : "";
+  const instructions =
+    typeof o.instructions === "string" && o.instructions.trim() ? o.instructions : null;
+  return { id, label, type, destination, traffic_goal, instructions };
+}
+
+function normalizeCtaLibrary(raw: unknown): ClientCta[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ClientCta[] = [];
+  const seenIds = new Set<string>();
+  for (const item of raw) {
+    const norm = normalizeCtaItem(item);
+    if (!norm) continue;
+    let safeId = norm.id;
+    while (seenIds.has(safeId)) {
+      safeId = generateCtaId();
+    }
+    seenIds.add(safeId);
+    out.push({ ...norm, id: safeId });
+  }
+  return out;
 }
 
 function parseJsonObject(text: string): unknown {
@@ -256,8 +389,33 @@ export function ContextEditor({
 }: Props) {
   const router = useRouter();
   const [state, setState] = useState(() => normalizeFullContext(initialContext));
+  const [ctaLibrary, setCtaLibrary] = useState<ClientCta[]>(() =>
+    normalizeCtaLibrary(initialContext?.cta_library),
+  );
+  const [carouselTemplates, setCarouselTemplates] = useState<ClientCarouselTemplate[]>(() =>
+    normalizeCarouselTemplates(initialContext?.carousel_templates),
+  );
+  const [coverTemplates, setCoverTemplates] = useState<ClientCoverTemplate[]>(() =>
+    normalizeCoverTemplates(initialContext?.cover_thumbnail_templates),
+  );
+  const [clientImages, setClientImages] = useState<ClientImageRow[]>([]);
+  const [expandedTemplateId, setExpandedTemplateId] = useState<string | null>(null);
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+  const [templatePickerSelection, setTemplatePickerSelection] = useState<string[]>([]);
+  const [templatePickerPreviewId, setTemplatePickerPreviewId] = useState<string | null>(null);
+  const [expandedCoverTemplateId, setExpandedCoverTemplateId] = useState<string | null>(null);
+  const [coverTemplatePickerOpen, setCoverTemplatePickerOpen] = useState(false);
+  const [coverTemplatePickerSelection, setCoverTemplatePickerSelection] = useState<string | null>(null);
+  const [coverTemplatePickerPreviewId, setCoverTemplatePickerPreviewId] = useState<string | null>(null);
+  const [openCtaTypeId, setOpenCtaTypeId] = useState<string | null>(null);
+  const [expandedCtaId, setExpandedCtaId] = useState<string | null>(null);
   const [baselineSig, setBaselineSig] = useState(() =>
-    serializeContext(normalizeFullContext(initialContext)),
+    serializeContext(
+      normalizeFullContext(initialContext),
+      normalizeCtaLibrary(initialContext?.cta_library),
+      normalizeCarouselTemplates(initialContext?.carousel_templates),
+      normalizeCoverTemplates(initialContext?.cover_thumbnail_templates),
+    ),
   );
   const [openStrategy, setOpenStrategy] = useState<ContextSectionKey | null>(() =>
     pickInitialOpen(normalizeFullContext(initialContext)),
@@ -289,10 +447,120 @@ export function ContextEditor({
 
   useEffect(() => {
     const next = normalizeFullContext(initialContext);
+    const nextCtas = normalizeCtaLibrary(initialContext?.cta_library);
+    const nextTemplates = normalizeCarouselTemplates(initialContext?.carousel_templates);
+    const nextCoverTemplates = normalizeCoverTemplates(initialContext?.cover_thumbnail_templates);
     setState(next);
-    setBaselineSig(serializeContext(next));
+    setCtaLibrary(nextCtas);
+    setCarouselTemplates(nextTemplates);
+    setCoverTemplates(nextCoverTemplates);
+    setExpandedCtaId(null);
+    setExpandedTemplateId(null);
+    setExpandedCoverTemplateId(null);
+    setBaselineSig(serializeContext(next, nextCtas, nextTemplates, nextCoverTemplates));
     setOpenStrategy(pickInitialOpen(next));
   }, [initialContext]);
+
+  useEffect(() => {
+    if (!clientSlug.trim() || !orgSlug.trim()) return;
+    let cancelled = false;
+    void clientImagesList(clientSlug, orgSlug).then((res) => {
+      if (cancelled) return;
+      if (res.ok) {
+        setClientImages(res.data);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [clientSlug, orgSlug]);
+
+  const templatePickerPreview = useMemo(() => {
+    if (clientImages.length === 0) return null;
+    return (
+      clientImages.find((img) => img.id === templatePickerPreviewId) ??
+      clientImages.find((img) => img.id === templatePickerSelection[0]) ??
+      clientImages[0]
+    );
+  }, [clientImages, templatePickerPreviewId, templatePickerSelection]);
+
+  const coverTemplatePickerPreview = useMemo(() => {
+    if (clientImages.length === 0) return null;
+    return (
+      clientImages.find((img) => img.id === coverTemplatePickerPreviewId) ??
+      clientImages.find((img) => img.id === coverTemplatePickerSelection) ??
+      clientImages[0]
+    );
+  }, [clientImages, coverTemplatePickerPreviewId, coverTemplatePickerSelection]);
+
+  function openTemplatePicker() {
+    if (clientImages.length === 0) return;
+    setTemplatePickerSelection([]);
+    setTemplatePickerPreviewId(clientImages[0]?.id ?? null);
+    setTemplatePickerOpen(true);
+  }
+
+  function closeTemplatePicker() {
+    setTemplatePickerOpen(false);
+    setTemplatePickerSelection([]);
+    setTemplatePickerPreviewId(null);
+  }
+
+  function toggleTemplatePickerImage(image: ClientImageRow) {
+    setTemplatePickerPreviewId(image.id);
+    setTemplatePickerSelection((prev) =>
+      prev.includes(image.id) ? prev.filter((id) => id !== image.id) : [...prev, image.id],
+    );
+  }
+
+  function createTemplateFromSelection() {
+    const selectedImages = templatePickerSelection
+      .map((id) => clientImages.find((img) => img.id === id))
+      .filter((img): img is ClientImageRow => Boolean(img));
+    if (selectedImages.length === 0) return;
+    const newTemplateId = generateCarouselTemplateId();
+    setCarouselTemplates((prev) => [
+      ...prev,
+      {
+        id: newTemplateId,
+        name: `Carousel template ${prev.length + 1}`,
+        description: "",
+        slides: selectedImages.map((image, idx) => generateCarouselTemplateSlide(idx, image)),
+      },
+    ]);
+    setExpandedTemplateId(newTemplateId);
+    closeTemplatePicker();
+  }
+
+  function openCoverTemplatePicker() {
+    if (clientImages.length === 0) return;
+    setCoverTemplatePickerSelection(null);
+    setCoverTemplatePickerPreviewId(clientImages[0]?.id ?? null);
+    setCoverTemplatePickerOpen(true);
+  }
+
+  function closeCoverTemplatePicker() {
+    setCoverTemplatePickerOpen(false);
+    setCoverTemplatePickerSelection(null);
+    setCoverTemplatePickerPreviewId(null);
+  }
+
+  function selectCoverTemplateImage(image: ClientImageRow) {
+    setCoverTemplatePickerPreviewId(image.id);
+    setCoverTemplatePickerSelection(image.id);
+  }
+
+  function createCoverTemplateFromSelection() {
+    const selectedImage = clientImages.find((img) => img.id === coverTemplatePickerSelection);
+    if (!selectedImage) return;
+    const newTemplate = generateCoverTemplateFromImage(
+      selectedImage,
+      `Cover template ${coverTemplates.length + 1}`,
+    );
+    setCoverTemplates((prev) => [...prev, newTemplate]);
+    setExpandedCoverTemplateId(newTemplate.id);
+    closeCoverTemplatePicker();
+  }
 
   /** After ~700ms still waiting, switch copy to “reading” (server is uploading + extracting). */
   useEffect(() => {
@@ -303,7 +571,10 @@ export function ContextEditor({
     return () => window.clearTimeout(t);
   }, [uploadActivity?.section, uploadActivity?.fileName]);
 
-  const dirty = useMemo(() => serializeContext(state) !== baselineSig, [state, baselineSig]);
+  const dirty = useMemo(
+    () => serializeContext(state, ctaLibrary, carouselTemplates, coverTemplates) !== baselineSig,
+    [state, ctaLibrary, carouselTemplates, coverTemplates, baselineSig],
+  );
 
   const filledStrategyCount = useMemo(
     () => GENERATED_KEYS.filter((k) => state[k].text.trim().length > 0).length,
@@ -452,11 +723,18 @@ export function ContextEditor({
         setClientDna({ ...(u.client.client_dna as Record<string, unknown>) });
       }
       if (u.client?.client_context && typeof u.client.client_context === "object") {
-        const normalized = normalizeFullContext(
-          u.client.client_context as ClientContextData,
-        );
+        const ctxRaw = u.client.client_context as ClientContextData;
+        const normalized = normalizeFullContext(ctxRaw);
+        const normalizedCtas = normalizeCtaLibrary(ctxRaw.cta_library);
+        const normalizedTemplates = normalizeCarouselTemplates(ctxRaw.carousel_templates);
+        const normalizedCoverTemplates = normalizeCoverTemplates(ctxRaw.cover_thumbnail_templates);
         setState(normalized);
-        setBaselineSig(serializeContext(normalized));
+        setCtaLibrary(normalizedCtas);
+        setCarouselTemplates(normalizedTemplates);
+        setCoverTemplates(normalizedCoverTemplates);
+        setBaselineSig(
+          serializeContext(normalized, normalizedCtas, normalizedTemplates, normalizedCoverTemplates),
+        );
       }
       router.refresh();
     } catch {
@@ -521,13 +799,18 @@ export function ContextEditor({
     for (const k of SECTION_ORDER) {
       next[k] = { ...next[k], updated_at: now };
     }
+    const cleanedCtas = normalizeCtaLibrary(ctaLibrary);
+    const cleanedTemplates = normalizeCarouselTemplates(carouselTemplates);
+    const cleanedCoverTemplates = normalizeCoverTemplates(coverTemplates);
     try {
       const r = await contentApiFetch(
         `${apiBase}/api/v1/clients/${encodeURIComponent(clientSlug)}`,
         {
           method: "PUT",
           headers: { ...headersBase, "Content-Type": "application/json" },
-          body: JSON.stringify({ client_context: toPayload(next) }),
+          body: JSON.stringify({
+            client_context: toPayload(next, cleanedCtas, cleanedTemplates, cleanedCoverTemplates),
+          }),
         },
       );
       const text = await r.text();
@@ -537,12 +820,23 @@ export function ContextEditor({
       }
       const updated = parseJsonObject(text) as { client_context?: ClientContextData | null } | null;
       const normalized = normalizeFullContext(updated?.client_context);
+      const normalizedCtas = normalizeCtaLibrary(updated?.client_context?.cta_library);
+      const normalizedTemplates = normalizeCarouselTemplates(
+        updated?.client_context?.carousel_templates,
+      );
+      const normalizedCoverTemplates = normalizeCoverTemplates(
+        updated?.client_context?.cover_thumbnail_templates,
+      );
       setState(normalized);
-      setBaselineSig(serializeContext(normalized));
+      setCtaLibrary(normalizedCtas);
+      setCarouselTemplates(normalizedTemplates);
+      setCoverTemplates(normalizedCoverTemplates);
+      setBaselineSig(
+        serializeContext(normalized, normalizedCtas, normalizedTemplates, normalizedCoverTemplates),
+      );
       setStatus(
         "Saved. Your AI profile updates in the background when your source data changes.",
       );
-      router.refresh();
     } catch {
       setStatus("Network error.");
     } finally {
@@ -1085,6 +1379,910 @@ export function ContextEditor({
           );
         })}
       </ul>
+
+      <section className="mt-8 rounded-2xl border border-outline-variant/15 bg-surface-container/80 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="text-base font-semibold text-on-surface">Carousel templates</h3>
+            <p className="mt-1 max-w-2xl text-xs leading-relaxed text-zinc-500">
+              Build reference sequences from Media images. The AI uses these as visual
+              references only, then creates new carousel slides for each new idea.
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={disabled || clientImages.length === 0}
+            onClick={openTemplatePicker}
+            className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-900 disabled:opacity-50 dark:text-amber-200/95"
+          >
+            <Plus className="h-3.5 w-3.5" aria-hidden />
+            Add template
+          </button>
+        </div>
+
+        {clientImages.length === 0 ? (
+          <p className="mt-3 rounded-xl border border-dashed border-outline-variant/30 px-4 py-4 text-xs leading-relaxed text-zinc-500">
+            No Media images yet. Upload reference images in Media first, then come back
+            here to build a carousel sequence.
+          </p>
+        ) : null}
+
+        {carouselTemplates.length === 0 ? (
+          <p className="mt-4 rounded-xl border border-dashed border-outline-variant/30 px-4 py-6 text-center text-xs text-zinc-500">
+            No carousel templates yet. Add one to describe reusable sequences like a
+            creator photo cover followed by screenshot-style message slides.
+          </p>
+        ) : (
+          <ul className="mt-4 space-y-3">
+            {carouselTemplates.map((template, templateIdx) => {
+              const updateTemplate = (patch: Partial<ClientCarouselTemplate>) => {
+                setCarouselTemplates((prev) =>
+                  prev.map((t, idx) => (idx === templateIdx ? { ...t, ...patch } : t)),
+                );
+              };
+              const updateSlide = (
+                slideIdx: number,
+                patch: Partial<ClientCarouselTemplateSlide>,
+              ) => {
+                updateTemplate({
+                  slides: template.slides.map((slide, idx) =>
+                    idx === slideIdx ? { ...slide, ...patch } : slide,
+                  ),
+                });
+              };
+              return (
+                <li
+                  key={template.id}
+                  className="rounded-xl border border-outline-variant/15 bg-surface-container-low/80 p-2"
+                >
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedTemplateId((prev) =>
+                          prev === template.id ? null : template.id,
+                        )
+                      }
+                      className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-lg border border-outline-variant/15 bg-surface-container/80 px-3 py-2 text-left text-sm font-semibold text-on-surface focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+                      aria-expanded={expandedTemplateId === template.id}
+                    >
+                      <span className="truncate">
+                        {template.name.trim() || "Carousel template"}
+                      </span>
+                      <span className="flex shrink-0 items-center gap-2 text-[11px] font-normal text-zinc-500">
+                        {template.slides.length} slides
+                        <ChevronDown
+                          className={cn(
+                            "h-4 w-4 text-zinc-400 transition-transform",
+                            expandedTemplateId === template.id ? "rotate-180" : "",
+                          )}
+                          aria-hidden
+                        />
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => {
+                        setCarouselTemplates((prev) =>
+                          prev.filter((_, idx) => idx !== templateIdx),
+                        );
+                        setExpandedTemplateId((prev) =>
+                          prev === template.id ? null : prev,
+                        );
+                      }}
+                      className="rounded-lg p-2 text-zinc-500 hover:bg-red-500/10 hover:text-red-500 disabled:opacity-50"
+                      aria-label="Remove carousel template"
+                      title="Remove carousel template"
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden />
+                    </button>
+                  </div>
+
+                  {expandedTemplateId === template.id ? (
+                    <div className="mt-3 rounded-lg border border-outline-variant/10 bg-surface-container/50 p-3">
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div>
+                          <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                            Template name
+                          </label>
+                          <input
+                            value={template.name}
+                            onChange={(e) => updateTemplate({ name: e.target.value })}
+                            disabled={disabled}
+                            placeholder="e.g. Conny tweet carousel"
+                            className="mt-1 w-full rounded-lg border border-outline-variant/15 bg-surface-container/80 px-3 py-2 text-sm font-semibold text-on-surface placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500/35 disabled:opacity-50"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                            Description
+                          </label>
+                          <input
+                            value={template.description ?? ""}
+                            onChange={(e) => updateTemplate({ description: e.target.value })}
+                            disabled={disabled}
+                            placeholder="Cover photo, then screenshot-style message slides"
+                            className="mt-1 w-full rounded-lg border border-outline-variant/15 bg-surface-container/80 px-3 py-2 text-sm text-on-surface placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500/35 disabled:opacity-50"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="mt-4 space-y-3">
+                        {template.slides.map((slide, slideIdx) => {
+                          const selectedImage = clientImages.find(
+                            (img) => img.id === slide.reference_image_id,
+                          );
+                          return (
+                            <div
+                              key={`${template.id}-${slide.idx}`}
+                              className="rounded-xl border border-outline-variant/15 bg-surface-container/70 p-3"
+                            >
+                              <div className="mb-3 flex items-center justify-between gap-3">
+                                <p className="text-xs font-semibold text-on-surface">
+                                  Slide {slideIdx + 1}
+                                </p>
+                                <button
+                                  type="button"
+                                  disabled={disabled || template.slides.length <= 1}
+                                  onClick={() => {
+                                    updateTemplate({
+                                      slides: template.slides
+                                        .filter((_, idx) => idx !== slideIdx)
+                                        .map((s, idx) => ({ ...s, idx })),
+                                    });
+                                  }}
+                                  className="text-[11px] font-semibold text-red-500 hover:underline disabled:opacity-40"
+                                >
+                                  Remove slide
+                                </button>
+                              </div>
+                              <div className="grid gap-3 sm:grid-cols-[7rem_minmax(0,1fr)]">
+                                <div className="overflow-hidden rounded-lg border border-outline-variant/15 bg-black/10">
+                                  {selectedImage?.file_url ? (
+                                    // eslint-disable-next-line @next/next/no-img-element
+                                    <img
+                                      src={selectedImage.file_url}
+                                      alt={selectedImage.label ?? ""}
+                                      className="aspect-[4/5] w-full object-cover"
+                                    />
+                                  ) : (
+                                    <div className="flex aspect-[4/5] items-center justify-center px-2 text-center text-[10px] text-zinc-500">
+                                      Pick image
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="grid gap-3">
+                                  <div className="grid gap-3 sm:grid-cols-2">
+                                    <div>
+                                      <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                                        Media image
+                                      </label>
+                                      <select
+                                        value={slide.reference_image_id ?? ""}
+                                        onChange={(e) => {
+                                          const image = clientImages.find(
+                                            (img) => img.id === e.target.value,
+                                          );
+                                          updateSlide(slideIdx, {
+                                            reference_image_id: image?.id ?? null,
+                                            reference_image_url: image?.file_url ?? null,
+                                            reference_label: image?.label ?? null,
+                                          });
+                                        }}
+                                        disabled={disabled || clientImages.length === 0}
+                                        className="mt-1 w-full rounded-lg border border-outline-variant/15 bg-surface-container/80 px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-amber-500/35 disabled:opacity-50"
+                                      >
+                                        <option value="">Select image</option>
+                                        {clientImages.map((img) => (
+                                          <option key={img.id} value={img.id}>
+                                            {img.label ?? `Image ${img.id.slice(0, 6)}`}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                    <div>
+                                      <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                                        Slide role
+                                      </label>
+                                      <select
+                                        value={slide.role}
+                                        onChange={(e) =>
+                                          updateSlide(slideIdx, {
+                                            role: e.target.value as ClientCarouselTemplateSlideRole,
+                                          })
+                                        }
+                                        disabled={disabled}
+                                        className="mt-1 w-full rounded-lg border border-outline-variant/15 bg-surface-container/80 px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-amber-500/35 disabled:opacity-50"
+                                      >
+                                        {CAROUSEL_TEMPLATE_ROLES.map((role) => (
+                                          <option key={role.id} value={role.id}>
+                                            {role.label}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                                      AI instruction
+                                    </label>
+                                    <textarea
+                                      value={slide.instruction}
+                                      onChange={(e) =>
+                                        updateSlide(slideIdx, { instruction: e.target.value })
+                                      }
+                                      disabled={disabled}
+                                      rows={2}
+                                      placeholder="e.g. Tweet-style screenshot with the main message for this beat"
+                                      className="mt-1 w-full resize-y rounded-lg border border-outline-variant/15 bg-surface-container/80 px-3 py-2 text-sm text-on-surface placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500/35 disabled:opacity-50"
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={disabled || template.slides.length >= 10}
+                        onClick={() => {
+                          updateTemplate({
+                            slides: [
+                              ...template.slides,
+                              generateCarouselTemplateSlide(
+                                template.slides.length,
+                                clientImages[0],
+                              ),
+                            ],
+                          });
+                        }}
+                        className="mt-3 inline-flex items-center gap-2 rounded-lg border border-outline-variant/20 px-3 py-2 text-xs font-semibold text-on-surface hover:bg-surface-container disabled:opacity-50"
+                      >
+                        <Plus className="h-3.5 w-3.5" aria-hidden />
+                        Add slide
+                      </button>
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
+      <section className="mt-8 rounded-2xl border border-outline-variant/15 bg-surface-container/80 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="text-base font-semibold text-on-surface">Cover/thumbnail templates</h3>
+            <p className="mt-1 max-w-2xl text-xs leading-relaxed text-zinc-500">
+              Pick one Media image as a reusable cover reference. When selected in
+              Generate, it preloads the cover composer with that image.
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={disabled || clientImages.length === 0}
+            onClick={openCoverTemplatePicker}
+            className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-900 disabled:opacity-50 dark:text-amber-200/95"
+          >
+            <Plus className="h-3.5 w-3.5" aria-hidden />
+            Add template
+          </button>
+        </div>
+
+        {clientImages.length === 0 ? (
+          <p className="mt-3 rounded-xl border border-dashed border-outline-variant/30 px-4 py-4 text-xs leading-relaxed text-zinc-500">
+            No Media images yet. Upload cover references in Media first, then come
+            back here to build cover templates.
+          </p>
+        ) : null}
+
+        {coverTemplates.length === 0 ? (
+          <p className="mt-4 rounded-xl border border-dashed border-outline-variant/30 px-4 py-6 text-center text-xs text-zinc-500">
+            No cover/thumbnail templates yet. Add one to reuse a creator photo,
+            screenshot, or branded cover style.
+          </p>
+        ) : (
+          <ul className="mt-4 space-y-3">
+            {coverTemplates.map((template, templateIdx) => {
+              const selectedImage = clientImages.find(
+                (img) => img.id === template.reference_image_id,
+              );
+              const updateTemplate = (patch: Partial<ClientCoverTemplate>) => {
+                setCoverTemplates((prev) =>
+                  prev.map((t, idx) => (idx === templateIdx ? { ...t, ...patch } : t)),
+                );
+              };
+              return (
+                <li
+                  key={template.id}
+                  className="rounded-xl border border-outline-variant/15 bg-surface-container-low/80 p-2"
+                >
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedCoverTemplateId((prev) =>
+                          prev === template.id ? null : template.id,
+                        )
+                      }
+                      className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-lg border border-outline-variant/15 bg-surface-container/80 px-3 py-2 text-left text-sm font-semibold text-on-surface focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+                      aria-expanded={expandedCoverTemplateId === template.id}
+                    >
+                      <span className="truncate">
+                        {template.name.trim() || "Cover template"}
+                      </span>
+                      <span className="flex shrink-0 items-center gap-2 text-[11px] font-normal text-zinc-500">
+                        {template.reference_label ?? selectedImage?.label ?? "1 image"}
+                        <ChevronDown
+                          className={cn(
+                            "h-4 w-4 text-zinc-400 transition-transform",
+                            expandedCoverTemplateId === template.id ? "rotate-180" : "",
+                          )}
+                          aria-hidden
+                        />
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => {
+                        setCoverTemplates((prev) =>
+                          prev.filter((_, idx) => idx !== templateIdx),
+                        );
+                        setExpandedCoverTemplateId((prev) =>
+                          prev === template.id ? null : prev,
+                        );
+                      }}
+                      className="rounded-lg p-2 text-zinc-500 hover:bg-red-500/10 hover:text-red-500 disabled:opacity-50"
+                      aria-label="Remove cover template"
+                      title="Remove cover template"
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden />
+                    </button>
+                  </div>
+
+                  {expandedCoverTemplateId === template.id ? (
+                    <div className="mt-3 rounded-lg border border-outline-variant/10 bg-surface-container/50 p-3">
+                      <div className="grid gap-3 sm:grid-cols-[8rem_minmax(0,1fr)]">
+                        <div className="overflow-hidden rounded-lg border border-outline-variant/15 bg-black/10">
+                          {selectedImage?.file_url ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={selectedImage.file_url}
+                              alt={selectedImage.label ?? ""}
+                              className="aspect-[9/16] w-full object-cover"
+                            />
+                          ) : (
+                            <div className="flex aspect-[9/16] items-center justify-center px-2 text-center text-[10px] text-zinc-500">
+                              Pick image
+                            </div>
+                          )}
+                        </div>
+                        <div className="grid gap-3">
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <div>
+                              <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                                Template name
+                              </label>
+                              <input
+                                value={template.name}
+                                onChange={(e) => updateTemplate({ name: e.target.value })}
+                                disabled={disabled}
+                                placeholder="e.g. Creator portrait cover"
+                                className="mt-1 w-full rounded-lg border border-outline-variant/15 bg-surface-container/80 px-3 py-2 text-sm font-semibold text-on-surface placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500/35 disabled:opacity-50"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                                Media image
+                              </label>
+                              <select
+                                value={template.reference_image_id}
+                                onChange={(e) => {
+                                  const image = clientImages.find(
+                                    (img) => img.id === e.target.value,
+                                  );
+                                  updateTemplate({
+                                    reference_image_id: image?.id ?? template.reference_image_id,
+                                    reference_image_url: image?.file_url ?? template.reference_image_url,
+                                    reference_label: image?.label ?? null,
+                                  });
+                                }}
+                                disabled={disabled || clientImages.length === 0}
+                                className="mt-1 w-full rounded-lg border border-outline-variant/15 bg-surface-container/80 px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-amber-500/35 disabled:opacity-50"
+                              >
+                                {clientImages.map((img) => (
+                                  <option key={img.id} value={img.id}>
+                                    {img.label ?? `Image ${img.id.slice(0, 6)}`}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                              AI instruction
+                            </label>
+                            <textarea
+                              value={template.instruction}
+                              onChange={(e) => updateTemplate({ instruction: e.target.value })}
+                              disabled={disabled}
+                              rows={2}
+                              placeholder="e.g. Keep this face-centered composition with a large clean headline."
+                              className="mt-1 w-full resize-y rounded-lg border border-outline-variant/15 bg-surface-container/80 px-3 py-2 text-sm text-on-surface placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500/35 disabled:opacity-50"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
+      <section className="mt-8 rounded-2xl border border-outline-variant/15 bg-surface-container/80 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="text-base font-semibold text-on-surface">CTA library</h3>
+            <p className="mt-1 max-w-2xl text-xs leading-relaxed text-zinc-500">
+              The CTAs the user can pick under the format selector before generating a video.
+              Each CTA carries its own traffic goal, so caption, script, and on-screen CTA
+              adapt to whichever destination is chosen for that reel.
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              const newCtaId = generateCtaId();
+              setCtaLibrary((prev) => [
+                ...prev,
+                {
+                  id: newCtaId,
+                  label: "",
+                  type: "website",
+                  destination: "",
+                  traffic_goal: "",
+                  instructions: "",
+                },
+              ]);
+              setExpandedCtaId(newCtaId);
+            }}
+            className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-900 disabled:opacity-50 dark:text-amber-200/95"
+          >
+            <Plus className="h-3.5 w-3.5" aria-hidden />
+            Add CTA
+          </button>
+        </div>
+
+        {ctaLibrary.length === 0 ? (
+          <p className="mt-4 rounded-xl border border-dashed border-outline-variant/30 px-4 py-6 text-center text-xs text-zinc-500">
+            No CTAs yet. Add one for each destination this creator wants to drive traffic to —
+            e.g. a website, a newsletter, or a follow-up video.
+          </p>
+        ) : (
+          <ul className="mt-4 space-y-3">
+            {ctaLibrary.map((cta, idx) => {
+              const updateCta = (patch: Partial<ClientCta>) => {
+                setCtaLibrary((prev) =>
+                  prev.map((c, j) => (j === idx ? { ...c, ...patch } : c)),
+                );
+              };
+              return (
+                <li
+                  key={cta.id}
+                  className="rounded-xl border border-outline-variant/15 bg-surface-container-low/80 p-2"
+                >
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedCtaId((prev) => (prev === cta.id ? null : cta.id))
+                      }
+                      className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-lg border border-outline-variant/15 bg-surface-container/80 px-3 py-2 text-left text-sm font-semibold text-on-surface focus:outline-none focus:ring-2 focus:ring-amber-500/35"
+                      aria-expanded={expandedCtaId === cta.id}
+                    >
+                      <span className="truncate">{cta.label.trim() || "CTA name"}</span>
+                      <ChevronDown
+                        className={cn(
+                          "h-4 w-4 shrink-0 text-zinc-400 transition-transform",
+                          expandedCtaId === cta.id ? "rotate-180" : "",
+                        )}
+                        aria-hidden
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => {
+                        setCtaLibrary((prev) => prev.filter((_, j) => j !== idx));
+                        setExpandedCtaId((prev) => (prev === cta.id ? null : prev));
+                      }}
+                      className="rounded-lg p-2 text-zinc-500 hover:bg-red-500/10 hover:text-red-500 disabled:opacity-50"
+                      aria-label="Remove CTA"
+                      title="Remove CTA"
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden />
+                    </button>
+                  </div>
+                  {expandedCtaId === cta.id ? (
+                    <div className="mt-3 rounded-lg border border-outline-variant/10 bg-surface-container/50 p-3">
+                      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_14rem]">
+                        <div>
+                          <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                            CTA name
+                          </label>
+                          <input
+                            value={cta.label}
+                            onChange={(e) => updateCta({ label: e.target.value })}
+                            disabled={disabled}
+                            placeholder="CTA name (e.g. Newsletter, Website, YouTube)"
+                            className="mt-1 w-full rounded-lg border border-outline-variant/15 bg-surface-container/80 px-3 py-2 text-sm font-semibold text-on-surface placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500/35 disabled:opacity-50"
+                          />
+                        </div>
+                        <div className="relative">
+                          <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                            CTA type
+                          </label>
+                          <button
+                            type="button"
+                            disabled={disabled}
+                            onClick={() =>
+                              setOpenCtaTypeId((prev) => (prev === cta.id ? null : cta.id))
+                            }
+                            className="mt-1 flex w-full items-center justify-between gap-3 rounded-lg border border-outline-variant/15 bg-surface-container/80 px-3 py-2 text-left text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-amber-500/35 disabled:opacity-50"
+                            aria-haspopup="listbox"
+                            aria-expanded={openCtaTypeId === cta.id}
+                          >
+                            <span className="truncate">
+                              {CTA_TYPES.find((t) => t.id === cta.type)?.label ?? "Other"}
+                            </span>
+                            <ChevronDown className="h-4 w-4 shrink-0 text-zinc-400" aria-hidden />
+                          </button>
+                          {openCtaTypeId === cta.id ? (
+                            <div
+                              className="absolute left-0 top-full z-40 mt-2 w-full overflow-hidden rounded-xl border border-outline-variant/15 bg-[#18181b] py-1 shadow-xl"
+                              role="listbox"
+                            >
+                              {CTA_TYPES.map((t) => {
+                                const active = t.id === cta.type;
+                                return (
+                                  <button
+                                    key={t.id}
+                                    type="button"
+                                    role="option"
+                                    aria-selected={active}
+                                    onClick={() => {
+                                      updateCta({ type: t.id });
+                                      setOpenCtaTypeId(null);
+                                    }}
+                                    className={cn(
+                                      "block w-full px-4 py-2.5 text-left text-sm transition-colors",
+                                      active
+                                        ? "bg-amber-500/15 text-amber-200"
+                                        : "text-zinc-200 hover:bg-white/[0.06]",
+                                    )}
+                                  >
+                                    {t.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                      <p className="mt-2 text-[11px] text-zinc-500">
+                        {CTA_TYPES.find((t) => t.id === cta.type)?.helper ?? ""}
+                      </p>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        <div>
+                          <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                            Destination
+                          </label>
+                          <input
+                            value={cta.destination}
+                            onChange={(e) => updateCta({ destination: e.target.value })}
+                            disabled={disabled}
+                            placeholder="https://… or a comment keyword"
+                            className="mt-1 w-full rounded-lg border border-outline-variant/15 bg-surface-container/80 px-3 py-2 text-sm text-on-surface placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500/35 disabled:opacity-50"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                            Traffic goal
+                          </label>
+                          <input
+                            value={cta.traffic_goal}
+                            onChange={(e) => updateCta({ traffic_goal: e.target.value })}
+                            disabled={disabled}
+                            placeholder="e.g. capture emails for the leadership newsletter"
+                            className="mt-1 w-full rounded-lg border border-outline-variant/15 bg-surface-container/80 px-3 py-2 text-sm text-on-surface placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500/35 disabled:opacity-50"
+                          />
+                        </div>
+                      </div>
+                      <div className="mt-3">
+                        <label className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                          Instructions for the AI <span className="font-normal normal-case">(optional)</span>
+                        </label>
+                        <textarea
+                          value={cta.instructions ?? ""}
+                          onChange={(e) =>
+                            updateCta({ instructions: e.target.value })
+                          }
+                          disabled={disabled}
+                          rows={2}
+                          placeholder="How to sell the click — e.g. ‘mention it as the natural next step for managers stuck in feedback loops’."
+                          className="mt-1 w-full resize-y rounded-lg border border-outline-variant/15 bg-surface-container/80 px-3 py-2 text-sm text-on-surface placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500/35 disabled:opacity-50"
+                        />
+                      </div>
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
+      {templatePickerOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Choose carousel template images"
+          onClick={closeTemplatePicker}
+        >
+          <div
+            className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-outline-variant/20 bg-zinc-50 shadow-2xl dark:bg-zinc-950"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-outline-variant/15 px-5 py-4">
+              <div>
+                <h3 className="text-sm font-semibold text-on-surface">Choose template images</h3>
+                <p className="mt-1 max-w-2xl text-xs leading-relaxed text-zinc-500">
+                  Select images in the order you want them to appear. The numbers show the
+                  carousel sequence that will be created.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeTemplatePicker}
+                className="rounded-lg px-2 py-1 text-xs font-semibold text-zinc-500 hover:bg-zinc-200/70 dark:hover:bg-white/10"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto p-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
+              <div className="min-h-0">
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+                  {clientImages.map((image) => {
+                    const selectedIndex = templatePickerSelection.indexOf(image.id);
+                    const selected = selectedIndex >= 0;
+                    const previewing = templatePickerPreview?.id === image.id;
+                    return (
+                      <button
+                        key={image.id}
+                        type="button"
+                        onClick={() => toggleTemplatePickerImage(image)}
+                        onMouseEnter={() => setTemplatePickerPreviewId(image.id)}
+                        className={cn(
+                          "group relative overflow-hidden rounded-xl border bg-black/10 text-left transition",
+                          selected
+                            ? "border-amber-500/70 ring-2 ring-amber-500/30"
+                            : "border-outline-variant/15 hover:border-amber-500/35",
+                          previewing && "border-amber-500/60",
+                        )}
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={image.file_url}
+                          alt={image.label ?? ""}
+                          className="aspect-[4/5] w-full object-cover transition-transform duration-200 group-hover:scale-[1.02]"
+                        />
+                        <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-2 pb-2 pt-8 text-[10px] font-medium text-white">
+                          {image.label ?? `Image ${image.id.slice(0, 6)}`}
+                        </span>
+                        {selected ? (
+                          <span className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-amber-500 text-xs font-black text-zinc-950 shadow-lg">
+                            {selectedIndex + 1}
+                          </span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <aside className="rounded-xl border border-outline-variant/15 bg-surface-container/70 p-3">
+                <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                  Preview
+                </p>
+                {templatePickerPreview ? (
+                  <>
+                    <div className="overflow-hidden rounded-lg border border-outline-variant/15 bg-black/10">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={templatePickerPreview.file_url}
+                        alt={templatePickerPreview.label ?? ""}
+                        className="aspect-[4/5] w-full object-cover"
+                      />
+                    </div>
+                    <p className="mt-2 text-xs font-semibold text-on-surface">
+                      {templatePickerPreview.label ?? `Image ${templatePickerPreview.id.slice(0, 6)}`}
+                    </p>
+                    <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
+                      Selected: {templatePickerSelection.length}. Click images to add or remove
+                      them from the carousel sequence.
+                    </p>
+                  </>
+                ) : (
+                  <p className="rounded-lg border border-dashed border-outline-variant/20 px-3 py-8 text-center text-xs text-zinc-500">
+                    Hover or click an image to preview it.
+                  </p>
+                )}
+              </aside>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-outline-variant/15 px-5 py-4">
+              <p className="text-xs text-zinc-500">
+                {templatePickerSelection.length > 0
+                  ? `${templatePickerSelection.length} image${templatePickerSelection.length === 1 ? "" : "s"} selected`
+                  : "Select at least one image to create a template."}
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={closeTemplatePicker}
+                  className="rounded-lg border border-outline-variant/20 px-3 py-2 text-xs font-semibold text-on-surface hover:bg-surface-container"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={templatePickerSelection.length === 0}
+                  onClick={createTemplateFromSelection}
+                  className="rounded-lg bg-amber-500 px-3 py-2 text-xs font-bold text-zinc-950 disabled:opacity-50"
+                >
+                  Accept selection
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {coverTemplatePickerOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Choose cover template image"
+          onClick={closeCoverTemplatePicker}
+        >
+          <div
+            className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-outline-variant/20 bg-zinc-50 shadow-2xl dark:bg-zinc-950"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-outline-variant/15 px-5 py-4">
+              <div>
+                <h3 className="text-sm font-semibold text-on-surface">Choose cover image</h3>
+                <p className="mt-1 max-w-2xl text-xs leading-relaxed text-zinc-500">
+                  Select one Media image to create a reusable cover/thumbnail template.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeCoverTemplatePicker}
+                className="rounded-lg px-2 py-1 text-xs font-semibold text-zinc-500 hover:bg-zinc-200/70 dark:hover:bg-white/10"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto p-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
+              <div className="min-h-0">
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+                  {clientImages.map((image) => {
+                    const selected = coverTemplatePickerSelection === image.id;
+                    const previewing = coverTemplatePickerPreview?.id === image.id;
+                    return (
+                      <button
+                        key={image.id}
+                        type="button"
+                        onClick={() => selectCoverTemplateImage(image)}
+                        onMouseEnter={() => setCoverTemplatePickerPreviewId(image.id)}
+                        className={cn(
+                          "group relative overflow-hidden rounded-xl border bg-black/10 text-left transition",
+                          selected
+                            ? "border-amber-500/70 ring-2 ring-amber-500/30"
+                            : "border-outline-variant/15 hover:border-amber-500/35",
+                          previewing && "border-amber-500/60",
+                        )}
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={image.file_url}
+                          alt={image.label ?? ""}
+                          className="aspect-[9/16] w-full object-cover transition-transform duration-200 group-hover:scale-[1.02]"
+                        />
+                        <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-2 pb-2 pt-8 text-[10px] font-medium text-white">
+                          {image.label ?? `Image ${image.id.slice(0, 6)}`}
+                        </span>
+                        {selected ? (
+                          <span className="absolute right-2 top-2 rounded-full bg-amber-500 px-2 py-1 text-[10px] font-black uppercase text-zinc-950 shadow-lg">
+                            Selected
+                          </span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <aside className="rounded-xl border border-outline-variant/15 bg-surface-container/70 p-3">
+                <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                  Preview
+                </p>
+                {coverTemplatePickerPreview ? (
+                  <>
+                    <div className="overflow-hidden rounded-lg border border-outline-variant/15 bg-black/10">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={coverTemplatePickerPreview.file_url}
+                        alt={coverTemplatePickerPreview.label ?? ""}
+                        className="aspect-[9/16] w-full object-cover"
+                      />
+                    </div>
+                    <p className="mt-2 text-xs font-semibold text-on-surface">
+                      {coverTemplatePickerPreview.label ?? `Image ${coverTemplatePickerPreview.id.slice(0, 6)}`}
+                    </p>
+                    <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
+                      Click an image to make it the single reference for this cover template.
+                    </p>
+                  </>
+                ) : (
+                  <p className="rounded-lg border border-dashed border-outline-variant/20 px-3 py-8 text-center text-xs text-zinc-500">
+                    Hover or click an image to preview it.
+                  </p>
+                )}
+              </aside>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-outline-variant/15 px-5 py-4">
+              <p className="text-xs text-zinc-500">
+                {coverTemplatePickerSelection
+                  ? "1 image selected"
+                  : "Select one image to create a template."}
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={closeCoverTemplatePicker}
+                  className="rounded-lg border border-outline-variant/20 px-3 py-2 text-xs font-semibold text-on-surface hover:bg-surface-container"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={!coverTemplatePickerSelection}
+                  onClick={createCoverTemplateFromSelection}
+                  className="rounded-lg bg-amber-500 px-3 py-2 text-xs font-bold text-zinc-950 disabled:opacity-50"
+                >
+                  Accept selection
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div
         className={cn(

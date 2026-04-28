@@ -243,7 +243,119 @@ def _apply_german_natural_polish(
     return out
 
 
-def _pack_client_row_for_llm(client_row: Dict[str, Any]) -> str:
+_CTA_TYPE_GUIDANCE = {
+    "website": (
+        "Drives traffic to a webpage (sales page, landing page, blog post). "
+        "Caption should make the link feel like the natural next step; reference "
+        "the link in the platform-native way (e.g. 'link in bio', 'tap the link below'). "
+        "Do not paste raw URLs into the script."
+    ),
+    "newsletter": (
+        "Drives email signups. Caption + on-screen CTA frame the VALUE of subscribing "
+        "(what the reader gets) — not just 'subscribe'. Match the destination if it "
+        "specifies a comment keyword for the lead magnet."
+    ),
+    "video": (
+        "Sends viewers to another video on the same account. CTA explains why the "
+        "next video is the logical continuation of THIS video's payoff."
+    ),
+    "lead_magnet": (
+        "Free resource, usually delivered via comment keyword. On-screen CTA should "
+        "show the keyword clearly; caption should tease the resource and tell the user "
+        "to comment the keyword."
+    ),
+    "booking": (
+        "Books a call / demo / consultation. Caption should qualify the right viewer "
+        "and point them to the booking link in the native way for the platform."
+    ),
+    "other": (
+        "Custom destination — follow the destination + traffic_goal fields literally."
+    ),
+}
+
+
+def _format_selected_cta_block(selected_cta: Optional[Dict[str, Any]]) -> str:
+    """Render the user-picked CTA as a strict prompt block.
+
+    The block tells the LLM to adapt the caption final CTA, the script ``## CTA``
+    section, ``text_blocks`` item 4 (visual reels), and the carousel final slide
+    so they all point at the same destination + traffic goal. Returns ``""`` if
+    no CTA was picked, so callers can keep the legacy OFFER_DOCUMENTATION path.
+    """
+
+    if not isinstance(selected_cta, dict):
+        return ""
+    label = str(selected_cta.get("label") or "").strip()
+    if not label:
+        return ""
+    cta_type = str(selected_cta.get("type") or "other").strip().lower() or "other"
+    destination = str(selected_cta.get("destination") or "").strip()
+    traffic_goal = str(selected_cta.get("traffic_goal") or "").strip()
+    instructions = str(selected_cta.get("instructions") or "").strip()
+    type_guidance = _CTA_TYPE_GUIDANCE.get(cta_type, _CTA_TYPE_GUIDANCE["other"])
+    lines = [
+        "\n=== SELECTED_CTA (user picked this destination before generating — every CTA in this reel must serve it) ===",
+        f"label: {label}",
+        f"type: {cta_type}",
+        f"destination: {destination or '(not specified)'}",
+        f"traffic_goal: {traffic_goal or '(not specified)'}",
+        f"type_guidance: {type_guidance}",
+    ]
+    if instructions:
+        lines.append(f"client_instructions: {instructions}")
+    lines.append(
+        "Use this block instead of OFFER_DOCUMENTATION-driven CTA inference for: "
+        "(a) the caption's final CTA, (b) the script ## CTA section, "
+        "(c) text_blocks item 4 / final visual CTA, and "
+        "(d) any carousel final-slide CTA. Keep wording native to the platform "
+        "(no raw URLs in script narration). When destination is a URL, refer to it "
+        "as the link in bio / link below / tap the link, not by spelling the URL out."
+    )
+    return "\n".join(lines)
+
+
+def _format_carousel_template_block(selected_carousel_template: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(selected_carousel_template, dict):
+        return ""
+    name = str(selected_carousel_template.get("name") or "").strip()
+    slides_raw = selected_carousel_template.get("slides")
+    if not name or not isinstance(slides_raw, list):
+        return ""
+    slides: List[Dict[str, Any]] = []
+    for raw in slides_raw:
+        if isinstance(raw, dict):
+            slides.append(raw)
+    if not slides:
+        return ""
+    slides.sort(key=lambda s: int(s.get("idx") or 0))
+    lines = [
+        "\n=== CAROUSEL_TEMPLATE (visual/story reference, not a fixed slide count) ===",
+        f"name: {name}",
+    ]
+    desc = str(selected_carousel_template.get("description") or "").strip()
+    if desc:
+        lines.append(f"description: {desc}")
+    lines.append(
+        "Reference images are visual references only. Generate NEW carousel slides; "
+        "do not copy or reuse the original media image as final output. The number "
+        "of reference slides does NOT determine the number of output slides."
+    )
+    for slide in slides[:10]:
+        idx = int(slide.get("idx") or 0)
+        role = str(slide.get("role") or "body").strip() or "body"
+        label = str(slide.get("reference_label") or "").strip()
+        instruction = str(slide.get("instruction") or "").strip()
+        lines.append(
+            f"- slide {idx + 1}: role={role}; reference={label or '(none)'}; "
+            f"instruction={instruction or '(use role only)'}"
+        )
+    return "\n".join(lines)
+
+
+def _pack_client_row_for_llm(
+    client_row: Dict[str, Any],
+    selected_cta: Optional[Dict[str, Any]] = None,
+) -> str:
     dna = client_row.get("client_dna") if isinstance(client_row.get("client_dna"), dict) else {}
     gen_brief = str(dna.get("generation_brief") or "").strip()
     voice_brief = str(dna.get("voice_brief") or "").strip()
@@ -273,6 +385,9 @@ def _pack_client_row_for_llm(client_row: Dict[str, Any]) -> str:
             "\n=== NICHE_BENCHMARKS (from tracked competitors) ===\n"
             + json.dumps(nb, ensure_ascii=False, default=str)[:4000]
         )
+    cta_block = _format_selected_cta_block(selected_cta)
+    if cta_block:
+        parts.append(cta_block)
     return "\n".join(parts)
 
 
@@ -470,6 +585,7 @@ def run_angle_generation(
     extra_instruction: Optional[str],
     adapt_single_reference_reel: bool = False,
     target_format_key: Optional[str] = None,
+    selected_cta: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     lang = _lang_instruction(str(client_row.get("language") or "de"))
     target_block = _target_format_block(target_format_key) if adapt_single_reference_reel else ""
@@ -511,8 +627,11 @@ def run_angle_generation(
         '  "draft_hook": string (one opening line in the output language),\n'
         '  "angle_role": string (optional; use "blueprint" for angle 1 only, "variant" for angles 2–5 when adapting one source reel)\n'
         "}\n\n"
-        f"CLIENT_CONTEXT:\n{_pack_client_row_for_llm(client_row)[:100_000]}\n\n"
-        f"PATTERNS_JSON:\n{json.dumps(synthesized_patterns, ensure_ascii=False)[:72_000]}\n"
+        "If a SELECTED_CTA is present in CLIENT_CONTEXT, every angle should leave a clean lane "
+        "for that destination + traffic_goal — pick situations where pointing at this CTA at the "
+        "end will feel native, not bolted on.\n\n"
+        f"CLIENT_CONTEXT:\n{_pack_client_row_for_llm(client_row, selected_cta)[:100_000]}\n\n"
+        f"PATTERNS_JSON:\n{json.dumps(synthesized_patterns, ensure_ascii=False)[:60_000]}\n"
     )
     if extra_instruction and extra_instruction.strip():
         user += f"\n\nEXTRA_FOCUS:\n{extra_instruction.strip()[:2000]}\n"
@@ -1034,6 +1153,7 @@ def run_content_package(
     source_format_key: Optional[str] = None,
     german_polish: GermanPolishMode = "full",
     adapt_single_reference_reel: bool = False,
+    selected_cta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     lang = _lang_instruction(str(client_row.get("language") or "de"))
     prev_note = ""
@@ -1089,13 +1209,23 @@ def run_content_package(
             "- Derive content from CHOSEN_ANGLE_JSON.situation + emotional_trigger; do NOT\n"
             "  summarize the script line by line.\n"
             "\n"
-            "CTA (item 4) — pick the style that fits OFFER_DOCUMENTATION:\n"
-            "- If OFFER_DOCUMENTATION clearly names a lead-magnet keyword (webinar, training,\n"
-            "  freebie, etc.) → comment-keyword CTA in the output language, e.g.\n"
-            "  \"👇 Schreib 'KEYWORD' für …\".\n"
-            "- Otherwise → caption-push CTA in the output language, e.g.\n"
-            "  \"Mehr dazu in der Caption ↓\", \"Der Teil, den niemand sagt ↓\",\n"
-            "  \"Wenn du das kennst, lies die Caption ↓\".\n"
+            "CTA (item 4) — anchor the visual CTA to the chosen destination:\n"
+            "- If a SELECTED_CTA block is present in CLIENT_CONTEXT, use it as the source\n"
+            "  of truth. Adapt phrasing to the type:\n"
+            "    • website → caption / link push, e.g. \"Der Plan ist verlinkt ↓\",\n"
+            "      \"Link in der Bio ↓\". Never paste raw URLs.\n"
+            "    • newsletter → frame the value of subscribing in 1 line, e.g.\n"
+            "      \"Hol dir den Brief ↓\". If destination is a comment keyword, use it.\n"
+            "    • lead_magnet → comment-keyword CTA in the output language, e.g.\n"
+            "      \"👇 Schreib 'KEYWORD' für …\".\n"
+            "    • video → tease the next video as the natural next step, e.g.\n"
+            "      \"Teil 2 wartet auf dich ↓\".\n"
+            "    • booking → push toward the booking link, e.g.\n"
+            "      \"Termin im Link ↓\".\n"
+            "    • other → follow destination + traffic_goal literally.\n"
+            "- If no SELECTED_CTA is present, fall back to OFFER_DOCUMENTATION:\n"
+            "  named lead-magnet keyword → comment-keyword CTA; otherwise caption-push CTA\n"
+            "  e.g. \"Mehr dazu in der Caption ↓\".\n"
             "- Never generic \"read more\" / \"swipe up\" / marketing-speak.\n"
             "\n"
             "FINAL CHECK before returning text_blocks:\n"
@@ -1234,12 +1364,15 @@ def run_content_package(
         "(3) Reframe / insight — the aha; "
         "(4) Consequence — why it matters if ignored; "
         "(5) Authority transition — solution direction without over-explaining; "
-        "(6) CTA — clear action (e.g. comment keyword for webinar/training) aligned with OFFER_DOCUMENTATION. "
+        "(6) CTA — clear action aligned with SELECTED_CTA (use its destination + traffic_goal; "
+        "match type guidance — e.g. native link push for website, value-of-subscribing line for newsletter, "
+        "comment keyword for lead_magnet). Fall back to OFFER_DOCUMENTATION-driven wording only when "
+        "no SELECTED_CTA block is present. "
         "Tone: direct, emotionally precise, psychologically sharp; slight provocation where it fits; "
         f"1–3 emojis max if natural. Final check: would this stop a scroll and make the ICP feel understood?{caption_src_tail}\n"
         "- hashtags: at most 5 entries, niche-relevant; align with NICHE_BENCHMARKS and PATTERNS_JSON when available.\n\n"
         f"{hard_script_rules}"
-        f"CLIENT_CONTEXT:\n{_pack_client_row_for_llm(client_row)[:100_000]}\n\n"
+        f"CLIENT_CONTEXT:\n{_pack_client_row_for_llm(client_row, selected_cta)[:100_000]}\n\n"
         f"PATTERNS_JSON:\n{json.dumps(synthesized_patterns, ensure_ascii=False)[:52_000]}\n\n"
         f"CHOSEN_ANGLE_JSON:\n{json.dumps(chosen_angle, ensure_ascii=False)[:8000]}\n"
         f"{prev_note}{fb}"
@@ -1293,6 +1426,7 @@ def run_regenerate(
     source_format_key: Optional[str] = None,
     current_text_blocks: Optional[List[Dict[str, Any]]] = None,
     adapt_single_reference_reel: bool = False,
+    selected_cta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Regenerate all or one facet; one LLM call, then merge by scope."""
     polish_for_scope: Dict[str, GermanPolishMode] = {
@@ -1323,6 +1457,7 @@ def run_regenerate(
         source_format_key=source_format_key,
         german_polish=german_polish,
         adapt_single_reference_reel=adapt_single_reference_reel,
+        selected_cta=selected_cta,
     )
     if scope == "all":
         return full
@@ -1556,6 +1691,8 @@ def run_carousel_slide_texts(
     hook_text: str,
     count: int = 6,
     feedback: Optional[str] = None,
+    selected_cta: Optional[Dict[str, Any]] = None,
+    selected_carousel_template: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """LLM: ``count`` slide lines for a carousel post (slide 1 = hook, last = CTA).
 
@@ -1580,6 +1717,23 @@ def run_carousel_slide_texts(
     )
 
     fb = f"\n\nFEEDBACK_FROM_HUMAN:\n{feedback.strip()[:2000]}\n" if feedback and feedback.strip() else ""
+    cta_block = _format_selected_cta_block(selected_cta)
+    cta_block_for_user = (
+        f"\n{cta_block}\n\nThe final slide MUST point at this destination + traffic_goal in a "
+        "platform-native way (link in bio, comment keyword, etc.); never paste raw URLs.\n"
+        if cta_block
+        else ""
+    )
+    template_block = _format_carousel_template_block(selected_carousel_template)
+    template_rules = (
+        f"{template_block}\n\n"
+        "TEMPLATE GUIDANCE: Use the CAROUSEL_TEMPLATE as a base style and story pattern. "
+        "If the requested output has more slides than the template, extend the pattern "
+        "naturally. If it has fewer slides, condense it. Always obey the requested output "
+        "slide count below.\n\n"
+        if template_block
+        else ""
+    )
     user = (
         f"{lang}\n\n"
         "You are an elite-level direct-response copywriter specialized in high-converting\n"
@@ -1595,6 +1749,7 @@ def run_carousel_slide_texts(
         f"Hook of the reel (slide-1 seed — you may rewrite it to fit a poster, but keep the same idea):\n- {hook_text.strip()[:300] or '(none — derive purely from the topic below)'}\n\n"
         "Topic (chosen angle — INTERNAL CONTEXT ONLY, not slide copy):\n"
         f"{angle_topic}\n\n"
+        f"{template_rules}"
         "Target Audience (ICP):\n"
         f"{gen_brief[:6000]}\n\n"
         f"CLIENT_VOICE_BRIEF (match this voice):\n{voice_brief[:4000] or '(none on file)'}\n\n"
@@ -1633,6 +1788,7 @@ def run_carousel_slide_texts(
         "If not, rewrite.\n\n"
         'OUTPUT (HARD): Return exactly this JSON shape, nothing else:\n'
         '{"slides": [string, string, ...]}  // length must equal ' + str(n) + "\n"
+        f"{cta_block_for_user}"
         f"{fb}"
     )
     data = chat_json_completion(

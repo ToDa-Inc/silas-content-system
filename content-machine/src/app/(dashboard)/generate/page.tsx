@@ -7,11 +7,14 @@ import { ChevronDown, ChevronUp, Loader2, Sparkles, Trash2 } from "lucide-react"
 import { ReelThumbnail } from "@/components/reel-thumbnail";
 import { useToast } from "@/components/ui/toast-provider";
 import { VideoCreateWorkspace } from "@/components/video-create-workspace";
-import type { ScrapedReelRow } from "@/lib/api";
+import type { ClientCarouselTemplate, ClientCoverTemplate, ClientCta, ScrapedReelRow } from "@/lib/api";
 import { formatCommentViewPct } from "@/lib/reel-comment-view";
 import {
   clientApiContext,
   fetchAdaptPreviewReels,
+  fetchClientCarouselTemplates,
+  fetchClientCoverTemplates,
+  fetchClientCtaLibrary,
   fetchFormatDigests,
   generateAutoVideoIdea,
   generationChooseAngle,
@@ -46,6 +49,228 @@ function isLikelyInstagramReelUrl(s: string): boolean {
 
 /** Formats we want users to choose from in the unified flow. */
 const ALLOWED_VIDEO_FORMATS = new Set(["text_overlay", "talking_head", "carousel"]);
+
+const CTA_TYPE_LABEL: Record<string, string> = {
+  website: "Website",
+  newsletter: "Newsletter",
+  video: "Video",
+  lead_magnet: "Lead magnet",
+  booking: "Booking",
+  other: "Other",
+};
+
+/** Picker shown right under the format selector. The chosen CTA is snapshotted
+ *  onto the new generation session so caption / script / on-screen CTA all
+ *  adapt to the same destination + traffic goal. */
+function CtaPicker({
+  library,
+  selectedId,
+  onSelect,
+}: {
+  library: ClientCta[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-[10px] font-bold uppercase tracking-wider text-app-fg-subtle">
+          CTA <span className="font-normal text-app-fg-muted">(required)</span>
+        </p>
+        <Link
+          href="/context"
+          className="text-[11px] font-semibold text-amber-600 hover:underline dark:text-amber-400"
+        >
+          Edit CTAs →
+        </Link>
+      </div>
+      <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="CTA">
+        {library.map((cta) => {
+          const active = selectedId === cta.id;
+          const typeLabel = CTA_TYPE_LABEL[cta.type] ?? cta.type;
+          return (
+            <button
+              key={cta.id}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              title={
+                cta.traffic_goal
+                  ? `${typeLabel} · ${cta.traffic_goal}`
+                  : typeLabel
+              }
+              onClick={() => onSelect(cta.id)}
+              className={`rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${
+                active
+                  ? "border-amber-500/50 bg-amber-500/10 text-app-fg"
+                  : "border-app-divider bg-app-chip-bg/40 text-app-fg-muted hover:bg-app-chip-bg/70"
+              }`}
+            >
+              {cta.label}
+              <span className="ml-1.5 font-normal text-app-fg-subtle">· {typeLabel}</span>
+            </button>
+          );
+        })}
+      </div>
+      <p className="mt-2 text-[11px] leading-relaxed text-app-fg-muted">
+        Caption, script, and on-screen CTA will adapt to this destination and traffic goal.
+      </p>
+    </div>
+  );
+}
+
+function CtaPickerEmpty() {
+  return (
+    <div className="rounded-xl border border-dashed border-app-divider bg-app-chip-bg/20 p-3 text-[11px] leading-relaxed text-app-fg-muted">
+      No CTAs configured yet.{" "}
+      <Link
+        href="/context"
+        className="font-semibold text-amber-600 hover:underline dark:text-amber-400"
+      >
+        Add one in Context
+      </Link>{" "}
+      so generated reels can drive traffic. We&apos;ll fall back to a generic CTA otherwise.
+    </div>
+  );
+}
+
+function CarouselTemplatePicker({
+  templates,
+  selectedId,
+  onSelect,
+}: {
+  templates: ClientCarouselTemplate[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-[10px] font-bold uppercase tracking-wider text-app-fg-subtle">
+          Carousel template <span className="font-normal text-app-fg-muted">(required)</span>
+        </p>
+        <Link
+          href="/context"
+          className="text-[11px] font-semibold text-amber-600 hover:underline dark:text-amber-400"
+        >
+          Edit templates →
+        </Link>
+      </div>
+      <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Carousel template">
+        {templates.map((template) => {
+          const active = selectedId === template.id;
+          return (
+            <button
+              key={template.id}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              title={template.description ?? undefined}
+              onClick={() => onSelect(template.id)}
+              className={`rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${
+                active
+                  ? "border-amber-500/50 bg-amber-500/10 text-app-fg"
+                  : "border-app-divider bg-app-chip-bg/40 text-app-fg-muted hover:bg-app-chip-bg/70"
+              }`}
+            >
+              {template.name}
+              <span className="ml-1.5 font-normal text-app-fg-subtle">
+                · {template.slides.length} slides
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <p className="mt-2 text-[11px] leading-relaxed text-app-fg-muted">
+        The AI will adapt your new idea into this reference sequence and generate new slides.
+      </p>
+    </div>
+  );
+}
+
+function CarouselTemplatePickerEmpty() {
+  return (
+    <div className="rounded-xl border border-dashed border-app-divider bg-app-chip-bg/20 p-3 text-[11px] leading-relaxed text-app-fg-muted">
+      No carousel templates configured yet.{" "}
+      <Link
+        href="/context"
+        className="font-semibold text-amber-600 hover:underline dark:text-amber-400"
+      >
+        Add one in Context
+      </Link>{" "}
+      to guide carousel structure from Media references.
+    </div>
+  );
+}
+
+function CoverTemplatePicker({
+  templates,
+  selectedId,
+  onSelect,
+}: {
+  templates: ClientCoverTemplate[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-[10px] font-bold uppercase tracking-wider text-app-fg-subtle">
+          Cover template <span className="font-normal text-app-fg-muted">(required)</span>
+        </p>
+        <Link
+          href="/context"
+          className="text-[11px] font-semibold text-amber-600 hover:underline dark:text-amber-400"
+        >
+          Edit templates →
+        </Link>
+      </div>
+      <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Cover template">
+        {templates.map((template) => {
+          const active = selectedId === template.id;
+          return (
+            <button
+              key={template.id}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              title={template.instruction || template.reference_label || undefined}
+              onClick={() => onSelect(template.id)}
+              className={`rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${
+                active
+                  ? "border-amber-500/50 bg-amber-500/10 text-app-fg"
+                  : "border-app-divider bg-app-chip-bg/40 text-app-fg-muted hover:bg-app-chip-bg/70"
+              }`}
+            >
+              {template.name}
+              <span className="ml-1.5 font-normal text-app-fg-subtle">
+                · {template.reference_label ?? "1 image"}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <p className="mt-2 text-[11px] leading-relaxed text-app-fg-muted">
+        The cover workspace will preload this Media image as the thumbnail source.
+      </p>
+    </div>
+  );
+}
+
+function CoverTemplatePickerEmpty() {
+  return (
+    <div className="rounded-xl border border-dashed border-app-divider bg-app-chip-bg/20 p-3 text-[11px] leading-relaxed text-app-fg-muted">
+      No cover/thumbnail templates configured yet.{" "}
+      <Link
+        href="/context"
+        className="font-semibold text-amber-600 hover:underline dark:text-amber-400"
+      >
+        Add one in Context
+      </Link>{" "}
+      to preload cover creation from Media references.
+    </div>
+  );
+}
 
 function str(v: unknown): string {
   return typeof v === "string" ? v : v != null ? String(v) : "";
@@ -673,6 +898,13 @@ export default function GeneratePage() {
   const [extraInstruction, setExtraInstruction] = useState("");
   const [focusNoteOpen, setFocusNoteOpen] = useState(false);
   const [formatDigests, setFormatDigests] = useState<FormatDigestSummary[]>([]);
+  const [ctaLibrary, setCtaLibrary] = useState<ClientCta[]>([]);
+  /** User-selected CTA for the next generation. Required only if the client has CTAs. */
+  const [selectedCtaId, setSelectedCtaId] = useState<string | null>(null);
+  const [carouselTemplates, setCarouselTemplates] = useState<ClientCarouselTemplate[]>([]);
+  const [selectedCarouselTemplateId, setSelectedCarouselTemplateId] = useState<string | null>(null);
+  const [coverTemplates, setCoverTemplates] = useState<ClientCoverTemplate[]>([]);
+  const [selectedCoverTemplateId, setSelectedCoverTemplateId] = useState<string | null>(null);
   const [adaptPreviewRows, setAdaptPreviewRows] = useState<ScrapedReelRow[]>([]);
   const [adaptPreviewLoading, setAdaptPreviewLoading] = useState(false);
   const [adaptPreviewError, setAdaptPreviewError] = useState<string | null>(null);
@@ -715,15 +947,37 @@ export default function GeneratePage() {
     void (async () => {
       const ctx = await refreshContext();
       if (!ctx.clientSlug || !ctx.orgSlug) return;
-      const [listRes, digRes] = await Promise.all([
+      const [listRes, digRes, ctaRes, templateRes, coverTemplateRes] = await Promise.all([
         generationListSessions(ctx.clientSlug, ctx.orgSlug, 15),
         fetchFormatDigests(ctx.clientSlug, ctx.orgSlug, false),
+        fetchClientCtaLibrary(ctx.clientSlug, ctx.orgSlug),
+        fetchClientCarouselTemplates(ctx.clientSlug, ctx.orgSlug),
+        fetchClientCoverTemplates(ctx.clientSlug, ctx.orgSlug),
       ]);
       if (listRes.ok) setSessions(listRes.data);
       if (digRes.ok) {
         setFormatDigests(digRes.data);
       } else {
         show(digRes.error, "error");
+      }
+      if (ctaRes.ok) {
+        setCtaLibrary(ctaRes.data);
+        // Auto-select the only CTA if the user has exactly one configured.
+        if (ctaRes.data.length === 1) {
+          setSelectedCtaId(ctaRes.data[0].id);
+        }
+      }
+      if (templateRes.ok) {
+        setCarouselTemplates(templateRes.data);
+        if (templateRes.data.length === 1) {
+          setSelectedCarouselTemplateId(templateRes.data[0].id);
+        }
+      }
+      if (coverTemplateRes.ok) {
+        setCoverTemplates(coverTemplateRes.data);
+        if (coverTemplateRes.data.length === 1) {
+          setSelectedCoverTemplateId(coverTemplateRes.data[0].id);
+        }
       }
     })();
   }, [refreshContext, show]);
@@ -826,6 +1080,14 @@ export default function GeneratePage() {
       show("No workspace client — finish onboarding.", "error");
       return;
     }
+    if (ctaLibrary.length > 0 && !selectedCtaId) {
+      show("Pick a CTA below the format selector first.", "error");
+      return;
+    }
+    const selectedCta =
+      selectedCtaId !== null
+        ? ctaLibrary.find((c) => c.id === selectedCtaId) ?? null
+        : null;
     const raw = composerInput.trim();
     const extra = extraInstruction.trim() || undefined;
     setLoading(true);
@@ -896,6 +1158,33 @@ export default function GeneratePage() {
         };
       }
 
+      if (selectedCta) {
+        body = { ...body, selected_cta: selectedCta };
+      }
+      const startsCarousel = body.format_key === "carousel";
+      const needsCoverTemplate = !startsCarousel && coverTemplates.length > 0;
+      if (startsCarousel && carouselTemplates.length > 0 && !selectedCarouselTemplateId) {
+        show("Pick a carousel template below the format selector first.", "error");
+        return;
+      }
+      if (needsCoverTemplate && !selectedCoverTemplateId) {
+        show("Pick a cover template below the format selector first.", "error");
+        return;
+      }
+      if (startsCarousel && selectedCarouselTemplateId) {
+        const selectedTemplate =
+          carouselTemplates.find((template) => template.id === selectedCarouselTemplateId) ?? null;
+        if (selectedTemplate) {
+          body = { ...body, selected_carousel_template: selectedTemplate };
+        }
+      }
+      if (needsCoverTemplate && selectedCoverTemplateId) {
+        const selectedTemplate =
+          coverTemplates.find((template) => template.id === selectedCoverTemplateId) ?? null;
+        if (selectedTemplate) {
+          body = { ...body, selected_cover_template: selectedTemplate };
+        }
+      }
       const res = await generationStart(ctx.clientSlug, ctx.orgSlug, body);
       if (!res.ok) {
         show(res.error, "error");
@@ -911,11 +1200,17 @@ export default function GeneratePage() {
     }
   }, [
     composerInput,
+    carouselTemplates,
+    coverTemplates,
+    ctaLibrary,
     extraInstruction,
     formatPreset,
     mode,
     recreateFormat,
     refreshContext,
+    selectedCtaId,
+    selectedCarouselTemplateId,
+    selectedCoverTemplateId,
     show,
   ]);
 
@@ -1120,6 +1415,36 @@ export default function GeneratePage() {
                       a fresh idea) when the box is empty.
                     </p>
                   </div>
+
+                  {formatPreset === "carousel" ? (
+                    carouselTemplates.length > 0 ? (
+                      <CarouselTemplatePicker
+                        templates={carouselTemplates}
+                        selectedId={selectedCarouselTemplateId}
+                        onSelect={setSelectedCarouselTemplateId}
+                      />
+                    ) : (
+                      <CarouselTemplatePickerEmpty />
+                    )
+                  ) : coverTemplates.length > 0 ? (
+                    <CoverTemplatePicker
+                      templates={coverTemplates}
+                      selectedId={selectedCoverTemplateId}
+                      onSelect={setSelectedCoverTemplateId}
+                    />
+                  ) : (
+                    <CoverTemplatePickerEmpty />
+                  )}
+
+                  {ctaLibrary.length > 0 ? (
+                    <CtaPicker
+                      library={ctaLibrary}
+                      selectedId={selectedCtaId}
+                      onSelect={setSelectedCtaId}
+                    />
+                  ) : (
+                    <CtaPickerEmpty />
+                  )}
                 </>
               ) : (
                 <>
@@ -1194,6 +1519,38 @@ export default function GeneratePage() {
                         : "Pick a target format — Auto keeps the source's, the others re-format the same idea."}
                     </p>
                   </div>
+
+                  {recreateFormat === "carousel" ? (
+                    carouselTemplates.length > 0 ? (
+                      <CarouselTemplatePicker
+                        templates={carouselTemplates}
+                        selectedId={selectedCarouselTemplateId}
+                        onSelect={setSelectedCarouselTemplateId}
+                      />
+                    ) : (
+                      <CarouselTemplatePickerEmpty />
+                    )
+                  ) : recreateFormat ? (
+                    coverTemplates.length > 0 ? (
+                      <CoverTemplatePicker
+                        templates={coverTemplates}
+                        selectedId={selectedCoverTemplateId}
+                        onSelect={setSelectedCoverTemplateId}
+                      />
+                    ) : (
+                      <CoverTemplatePickerEmpty />
+                    )
+                  ) : null}
+
+                  {ctaLibrary.length > 0 ? (
+                    <CtaPicker
+                      library={ctaLibrary}
+                      selectedId={selectedCtaId}
+                      onSelect={setSelectedCtaId}
+                    />
+                  ) : (
+                    <CtaPickerEmpty />
+                  )}
 
                   <div className="rounded-xl border border-app-divider bg-app-chip-bg/25 p-4">
                     <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">

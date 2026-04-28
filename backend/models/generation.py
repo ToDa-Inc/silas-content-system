@@ -1,6 +1,72 @@
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+from models.video_spec import VideoSpecAppearance, VideoSpecLayout, VideoTemplateId, VideoThemeId
+
+
+class SelectedCta(BaseModel):
+    """Snapshot of the CTA the user picked under the format selector.
+
+    Stored on each ``generation_sessions`` row so old sessions stay stable even
+    if the client later edits their CTA library in Context.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(..., min_length=1, max_length=64)
+    label: str = Field(..., min_length=1, max_length=120)
+    type: Literal[
+        "website",
+        "newsletter",
+        "video",
+        "lead_magnet",
+        "booking",
+        "other",
+    ] = "other"
+    destination: str = Field("", max_length=2048)
+    traffic_goal: str = Field("", max_length=500)
+    instructions: Optional[str] = Field(None, max_length=1000)
+
+
+class SelectedCarouselTemplateSlide(BaseModel):
+    """One slide in a snapshotted carousel template sequence.
+
+    Reference images come from the client Media library and guide the generated
+    slide visually; they are not reused as the final slide pixels.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    idx: int = Field(..., ge=0, le=9)
+    role: Literal["cover", "body", "screenshot", "quote", "cta", "other"] = "body"
+    reference_image_id: Optional[str] = Field(None, max_length=64)
+    reference_image_url: Optional[str] = Field(None, max_length=2048)
+    reference_label: Optional[str] = Field(None, max_length=200)
+    instruction: str = Field("", max_length=800)
+
+
+class SelectedCarouselTemplate(BaseModel):
+    """Snapshot of the carousel template picked before session generation."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(..., min_length=1, max_length=64)
+    name: str = Field(..., min_length=1, max_length=120)
+    description: Optional[str] = Field(None, max_length=500)
+    slides: List[SelectedCarouselTemplateSlide] = Field(..., min_length=1, max_length=10)
+
+
+class SelectedCoverTemplate(BaseModel):
+    """Snapshot of the cover/thumbnail template picked before generation."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(..., min_length=1, max_length=64)
+    name: str = Field(..., min_length=1, max_length=120)
+    reference_image_id: str = Field(..., min_length=1, max_length=64)
+    reference_image_url: Optional[str] = Field(None, max_length=2048)
+    reference_label: Optional[str] = Field(None, max_length=200)
+    instruction: str = Field("", max_length=800)
 
 
 class GenerationStartBody(BaseModel):
@@ -45,6 +111,30 @@ class GenerationStartBody(BaseModel):
         max_length=16_000,
         description="English talking-head script to adapt (script_adapt).",
     )
+    selected_cta: Optional[SelectedCta] = Field(
+        None,
+        description=(
+            "User-picked CTA from the client's CTA library. Snapshotted onto the "
+            "session so caption / script / on-screen CTA stay coherent even if the "
+            "library is later edited."
+        ),
+    )
+    selected_carousel_template: Optional[SelectedCarouselTemplate] = Field(
+        None,
+        description=(
+            "User-picked carousel template from Context. Snapshotted onto carousel "
+            "sessions so slide order and visual references stay stable even if the "
+            "template is later edited."
+        ),
+    )
+    selected_cover_template: Optional[SelectedCoverTemplate] = Field(
+        None,
+        description=(
+            "User-picked cover/thumbnail template from Context. Snapshotted onto "
+            "sessions so the cover reference image and instructions stay stable even "
+            "if the template is later edited."
+        ),
+    )
 
 
 class GenerationRecommendFormatBody(BaseModel):
@@ -77,6 +167,11 @@ class GenerationFeedbackBody(BaseModel):
 class GenerateThumbnailBody(BaseModel):
     """Optional override for the text rendered on the reel cover."""
     hook_text: Optional[str] = Field(None, max_length=500)
+    template_id: VideoTemplateId = "centered-pop"
+    theme_id: VideoThemeId = "bold-modern"
+    text_treatment: Optional[Literal["bold-outline"]] = None
+    layout: Optional[VideoSpecLayout] = None
+    appearance: Optional[VideoSpecAppearance] = None
 
 
 class ComposeThumbnailBody(BaseModel):
@@ -86,6 +181,13 @@ class ComposeThumbnailBody(BaseModel):
     # Whether to apply the editorial wash (desaturate + white blend) before drawing text.
     # Default True keeps the same look as the AI cover; pass False to keep original colours.
     wash: bool = True
+    crop_y: float = Field(0.5, ge=0.0, le=1.0)
+    zoom: float = Field(1.0, ge=1.0, le=2.0)
+    template_id: VideoTemplateId = "centered-pop"
+    theme_id: VideoThemeId = "bold-modern"
+    text_treatment: Optional[Literal["bold-outline"]] = None
+    layout: Optional[VideoSpecLayout] = None
+    appearance: Optional[VideoSpecAppearance] = None
 
 
 class CarouselSlide(BaseModel):
@@ -177,6 +279,9 @@ class GenerationSessionOut(BaseModel):
     render_progress_pct: Optional[int] = None
     thumbnail_url: Optional[str] = None
     carousel_slides: Optional[List[CarouselSlide]] = None
+    selected_cta: Optional[Dict[str, Any]] = None
+    selected_carousel_template: Optional[Dict[str, Any]] = None
+    selected_cover_template: Optional[Dict[str, Any]] = None
     status: str
     feedback: Optional[str] = None
     prompt_version: Optional[str] = None

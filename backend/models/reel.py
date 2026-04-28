@@ -131,6 +131,7 @@ class ReelMetricsSeriesOut(BaseModel):
     post_url: Optional[str] = None
     thumbnail_url: Optional[str] = None
     hook_text: Optional[str] = None
+    posted_at: Optional[str] = None
     points: List[MetricPoint] = Field(default_factory=list)
     competitor_id: Optional[str] = None
     """NULL = client's own reel; set when reel is from a tracked competitor."""
@@ -145,9 +146,18 @@ class ReelMetricsSeriesOut(BaseModel):
 
 
 class ReelMetricsListOut(BaseModel):
-    """GET …/reels/metrics — multiple own reels (compare / dashboard)."""
+    """GET …/reels/metrics — multiple own reels (compare / dashboard).
+
+    Pagination fields describe the page of own reels returned (sorted by
+    posted_at desc). When the caller passes explicit `reel_ids` instead, the
+    pagination fields still describe what was returned (one page = the ids).
+    """
 
     reels: List[ReelMetricsSeriesOut] = Field(default_factory=list)
+    total: int = 0
+    limit: int = 0
+    offset: int = 0
+    has_more: bool = False
 
 
 class ScrapedReelOut(BaseModel):

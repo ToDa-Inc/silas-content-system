@@ -8,9 +8,8 @@
 import type { VideoSpec } from "@/lib/video-spec";
 
 // Mirrors backend services/video_spec_timeline.py — keep both in sync. 5s per
-// pause is plenty; the real ceiling is the spec's ``totalSec`` (≤ 120s).
+// pause is plenty; the real ceiling is the spec's ``totalSec`` (≤ 600s).
 const GAP_MAX = 5.0;
-const MIN_HOOK = 1.0;
 const MIN_BLOCK = 1.0;
 
 export function clampGap(g: number): number {

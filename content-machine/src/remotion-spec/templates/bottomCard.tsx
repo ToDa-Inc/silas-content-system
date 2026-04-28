@@ -6,38 +6,28 @@ import { blockEntranceStyle } from '../animations';
 import { flexAlignForTextAlign } from '../alignLayout';
 import { resolveLayoutPx } from '../layout';
 import { cardBoldOutlineCaptionStyle, isBoldOutlineTreatment } from '../textTreatment';
+import { activeCaptionLayers, type ActiveCaptionLayer } from '../activeLayers';
 
 export default function BottomCardTemplate({ spec, frame, fps }: VideoSpecWithTimeline) {
   const sec = frame / fps;
   const theme = resolveAppearance(spec);
   const layout = resolveLayoutPx(spec);
-  const hookDur = spec.hook.durationSec;
-  const showHook = sec < hookDur;
-
-  const inWindow = spec.blocks.filter((b) => sec >= b.startSec && sec < b.endSec);
-  const activeBlock = [...inWindow].sort((a, b) => b.startSec - a.startSec)[0];
-
-  const activeText = showHook ? spec.hook.text : activeBlock?.text;
-  const isCTA = !showHook && !!activeBlock?.isCTA;
-  const startFrame = showHook ? 0 : Math.round((activeBlock?.startSec ?? 0) * fps);
-  const anim = (showHook ? 'fade' : activeBlock?.animation ?? 'fade') as
-    | 'pop'
-    | 'fade'
-    | 'slide-up'
-    | 'none';
-  const animStyle = blockEntranceStyle(frame, fps, startFrame, anim);
-
+  const layers = activeCaptionLayers(spec, sec);
   const baseSize = 60;
-  const ctaScaled = isCTA ? Math.round(baseSize * theme.ctaScale) : baseSize;
-  const fontSize = Math.round(ctaScaled * layout.scale);
 
   const anchor = layout.verticalAnchor;
   const pad = '160px';
   const ta = layout.textAlign;
   const rowAlign = flexAlignForTextAlign(ta);
 
-  const textShell = activeText ? (
+  const textShell = (layer: ActiveCaptionLayer) => {
+    const startFrame = Math.round(layer.startSec * fps);
+    const animStyle = blockEntranceStyle(frame, fps, startFrame, layer.animation);
+    const ctaScaled = layer.isCTA ? Math.round(baseSize * theme.ctaScale) : baseSize;
+    const fontSize = Math.round(ctaScaled * layout.scale);
+    return (
     <div
+      key={layer.key}
       style={{
         display: 'inline-block',
         backgroundColor: theme.cardBg === 'transparent' ? '#ffffff' : theme.cardBg,
@@ -65,25 +55,27 @@ export default function BottomCardTemplate({ spec, frame, fps }: VideoSpecWithTi
           textAlign: ta,
         }}
       >
-        {activeText}
+        {layer.text}
       </p>
     </div>
-  ) : null;
+    );
+  };
 
-  const textRow = activeText ? (
+  const textRow = layers.length > 0 ? (
     <div
       style={{
         display: 'flex',
         flexDirection: 'column',
         alignItems: rowAlign,
+        gap: layout.stackGapPx,
         width: '100%',
       }}
     >
-      {textShell}
+      {layers.map((layer) => textShell(layer))}
     </div>
   ) : null;
 
-  const bottomGradient = activeText ? (
+  const bottomGradient = layers.length > 0 ? (
     <div
       style={{
         position: 'absolute',
@@ -97,7 +89,7 @@ export default function BottomCardTemplate({ spec, frame, fps }: VideoSpecWithTi
     />
   ) : null;
 
-  const centerVignette = activeText ? (
+  const centerVignette = layers.length > 0 ? (
     <AbsoluteFill
       style={{
         background: 'radial-gradient(ellipse at center, rgba(0,0,0,0.15) 0%, rgba(0,0,0,0.45) 100%)',
@@ -106,7 +98,7 @@ export default function BottomCardTemplate({ spec, frame, fps }: VideoSpecWithTi
     />
   ) : null;
 
-  const topGradient = activeText ? (
+  const topGradient = layers.length > 0 ? (
     <div
       style={{
         position: 'absolute',

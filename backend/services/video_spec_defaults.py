@@ -265,6 +265,25 @@ def video_spec_to_text_blocks(spec: VideoSpecV1) -> List[Dict[str, Any]]:
     return [{"text": b.text, "isCTA": b.isCTA} for b in spec.blocks]
 
 
+def _text_blocks_match_spec(spec: VideoSpecV1, rows: List[Dict[str, Any]]) -> bool:
+    cleaned: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        text = str(row.get("text") or "").strip()
+        if text:
+            cleaned.append({"text": text[:500], "isCTA": bool(row.get("isCTA"))})
+    if len(cleaned) != len(spec.blocks):
+        return False
+    for i, row in enumerate(cleaned):
+        b = spec.blocks[i]
+        if str(b.text or "").strip() != row["text"]:
+            return False
+        if bool(b.isCTA) != row["isCTA"]:
+            return False
+    return True
+
+
 def merge_primary_hook_into_hooks_array(
     existing_hooks: Any,
     hook_text: str,
@@ -450,12 +469,17 @@ def finalize_spec_for_render(
     client_id = str(session.get("client_id") or "").strip()
     clip_id = str(session.get("broll_clip_id") or "").strip()
     dur = fetch_broll_duration_sec(supabase, client_id, clip_id) if supabase else None
+    stored_spec = parse_video_spec(session.get("video_spec"))
+    has_stored_spec = stored_spec is not None
     spec = ensure_video_spec(session, client_row=client_row, broll_duration_sec=dur)
+    preserve_explicit_windows = False
     tb = session.get("text_blocks")
     if isinstance(tb, list):
         rows = [x for x in tb if isinstance(x, dict)]
         if rows:
-            spec = merge_text_blocks_into_spec(spec, rows, language=lang)
+            preserve_explicit_windows = has_stored_spec and _text_blocks_match_spec(spec, rows)
+            if not preserve_explicit_windows:
+                spec = merge_text_blocks_into_spec(spec, rows, language=lang)
     ht = _session_hook_text(session)
     if ht:
         spec = spec.model_copy(update={"hook": spec.hook.model_copy(update={"text": ht[:500]})})
@@ -475,10 +499,12 @@ def finalize_spec_for_render(
         spec = spec.model_copy(
             update={"background": spec.background.model_copy(update={"durationSec": None})}
         )
-    spec = relayout_spec(spec)
+    if not preserve_explicit_windows:
+        spec = relayout_spec(spec)
     # Rows written before ``duration_s`` was populated still have null durationSec
     # in JSON — probe clip URL / background URL so relayout cap can run.
-    spec = hydrate_video_spec_broll_duration_if_needed(spec, session, supabase)
+    if not preserve_explicit_windows:
+        spec = hydrate_video_spec_broll_duration_if_needed(spec, session, supabase)
     return apply_live_session_fields(spec, session)
 
 

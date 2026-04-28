@@ -13,6 +13,8 @@ export type OwnReelsMetricsSeries = {
   post_url?: string | null;
   thumbnail_url?: string | null;
   hook_text?: string | null;
+  /** Reel publication date (scraped_reels.posted_at). Used for posted-date filters. */
+  posted_at?: string | null;
   points: OwnReelsMetricPoint[];
   /** Present on GET …/reels/{reel_id}/metrics and list; null = own reel. */
   competitor_id?: string | null;
@@ -28,6 +30,14 @@ export type OwnReelsMetricsSeries = {
 
 export type OwnReelsMetricsResponse = {
   reels: OwnReelsMetricsSeries[];
+  /** Total own reels matching the posted-date filter (server-side). */
+  total: number;
+  /** Effective page size returned by the server. */
+  limit: number;
+  /** Effective offset returned by the server. */
+  offset: number;
+  /** Server hint: another page of older reels exists. */
+  has_more: boolean;
 };
 
 export type ReelAnalysisSummary = {

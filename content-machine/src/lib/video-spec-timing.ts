@@ -62,15 +62,15 @@ export function autoHookDurationSec(): number {
   return 3.0;
 }
 
-/** Hard floors on what's actually readable / looks intentional. Shorter than
- *  ~1s reads as a glitch; longer than ~8s is dead air in a Reel. */
-export const MIN_BLOCK_SEC = 1.0;
-export const MAX_BLOCK_SEC = 8.0;
+/** Manual layer edits stay nearly free-form; the only ceiling mirrors the
+ *  backend model/background probe cap. Auto-generated durations remain shorter. */
+export const MIN_BLOCK_SEC = 0.05;
+export const MAX_BLOCK_SEC = 600.0;
 const MIN_AUTO_SEC = 1.4;
 const MAX_AUTO_SEC = 4.5;
-/** Min visible hook. Backend enforces hook.durationSec >= 0.5 implicitly via totalSec validator. */
-const MIN_HOOK_SEC = 1.0;
-const MAX_HOOK_SEC = 6.0;
+/** Layer editor allows the user to stretch text across the full composition. */
+const MIN_HOOK_SEC = 0.05;
+const MAX_HOOK_SEC = 600.0;
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
@@ -89,8 +89,7 @@ export function segmentDurationSec(spec: VideoSpec, segmentId: string): number {
   return b ? b.endSec - b.startSec : 0;
 }
 
-/** Min/max range for a segment's duration slider. Hook range differs from
- *  block range — hooks need a beat but capping at 6s prevents drag-out. */
+/** Min/max range for a segment's duration slider. */
 export function segmentDurationRange(segmentId: string): { min: number; max: number } {
   if (segmentId === "hook") return { min: MIN_HOOK_SEC, max: MAX_HOOK_SEC };
   return { min: MIN_BLOCK_SEC, max: MAX_BLOCK_SEC };

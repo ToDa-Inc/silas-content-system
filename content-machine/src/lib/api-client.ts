@@ -5,10 +5,25 @@ import type {
   OwnReelsMetricsSeries,
   ReelAnalysisDetail,
 } from "@/lib/reel-types";
-import type { ClientRow, ReelsListSortBy, ScrapedReelRow } from "@/lib/api";
+import type {
+  ClientCarouselTemplate,
+  ClientCarouselTemplateSlide,
+  ClientCarouselTemplateSlideRole,
+  ClientCoverTemplate,
+  ClientRow,
+  ClientCta,
+  ReelsListSortBy,
+  ScrapedReelRow,
+} from "@/lib/api";
+
+/** Snapshot of a ClientCta sent to the backend on session start and stored
+ *  on the session. Mirrors `backend/models/generation.py::SelectedCta`. */
+export type SelectedCtaPayload = ClientCta;
+export type SelectedCarouselTemplatePayload = ClientCarouselTemplate;
+export type SelectedCoverTemplatePayload = ClientCoverTemplate;
 import { getContentApiBase } from "@/lib/env";
 import type { Operation } from "fast-json-patch";
-import type { VideoSpec } from "@/lib/video-spec";
+import type { VideoSpec, VideoSpecAppearance, VideoSpecLayout } from "@/lib/video-spec";
 
 /** FastAPI `detail` is a string (400) or validation array (422). */
 export function formatFastApiError(json: unknown, fallback: string): string {
@@ -147,7 +162,8 @@ export function invalidateApiContext(): void {
   preferredClientSlugFromSession = null;
 }
 
-export async function clientApiContext(_opts?: ClientApiHeaderOptions): Promise<ApiContext> {
+export async function clientApiContext(opts?: ClientApiHeaderOptions): Promise<ApiContext> {
+  void opts;
   _ensureAuthListener();
 
   const now = Date.now();
@@ -448,7 +464,22 @@ export async function fetchActiveReelAnalysisJob(
 export async function fetchOwnReelsMetrics(
   clientSlug: string,
   orgSlug: string,
-  opts?: { from?: string; to?: string; reelIds?: string[] },
+  opts?: {
+    /** ISO bound on snapshot times (reel_snapshots.scraped_at). */
+    from?: string;
+    /** ISO bound on snapshot times (reel_snapshots.scraped_at). */
+    to?: string;
+    /** Specific reel ids (max 10). When set, server bypasses paging. */
+    reelIds?: string[];
+    /** Page size for own-reel selection (newest by posted_at). */
+    limit?: number;
+    /** Skip N own reels for pagination (Load more). */
+    offset?: number;
+    /** ISO date/timestamp — only reels posted on or after this point. */
+    postedAfter?: string;
+    /** ISO date/timestamp — only reels posted on or before this point. */
+    postedBefore?: string;
+  },
 ): Promise<
   { ok: true; data: OwnReelsMetricsResponse } | { ok: false; error: string }
 > {
@@ -458,6 +489,10 @@ export async function fetchOwnReelsMetrics(
   if (opts?.from) sp.set("from", opts.from);
   if (opts?.to) sp.set("to", opts.to);
   if (opts?.reelIds?.length) sp.set("reel_ids", opts.reelIds.join(","));
+  if (opts?.limit != null) sp.set("limit", String(opts.limit));
+  if (opts?.offset != null && opts.offset > 0) sp.set("offset", String(opts.offset));
+  if (opts?.postedAfter) sp.set("posted_after", opts.postedAfter);
+  if (opts?.postedBefore) sp.set("posted_before", opts.postedBefore);
   const q = sp.toString();
   const url = `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}/reels/metrics${q ? `?${q}` : ""}`;
   try {
@@ -471,7 +506,16 @@ export async function fetchOwnReelsMetrics(
         error: formatFastApiError(json as Record<string, unknown>, `Request failed (${res.status})`),
       };
     }
-    return { ok: true, data: { reels: json.reels ?? [] } };
+    return {
+      ok: true,
+      data: {
+        reels: json.reels ?? [],
+        total: typeof json.total === "number" ? json.total : (json.reels ?? []).length,
+        limit: typeof json.limit === "number" ? json.limit : (json.reels ?? []).length,
+        offset: typeof json.offset === "number" ? json.offset : 0,
+        has_more: Boolean(json.has_more),
+      },
+    };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
   }
@@ -565,6 +609,17 @@ export async function enqueueReelAnalyzeBulk(
 
 export type TextBlock = { text: string; isCTA?: boolean };
 
+export type ThumbnailEditOptions = {
+  cropY?: number;
+  zoom?: number;
+  wash?: boolean;
+  templateId?: VideoSpec["templateId"];
+  themeId?: VideoSpec["themeId"];
+  textTreatment?: "bold-outline" | null;
+  layout?: VideoSpecLayout;
+  appearance?: VideoSpecAppearance;
+};
+
 export type GenerationSession = {
   id: string;
   client_id: string;
@@ -596,6 +651,10 @@ export type GenerationSession = {
   render_error?: string | null;
   render_progress_pct?: number | null;
   carousel_slides?: CarouselSlide[] | null;
+  /** Snapshot of the CTA the user picked under the format selector. See ``ClientCta``. */
+  selected_cta?: SelectedCtaPayload | null;
+  selected_carousel_template?: SelectedCarouselTemplatePayload | null;
+  selected_cover_template?: SelectedCoverTemplatePayload | null;
   status: string;
   feedback?: string | null;
   prompt_version?: string | null;
@@ -634,6 +693,243 @@ export type FormatDigestSummary = {
   avg_outlier_comments_ratio?: number | null;
   computed_at?: string | null;
 };
+
+/** Client-side fetch of the active client's CTA library. Used by the Generate
+ *  page so the user can pick which CTA the new session should adapt around.
+ *  Returns `[]` (not an error) when the client has no CTAs configured yet. */
+export async function fetchClientCtaLibrary(
+  clientSlug: string,
+  orgSlug: string,
+): Promise<{ ok: true; data: ClientCta[] } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}`,
+      { headers },
+    );
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(json, `Request failed (${res.status})`),
+      };
+    }
+    const ctx = (json["client_context"] as Record<string, unknown> | null | undefined) ?? null;
+    const raw = ctx && typeof ctx === "object" ? (ctx["cta_library"] as unknown) : null;
+    if (!Array.isArray(raw)) {
+      return { ok: true, data: [] };
+    }
+    const out: ClientCta[] = [];
+    for (const item of raw) {
+      if (!item || typeof item !== "object") continue;
+      const o = item as Record<string, unknown>;
+      const label = typeof o.label === "string" ? o.label.trim() : "";
+      if (!label) continue;
+      const id = typeof o.id === "string" && o.id.trim() ? o.id.trim() : `cta_${out.length}`;
+      const typeRaw = typeof o.type === "string" ? o.type : "other";
+      const type =
+        typeRaw === "website" ||
+        typeRaw === "newsletter" ||
+        typeRaw === "video" ||
+        typeRaw === "lead_magnet" ||
+        typeRaw === "booking"
+          ? typeRaw
+          : "other";
+      out.push({
+        id,
+        label,
+        type,
+        destination: typeof o.destination === "string" ? o.destination : "",
+        traffic_goal: typeof o.traffic_goal === "string" ? o.traffic_goal : "",
+        instructions:
+          typeof o.instructions === "string" && o.instructions.trim() ? o.instructions : null,
+      });
+    }
+    return { ok: true, data: out };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+const CAROUSEL_TEMPLATE_ROLES = new Set<ClientCarouselTemplateSlideRole>([
+  "cover",
+  "body",
+  "screenshot",
+  "quote",
+  "cta",
+  "other",
+]);
+
+function normalizeCarouselTemplateSlide(
+  raw: unknown,
+  fallbackIdx: number,
+): ClientCarouselTemplateSlide | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const parsedIdx =
+    typeof o.idx === "number" ? o.idx : Number.parseInt(String(o.idx ?? ""), 10);
+  const idx =
+    Number.isInteger(parsedIdx) && parsedIdx >= 0 && parsedIdx <= 9 ? parsedIdx : fallbackIdx;
+  const roleRaw = typeof o.role === "string" ? o.role : "body";
+  const role = CAROUSEL_TEMPLATE_ROLES.has(roleRaw as ClientCarouselTemplateSlideRole)
+    ? (roleRaw as ClientCarouselTemplateSlideRole)
+    : "body";
+  const reference_image_id =
+    typeof o.reference_image_id === "string" && o.reference_image_id.trim()
+      ? o.reference_image_id.trim()
+      : null;
+  const reference_image_url =
+    typeof o.reference_image_url === "string" && o.reference_image_url.trim()
+      ? o.reference_image_url.trim()
+      : null;
+  const reference_label =
+    typeof o.reference_label === "string" && o.reference_label.trim()
+      ? o.reference_label.trim()
+      : null;
+  const instruction = typeof o.instruction === "string" ? o.instruction : "";
+  return { idx, role, reference_image_id, reference_image_url, reference_label, instruction };
+}
+
+export function normalizeCarouselTemplates(raw: unknown): ClientCarouselTemplate[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ClientCarouselTemplate[] = [];
+  const seenIds = new Set<string>();
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const rawName = typeof o.name === "string" ? o.name.trim() : "";
+    let id =
+      typeof o.id === "string" && o.id.trim()
+        ? o.id.trim()
+        : `carousel_template_${out.length}`;
+    while (seenIds.has(id)) {
+      id = `${id}_${out.length}`;
+    }
+    seenIds.add(id);
+    const rawSlides = Array.isArray(o.slides) ? o.slides : [];
+    const slides = rawSlides
+      .map((slide, idx) => normalizeCarouselTemplateSlide(slide, idx))
+      .filter((slide): slide is ClientCarouselTemplateSlide => slide !== null)
+      .sort((a, b) => a.idx - b.idx)
+      .slice(0, 10)
+      .map((slide, idx) => ({ ...slide, idx }));
+    if (slides.length === 0) continue;
+    out.push({
+      id,
+      name: rawName || `Carousel template ${out.length + 1}`,
+      description:
+        typeof o.description === "string" && o.description.trim()
+          ? o.description.trim()
+          : null,
+      slides,
+    });
+  }
+  return out;
+}
+
+function normalizeCoverTemplate(raw: unknown, fallbackIdx: number): ClientCoverTemplate | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const reference_image_id =
+    typeof o.reference_image_id === "string" && o.reference_image_id.trim()
+      ? o.reference_image_id.trim()
+      : "";
+  if (!reference_image_id) return null;
+  const rawName = typeof o.name === "string" ? o.name.trim() : "";
+  const id =
+    typeof o.id === "string" && o.id.trim()
+      ? o.id.trim()
+      : `cover_template_${fallbackIdx}`;
+  const reference_image_url =
+    typeof o.reference_image_url === "string" && o.reference_image_url.trim()
+      ? o.reference_image_url.trim()
+      : null;
+  const reference_label =
+    typeof o.reference_label === "string" && o.reference_label.trim()
+      ? o.reference_label.trim()
+      : null;
+  const instruction = typeof o.instruction === "string" ? o.instruction : "";
+  return {
+    id,
+    name: rawName || `Cover template ${fallbackIdx + 1}`,
+    reference_image_id,
+    reference_image_url,
+    reference_label,
+    instruction,
+  };
+}
+
+export function normalizeCoverTemplates(raw: unknown): ClientCoverTemplate[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ClientCoverTemplate[] = [];
+  const seenIds = new Set<string>();
+  for (const item of raw) {
+    const norm = normalizeCoverTemplate(item, out.length);
+    if (!norm) continue;
+    let safeId = norm.id;
+    while (seenIds.has(safeId)) {
+      safeId = `${safeId}_${out.length}`;
+    }
+    seenIds.add(safeId);
+    out.push({ ...norm, id: safeId });
+  }
+  return out;
+}
+
+export async function fetchClientCarouselTemplates(
+  clientSlug: string,
+  orgSlug: string,
+): Promise<{ ok: true; data: ClientCarouselTemplate[] } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}`,
+      { headers },
+    );
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(json, `Request failed (${res.status})`),
+      };
+    }
+    const ctx = (json["client_context"] as Record<string, unknown> | null | undefined) ?? null;
+    const raw =
+      ctx && typeof ctx === "object" ? (ctx["carousel_templates"] as unknown) : null;
+    return { ok: true, data: normalizeCarouselTemplates(raw) };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export async function fetchClientCoverTemplates(
+  clientSlug: string,
+  orgSlug: string,
+): Promise<{ ok: true; data: ClientCoverTemplate[] } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(
+      `${base}/api/v1/clients/${encodeURIComponent(clientSlug)}`,
+      { headers },
+    );
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: formatFastApiError(json, `Request failed (${res.status})`),
+      };
+    }
+    const ctx = (json["client_context"] as Record<string, unknown> | null | undefined) ?? null;
+    const raw =
+      ctx && typeof ctx === "object" ? (ctx["cover_thumbnail_templates"] as unknown) : null;
+    return { ok: true, data: normalizeCoverTemplates(raw) };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
 
 export async function fetchFormatDigests(
   clientSlug: string,
@@ -796,6 +1092,9 @@ export async function generationStart(
     idea_text?: string;
     url?: string;
     source_script?: string;
+    selected_cta?: SelectedCtaPayload;
+    selected_carousel_template?: SelectedCarouselTemplatePayload;
+    selected_cover_template?: SelectedCoverTemplatePayload;
   },
 ): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
   const base = getContentApiBase();
@@ -1145,6 +1444,7 @@ export async function generationGenerateThumbnail(
   orgSlug: string,
   sessionId: string,
   hookText?: string,
+  options?: ThumbnailEditOptions,
 ): Promise<{ ok: true; data: { thumbnail_url: string } } | { ok: false; error: string }> {
   const base = getContentApiBase();
   const headers = await clientApiHeaders({ orgSlug });
@@ -1154,7 +1454,14 @@ export async function generationGenerateThumbnail(
       {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ hook_text: hookText ?? null }),
+        body: JSON.stringify({
+          hook_text: hookText ?? null,
+          template_id: options?.templateId ?? "centered-pop",
+          theme_id: options?.themeId ?? "bold-modern",
+          text_treatment: options?.textTreatment ?? null,
+          layout: options?.layout ?? null,
+          appearance: options?.appearance ?? null,
+        }),
       },
     );
     const json = (await res.json().catch(() => ({}))) as { thumbnail_url?: string; detail?: unknown };
@@ -1436,7 +1743,7 @@ export async function generationComposeThumbnail(
   sessionId: string,
   clientImageId: string,
   hookText?: string,
-  wash: boolean = true,
+  options?: ThumbnailEditOptions,
 ): Promise<{ ok: true; data: { thumbnail_url: string } } | { ok: false; error: string }> {
   const base = getContentApiBase();
   const headers = await clientApiHeaders({ orgSlug });
@@ -1449,7 +1756,14 @@ export async function generationComposeThumbnail(
         body: JSON.stringify({
           client_image_id: clientImageId,
           hook_text: hookText ?? null,
-          wash,
+          wash: options?.wash ?? true,
+          crop_y: options?.cropY ?? 0.5,
+          zoom: options?.zoom ?? 1,
+          template_id: options?.templateId ?? "centered-pop",
+          theme_id: options?.themeId ?? "bold-modern",
+          text_treatment: options?.textTreatment ?? null,
+          layout: options?.layout ?? null,
+          appearance: options?.appearance ?? null,
         }),
       },
     );

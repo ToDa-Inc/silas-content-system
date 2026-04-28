@@ -43,6 +43,16 @@ class Settings(BaseSettings):
         description="Sets includeSharesCount on Instagram Reel Scraper (requires paid Apify plan for real values).",
     )
 
+    own_reels_sync_results_limit: int = Field(
+        default=5000,
+        validation_alias=AliasChoices("OWN_REELS_SYNC_RESULTS_LIMIT"),
+        description=(
+            "resultsLimit passed to Apify when syncing the client's own reels. "
+            "High default approximates 'all available history' while staying explicit "
+            "for Apify cost / runtime budgets."
+        ),
+    )
+
     @field_validator("apify_api_token", mode="before")
     @classmethod
     def strip_apify_token(cls, v: object) -> object:

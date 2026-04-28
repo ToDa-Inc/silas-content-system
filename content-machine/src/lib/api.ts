@@ -143,7 +143,67 @@ export type ClientContextData = Partial<
     | "onboarding_transcript",
     ClientContextSection
   >
->;
+> & {
+  /** Per-client CTA library — adapted into captions, scripts, and visual CTA blocks. */
+  cta_library?: ClientCta[];
+  /** Per-client carousel templates — visual reference sequences for carousel generation. */
+  carousel_templates?: ClientCarouselTemplate[];
+  /** Per-client cover/thumbnail templates — single Media image references for cover creation. */
+  cover_thumbnail_templates?: ClientCoverTemplate[];
+};
+
+/** Where a CTA points the viewer; informs prompt wording (e.g. URL vs comment-keyword). */
+export type ClientCtaType =
+  | "website"
+  | "newsletter"
+  | "video"
+  | "lead_magnet"
+  | "booking"
+  | "other";
+
+/** One CTA the user can pick under the Generate format selector. Persisted under
+ *  ``client_context.cta_library`` and snapshotted onto ``generation_sessions.selected_cta``. */
+export type ClientCta = {
+  id: string;
+  label: string;
+  type: ClientCtaType;
+  destination: string;
+  traffic_goal: string;
+  instructions?: string | null;
+};
+
+export type ClientCarouselTemplateSlideRole =
+  | "cover"
+  | "body"
+  | "screenshot"
+  | "quote"
+  | "cta"
+  | "other";
+
+export type ClientCarouselTemplateSlide = {
+  idx: number;
+  role: ClientCarouselTemplateSlideRole;
+  reference_image_id?: string | null;
+  reference_image_url?: string | null;
+  reference_label?: string | null;
+  instruction: string;
+};
+
+export type ClientCarouselTemplate = {
+  id: string;
+  name: string;
+  description?: string | null;
+  slides: ClientCarouselTemplateSlide[];
+};
+
+export type ClientCoverTemplate = {
+  id: string;
+  name: string;
+  reference_image_id: string;
+  reference_image_url?: string | null;
+  reference_label?: string | null;
+  instruction: string;
+};
 
 /** Active client row from `GET /api/v1/clients/{slug}` — niche_config drives discovery copy. */
 export type ClientRow = {
@@ -215,6 +275,7 @@ export type ScrapedReelRow = {
   posted_at: string | null;
   first_seen_at: string | null;
   last_updated_at: string | null;
+  format?: string | null;
   source?: string | null;
   similarity_score?: number | null;
   analysis?: ReelAnalysisSummary | null;
@@ -652,10 +713,13 @@ export type ReelsListSortBy =
   | "video_duration"
   | "first_seen_at";
 
+export type ReelsMediaType = "all" | "short" | "long" | "carousel";
+
 export type ReelsListFilters = {
   source?: string | null;
   creator?: string | null;
   competitorId?: string | null;
+  mediaType?: ReelsMediaType | null;
   outlierOnly?: boolean;
   ownReelsOnly?: boolean;
   minViews?: number | null;
@@ -702,6 +766,7 @@ export async function fetchReelsList(query: ReelsListQuery = {}): Promise<{
   if (query.source) params.set("source", query.source);
   if (query.creator) params.set("creator", query.creator);
   if (query.competitorId) params.set("competitor_id", query.competitorId);
+  if (query.mediaType && query.mediaType !== "all") params.set("media_type", query.mediaType);
   if (query.minViews != null) params.set("min_views", String(query.minViews));
   if (query.maxViews != null) params.set("max_views", String(query.maxViews));
   if (query.minLikes != null) params.set("min_likes", String(query.minLikes));

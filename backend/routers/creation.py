@@ -787,6 +787,38 @@ def _client_row_for_session(supabase: Client, client_id: str) -> Dict[str, Any]:
     return dict(cres.data[0]) if cres.data else {}
 
 
+def _template_slides_from_row(row: Dict[str, Any]) -> List[Dict[str, Any]]:
+    template = row.get("selected_carousel_template")
+    if not isinstance(template, dict):
+        return []
+    raw = template.get("slides")
+    if not isinstance(raw, list):
+        return []
+    slides = [s for s in raw if isinstance(s, dict)]
+    slides.sort(key=lambda s: int(s.get("idx") or 0))
+    return slides[:10]
+
+
+def _carousel_slide_count_from_request(row: Dict[str, Any], requested_count: int) -> int:
+    """Templates are visual/story references, not hard constraints on slide count."""
+    _ = row
+    return max(3, min(10, int(requested_count or 6)))
+
+
+def _visual_prompt_for_template_slide(slide: Dict[str, Any]) -> str:
+    role = str(slide.get("role") or "body").strip()
+    label = str(slide.get("reference_label") or "").strip()
+    instruction = str(slide.get("instruction") or "").strip()
+    parts = []
+    if role:
+        parts.append(f"role: {role}")
+    if label:
+        parts.append(f"reference visual: {label}")
+    if instruction:
+        parts.append(instruction)
+    return "; ".join(parts)
+
+
 @router.post(
     "/clients/{slug}/create/sessions/{session_id}/carousel-slides/generate",
     response_model=GenerationSessionOut,
@@ -811,13 +843,23 @@ def generate_carousel_slides(
     client_row = _client_row_for_session(supabase, client_id)
     chosen = _chosen_angle(row)
     hook_text = _carousel_hook_text(row)
+    selected_cta = row.get("selected_cta") if isinstance(row.get("selected_cta"), dict) else None
+    selected_template = (
+        row.get("selected_carousel_template")
+        if isinstance(row.get("selected_carousel_template"), dict)
+        else None
+    )
+    template_slides = _template_slides_from_row(row)
+    slide_count = _carousel_slide_count_from_request(row, body.count)
     try:
         texts = run_carousel_slide_texts(
             settings,
             client_row=client_row,
             chosen_angle=chosen,
             hook_text=hook_text,
-            count=body.count,
+            count=slide_count,
+            selected_cta=selected_cta,
+            selected_carousel_template=selected_template,
         )
     except Exception as e:
         logger.exception("run_carousel_slide_texts failed")
@@ -826,6 +868,8 @@ def generate_carousel_slides(
     style = (body.style or "").strip()
     slides: List[Dict[str, Any]] = []
     for i, text in enumerate(texts):
+        template_slide = template_slides[i] if i < len(template_slides) else {}
+        visual_prompt = _visual_prompt_for_template_slide(template_slide)
         try:
             png = generate_slide_image(
                 text=text,
@@ -833,6 +877,7 @@ def generate_carousel_slides(
                 total=len(texts),
                 freepik_key=settings.freepik_api_key,
                 style=style,
+                visual_prompt=visual_prompt,
             )
         except Exception as e:
             logger.exception("generate_slide_image failed for idx=%d", i)
@@ -840,7 +885,12 @@ def generate_carousel_slides(
         url = _upload_slide_png(
             supabase, settings, client_id=client_id, session_id=session_id, idx=i, png=png
         )
-        slides.append({"idx": i, "text": text, "image_url": url, "prompt": style or None})
+        slides.append({
+            "idx": i,
+            "text": text,
+            "image_url": url,
+            "prompt": style or visual_prompt or None,
+        })
 
     now = _now_iso()
     supabase.table("generation_sessions").update(
@@ -883,6 +933,9 @@ def regenerate_carousel_slide(
         raise HTTPException(status_code=400, detail="Slide has no text to render")
 
     style = (body.prompt or "").strip()
+    template_slides = _template_slides_from_row(row)
+    template_slide = template_slides[target_idx] if target_idx < len(template_slides) else {}
+    visual_prompt = _visual_prompt_for_template_slide(template_slide)
     try:
         if body.image_source == "client_image":
             if not body.client_image_id:
@@ -907,6 +960,7 @@ def regenerate_carousel_slide(
                 total=len(slides),
                 freepik_key=settings.freepik_api_key,
                 style=style,
+                visual_prompt=visual_prompt,
             )
     except HTTPException:
         raise
@@ -926,7 +980,7 @@ def regenerate_carousel_slide(
                     "idx": target_idx,
                     "text": new_text,
                     "image_url": url,
-                    "prompt": style or s.get("prompt"),
+                    "prompt": style or visual_prompt or s.get("prompt"),
                 }
             )
         else:

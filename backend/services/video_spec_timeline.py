@@ -18,7 +18,7 @@ from models.video_spec import (
 
 GAP_MIN = 0.0
 # Per-pause cap. Generous so users can leave real breathing room between
-# beats; the spec already bounds totalSec ≤ 120, which is the actual ceiling.
+# beats; the spec already bounds totalSec ≤ 600, which is the actual ceiling.
 GAP_MAX = 5.0
 MIN_HOOK = 1.0
 MIN_BLOCK = 1.0

@@ -4,8 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Loader2, Sparkles, X } from "lucide-react";
 import { ReelThumbnail } from "@/components/reel-thumbnail";
-import type { ScrapedReelRow } from "@/lib/api";
-import { generationStart } from "@/lib/api-client";
+import type { ClientCarouselTemplate, ClientCoverTemplate, ScrapedReelRow } from "@/lib/api";
+import {
+  fetchClientCarouselTemplates,
+  fetchClientCoverTemplates,
+  generationStart,
+} from "@/lib/api-client";
 
 type Props = {
   open: boolean;
@@ -27,6 +31,112 @@ const RECREATE_FORMAT_OPTIONS: ReadonlyArray<{ key: RecreateFormatChoice; label:
   { key: "talking_head", label: "Talking head", hint: "You speak to camera the whole reel" },
   { key: "carousel", label: "Carousel", hint: "Swipeable PNG slides (not a video)" },
 ];
+
+function CarouselTemplatePicker({
+  templates,
+  selectedId,
+  onSelect,
+  disabled,
+}: {
+  templates: ClientCarouselTemplate[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="mt-4">
+      <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-xs font-semibold text-app-fg">
+          Carousel template <span className="font-normal text-app-fg-muted">(required)</span>
+        </p>
+        <Link
+          href="/context"
+          className="text-[10px] font-semibold text-amber-700 hover:underline dark:text-amber-400"
+        >
+          Edit templates →
+        </Link>
+      </div>
+      <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Carousel template">
+        {templates.map((template) => {
+          const active = selectedId === template.id;
+          return (
+            <button
+              key={template.id}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              disabled={disabled}
+              onClick={() => onSelect(template.id)}
+              className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition-colors disabled:opacity-50 ${
+                active
+                  ? "border-amber-500/55 bg-amber-500/10 text-app-fg"
+                  : "border-zinc-200/90 bg-white text-zinc-700 hover:border-zinc-300 dark:border-white/10 dark:bg-zinc-900/60 dark:text-app-fg-muted dark:hover:border-white/20"
+              }`}
+            >
+              {template.name}
+              <span className="ml-1 font-normal text-app-fg-subtle">
+                · {template.slides.length} slides
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CoverTemplatePicker({
+  templates,
+  selectedId,
+  onSelect,
+  disabled,
+}: {
+  templates: ClientCoverTemplate[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="mt-4">
+      <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-xs font-semibold text-app-fg">
+          Cover template <span className="font-normal text-app-fg-muted">(required)</span>
+        </p>
+        <Link
+          href="/context"
+          className="text-[10px] font-semibold text-amber-700 hover:underline dark:text-amber-400"
+        >
+          Edit templates →
+        </Link>
+      </div>
+      <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Cover template">
+        {templates.map((template) => {
+          const active = selectedId === template.id;
+          return (
+            <button
+              key={template.id}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              disabled={disabled}
+              onClick={() => onSelect(template.id)}
+              className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition-colors disabled:opacity-50 ${
+                active
+                  ? "border-amber-500/55 bg-amber-500/10 text-app-fg"
+                  : "border-zinc-200/90 bg-white text-zinc-700 hover:border-zinc-300 dark:border-white/10 dark:bg-zinc-900/60 dark:text-app-fg-muted dark:hover:border-white/20"
+              }`}
+            >
+              {template.name}
+              <span className="ml-1 font-normal text-app-fg-subtle">
+                · {template.reference_label ?? "1 image"}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function isLikelyInstagramReelUrl(s: string): boolean {
   const t = s.trim().toLowerCase();
@@ -55,6 +165,10 @@ export function RecreateReelModal({
   const [phase, setPhase] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [carouselTemplates, setCarouselTemplates] = useState<ClientCarouselTemplate[]>([]);
+  const [selectedCarouselTemplateId, setSelectedCarouselTemplateId] = useState<string | null>(null);
+  const [coverTemplates, setCoverTemplates] = useState<ClientCoverTemplate[]>([]);
+  const [selectedCoverTemplateId, setSelectedCoverTemplateId] = useState<string | null>(null);
   const phaseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hasAnalysis = Boolean(reel?.analysis);
 
@@ -74,6 +188,10 @@ export function RecreateReelModal({
       setMsg(null);
       setPhase(null);
       setSessionId(null);
+      setCarouselTemplates([]);
+      setSelectedCarouselTemplateId(null);
+      setCoverTemplates([]);
+      setSelectedCoverTemplateId(null);
       setBusy(false);
       if (phaseTimerRef.current) {
         clearInterval(phaseTimerRef.current);
@@ -81,6 +199,32 @@ export function RecreateReelModal({
       }
     }
   }, [open]);
+
+  useEffect(() => {
+    if (!open || !clientSlug.trim() || !orgSlug.trim()) return;
+    let cancelled = false;
+    void Promise.all([
+      fetchClientCarouselTemplates(clientSlug, orgSlug),
+      fetchClientCoverTemplates(clientSlug, orgSlug),
+    ]).then(([carouselRes, coverRes]) => {
+      if (cancelled) return;
+      if (carouselRes.ok) {
+        setCarouselTemplates(carouselRes.data);
+        if (carouselRes.data.length === 1) {
+          setSelectedCarouselTemplateId(carouselRes.data[0].id);
+        }
+      }
+      if (coverRes.ok) {
+        setCoverTemplates(coverRes.data);
+        if (coverRes.data.length === 1) {
+          setSelectedCoverTemplateId(coverRes.data[0].id);
+        }
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, clientSlug, orgSlug]);
 
   useEffect(() => {
     if (!open) return;
@@ -139,6 +283,22 @@ export function RecreateReelModal({
       setMsg("Pick a target format to recreate the reel as.");
       return;
     }
+    if (formatChoice === "carousel" && carouselTemplates.length > 0 && !selectedCarouselTemplateId) {
+      setMsg("Pick a carousel template first.");
+      return;
+    }
+    if (formatChoice !== "carousel" && coverTemplates.length > 0 && !selectedCoverTemplateId) {
+      setMsg("Pick a cover template first.");
+      return;
+    }
+    const selectedCarouselTemplate =
+      formatChoice === "carousel" && selectedCarouselTemplateId
+        ? carouselTemplates.find((template) => template.id === selectedCarouselTemplateId) ?? null
+        : null;
+    const selectedCoverTemplate =
+      formatChoice !== "carousel" && selectedCoverTemplateId
+        ? coverTemplates.find((template) => template.id === selectedCoverTemplateId) ?? null
+        : null;
 
     setBusy(true);
     setMsg(null);
@@ -151,6 +311,8 @@ export function RecreateReelModal({
         url,
         extra_instruction: extraInstruction.trim() || undefined,
         format_key: formatChoice === "auto" ? undefined : formatChoice,
+        selected_carousel_template: selectedCarouselTemplate ?? undefined,
+        selected_cover_template: selectedCoverTemplate ?? undefined,
       });
       clearPhaseTimer();
       setPhase(null);
@@ -196,7 +358,7 @@ export function RecreateReelModal({
             </h2>
             <p className="mt-1 text-[11px] leading-relaxed text-app-fg-subtle">
               Same core video idea as the competitor reel — pick the production format you want
-              (or Auto to keep the source's). Examples, setting, and copy rewritten for your client.
+              (or Auto to keep the source&apos;s). Examples, setting, and copy rewritten for your client.
               You pick one of five angles on Generate, then get script and caption.
             </p>
           </div>
@@ -272,6 +434,48 @@ export function RecreateReelModal({
                   : "Pick a target format — Auto keeps the source reel's format, the others re-format the same idea."}
               </p>
             </div>
+
+            {formatChoice === "carousel" ? (
+              carouselTemplates.length > 0 ? (
+                <CarouselTemplatePicker
+                  templates={carouselTemplates}
+                  selectedId={selectedCarouselTemplateId}
+                  onSelect={setSelectedCarouselTemplateId}
+                  disabled={busy}
+                />
+              ) : (
+                <div className="mt-4 rounded-xl border border-dashed border-zinc-200/90 bg-white/60 p-3 text-[11px] leading-relaxed text-app-fg-muted dark:border-white/10 dark:bg-zinc-900/50">
+                  No carousel templates configured yet.{" "}
+                  <Link
+                    href="/context"
+                    className="font-semibold text-amber-700 hover:underline dark:text-amber-400"
+                  >
+                    Add one in Context
+                  </Link>{" "}
+                  to guide carousel structure from Media references.
+                </div>
+              )
+            ) : formatChoice ? (
+              coverTemplates.length > 0 ? (
+                <CoverTemplatePicker
+                  templates={coverTemplates}
+                  selectedId={selectedCoverTemplateId}
+                  onSelect={setSelectedCoverTemplateId}
+                  disabled={busy}
+                />
+              ) : (
+                <div className="mt-4 rounded-xl border border-dashed border-zinc-200/90 bg-white/60 p-3 text-[11px] leading-relaxed text-app-fg-muted dark:border-white/10 dark:bg-zinc-900/50">
+                  No cover/thumbnail templates configured yet.{" "}
+                  <Link
+                    href="/context"
+                    className="font-semibold text-amber-700 hover:underline dark:text-amber-400"
+                  >
+                    Add one in Context
+                  </Link>{" "}
+                  to preload cover creation from Media references.
+                </div>
+              )
+            ) : null}
 
             <label htmlFor="recreate-extra" className="mt-4 block text-xs font-semibold text-app-fg">
               Extra focus <span className="font-normal text-app-fg-muted">(optional)</span>

@@ -52,6 +52,15 @@ function sessionTitle(s: GenerationSession): string {
 
 type Tab = "renders" | "covers" | "broll" | "images";
 
+const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+
+function imageValidationError(file: File): string | null {
+  const accepted = /\.(png|jpe?g|webp)$/i.test(file.name);
+  if (!accepted) return "Only PNG, JPG or WEBP images are supported.";
+  if (file.size > MAX_IMAGE_BYTES) return "Image too large (max 12 MB).";
+  return null;
+}
+
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
 function EmptyState({ icon: Icon, label }: { icon: React.ElementType; label: string }) {
@@ -112,7 +121,6 @@ export default function MediaPage() {
       setBootstrapDone(true);
     })();
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Derived lists ────────────────────────────────────────────────────────
@@ -155,38 +163,56 @@ export default function MediaPage() {
     }
   }, [clientSlug, orgSlug, show]);
 
-  const onUploadImage = useCallback(async (file: File | null) => {
-    if (!file) return;
+  const onUploadImage = useCallback(async (files: File[]) => {
+    if (files.length === 0) return;
     const cs = clientSlug.trim();
     const os = orgSlug.trim();
     if (!cs || !os) return;
-    const accepted = /\.(png|jpe?g|webp)$/i.test(file.name);
-    if (!accepted) {
-      show("Only PNG, JPG or WEBP images are supported.", "error");
-      return;
-    }
-    if (file.size > 12 * 1024 * 1024) {
-      show("Image too large (max 12 MB).", "error");
-      return;
-    }
     setImageUploadBusy(true);
     try {
       const base = getContentApiBase();
       const { headers } = await clientApiContext({ orgSlug: os });
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await contentApiFetch(
-        `${base}/api/v1/clients/${encodeURIComponent(cs)}/images`,
-        { method: "POST", headers, body: fd },
-      );
-      const json = (await res.json().catch(() => ({}))) as { detail?: unknown };
-      if (!res.ok) {
-        show(typeof json.detail === "string" ? json.detail : `Upload failed (${res.status})`, "error");
-        return;
+      let uploaded = 0;
+      const failures: string[] = [];
+
+      for (const file of files) {
+        const validationError = imageValidationError(file);
+        if (validationError) {
+          failures.push(`${file.name}: ${validationError}`);
+          continue;
+        }
+
+        const fd = new FormData();
+        fd.append("file", file);
+        const res = await contentApiFetch(
+          `${base}/api/v1/clients/${encodeURIComponent(cs)}/images`,
+          { method: "POST", headers, body: fd },
+        );
+        const json = (await res.json().catch(() => ({}))) as { detail?: unknown };
+        if (!res.ok) {
+          failures.push(
+            `${file.name}: ${
+              typeof json.detail === "string" ? json.detail : `Upload failed (${res.status})`
+            }`,
+          );
+          continue;
+        }
+        uploaded += 1;
       }
-      show("Image uploaded.", "success");
-      const iRes = await clientImagesList(cs, os);
-      if (iRes.ok) setImages(iRes.data);
+
+      if (uploaded > 0) {
+        const iRes = await clientImagesList(cs, os);
+        if (iRes.ok) setImages(iRes.data);
+      }
+
+      if (failures.length > 0) {
+        const prefix = uploaded > 0
+          ? `${uploaded} image${uploaded === 1 ? "" : "s"} uploaded. `
+          : "";
+        show(`${prefix}${failures.length} failed: ${failures[0]}`, "error");
+      } else {
+        show(`${uploaded} image${uploaded === 1 ? "" : "s"} uploaded.`, "success");
+      }
       if (imageInputRef.current) imageInputRef.current.value = "";
     } finally {
       setImageUploadBusy(false);
@@ -265,14 +291,15 @@ export default function MediaPage() {
         {tab === "images" && (
           <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-amber-500/15 px-4 py-2 text-xs font-bold text-app-on-amber-title hover:bg-amber-500/25 disabled:opacity-50">
             {imageUploadBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-            {imageUploadBusy ? "Uploading…" : "Upload image"}
+            {imageUploadBusy ? "Uploading…" : "Upload images"}
             <input
               ref={imageInputRef}
               type="file"
+              multiple
               accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
               className="hidden"
               disabled={imageUploadBusy}
-              onChange={(e) => void onUploadImage(e.target.files?.[0] ?? null)}
+              onChange={(e) => void onUploadImage(Array.from(e.target.files ?? []))}
             />
           </label>
         )}

@@ -50,12 +50,13 @@ def run_baseline_scrape(settings: Settings, job: Dict[str, Any]) -> None:
     if not ig:
         raise RuntimeError("Client has no instagram_handle")
 
+    results_limit = max(1, int(settings.own_reels_sync_results_limit or 30))
     items = run_actor(
         settings.apify_api_token,
         settings.apify_reel_actor,
         instagram_reel_scraper_input(
             [ig.replace("@", "")],
-            30,
+            results_limit,
             include_shares_count=settings.apify_include_shares_count,
         ),
     )
@@ -115,7 +116,7 @@ def run_baseline_scrape(settings: Settings, job: Dict[str, Any]) -> None:
                     "reel_actor": settings.apify_reel_actor,
                     "input": {
                         "username": [ig.replace("@", "").strip()],
-                        "resultsLimit": 30,
+                        "resultsLimit": results_limit,
                     },
                     "reference": "scripts/competitor-eval.js scrapeBaseline — same REEL_ACTOR as services/apify.py",
                 },

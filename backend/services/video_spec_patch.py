@@ -42,6 +42,24 @@ def _coerce_pauses_sec_ops(ops: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+def _ops_preserve_explicit_layer_timing(ops: List[Dict[str, Any]]) -> bool:
+    """True when the editor directly authored layer windows.
+
+    ``normalize_timeline_after_patch`` rebuilds blocks from hook + pauses, which is
+    correct for gap edits but wrong for a layer editor: it would erase explicit
+    overlapping ``startSec``/``endSec`` windows before Remotion ever sees them.
+    """
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        path = str(op.get("path") or "")
+        if path == "/blocks" or path.startswith("/blocks/"):
+            return True
+        if path in ("/hook/durationSec", "/hook/text"):
+            return True
+    return False
+
+
 def apply_ops_to_spec(spec_dict: Dict[str, Any], ops: List[Dict[str, Any]]) -> VideoSpecV1:
     # Normalize through Pydantic first so default fields (e.g. `layout`) are present
     # on the dict we patch — otherwise `replace /layout/scale` on a pre-layout spec
@@ -58,5 +76,7 @@ def apply_ops_to_spec(spec_dict: Dict[str, Any], ops: List[Dict[str, Any]]) -> V
         raise ValueError(f"invalid JSON Patch: {e}") from e
     if not isinstance(new_doc, dict):
         raise ValueError("patch result must be an object")
+    if _ops_preserve_explicit_layer_timing(ops):
+        return validate_video_spec_dict(new_doc)
     new_doc = normalize_timeline_after_patch(new_doc)
     return validate_video_spec_dict(new_doc)

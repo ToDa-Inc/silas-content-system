@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type PointerEvent as ReactPointerEvent } from "react";
 import { DEFAULT_LAYOUT, type VideoSpec } from "@/lib/video-spec";
-import { segmentDurationRange } from "@/lib/video-spec-timing";
+import { buildLayerRows, type VideoLayerRow } from "@/lib/video-spec-layer-timeline";
 import Renderer from "@/remotion-spec/Renderer";
 
 const Player = dynamic(
@@ -20,8 +20,8 @@ const COMP_W = 1080;
 const COMP_H = 1920;
 const ENTRANCE_DURATION_SEC = 0.45;
 
-/** Hit width for each boundary handle (Premiere-style: one grip between clips). */
-const BOUNDARY_HIT_PX = 10;
+/** Hit width for each layer edge handle. */
+const LAYER_HANDLE_PX = 12;
 /** Ignore sub-pixel jitter as non-drags. */
 const DRAG_THRESHOLD_PX = 3;
 
@@ -40,8 +40,8 @@ type Props = {
   width?: number;
   selectedSegmentId?: string | null;
   onSelectSegment?: (id: string) => void;
-  onResizeSegmentDraft?: (id: string, durationSec: number) => void;
-  onResizeSegmentCommit?: (id: string, durationSec: number) => void;
+  onResizeLayerTimingDraft?: (id: string, timing: { startSec?: number; endSec?: number }) => void;
+  onResizeLayerTimingCommit?: (id: string, timing: { startSec?: number; endSec?: number }) => void;
 };
 
 function VideoSpecPreviewBase({
@@ -51,8 +51,8 @@ function VideoSpecPreviewBase({
   width = 280,
   selectedSegmentId = null,
   onSelectSegment,
-  onResizeSegmentDraft,
-  onResizeSegmentCommit,
+  onResizeLayerTimingDraft,
+  onResizeLayerTimingCommit,
 }: Props) {
   const playerRef = useRef<PlayerHandle | null>(null);
   const stripRef = useRef<HTMLDivElement | null>(null);
@@ -71,119 +71,74 @@ function VideoSpecPreviewBase({
   const [currentFrame, setCurrentFrame] = useState(initialFrame);
 
   useEffect(() => {
-    const p = playerRef.current;
-    if (!p?.addEventListener) return;
+    let stopped = false;
+    let raf = 0;
+    const readFrame = () => {
+      const f = playerRef.current?.getCurrentFrame?.();
+      if (typeof f === "number" && Number.isFinite(f)) {
+        setCurrentFrame(Math.max(0, Math.min(durationInFrames - 1, f)));
+      }
+    };
     const onFrame = (...args: unknown[]) => {
-      const ev = args[0] as { frame?: number } | undefined;
-      if (ev && typeof ev.frame === "number") setCurrentFrame(ev.frame);
+      const ev = args[0] as { frame?: number; detail?: { frame?: number } } | undefined;
+      const f = typeof ev?.frame === "number" ? ev.frame : ev?.detail?.frame;
+      if (typeof f === "number") setCurrentFrame(Math.max(0, Math.min(durationInFrames - 1, f)));
     };
-    p.addEventListener("frameupdate", onFrame);
-    if (p.getCurrentFrame) setCurrentFrame(p.getCurrentFrame());
+    const playerAtMount = playerRef.current;
+    const tick = () => {
+      if (stopped) return;
+      readFrame();
+      raf = window.requestAnimationFrame(tick);
+    };
+    playerAtMount?.addEventListener?.("frameupdate", onFrame);
+    setCurrentFrame(initialFrame);
+    raf = window.requestAnimationFrame(tick);
     return () => {
-      p.removeEventListener?.("frameupdate", onFrame);
+      stopped = true;
+      if (raf) window.cancelAnimationFrame(raf);
+      playerAtMount?.removeEventListener?.("frameupdate", onFrame);
     };
-  }, [durationInFrames]);
+  }, [durationInFrames, initialFrame]);
 
-  const segments = useMemo(() => {
+  const layers = useMemo(() => (spec ? buildLayerRows(spec) : []), [spec]);
+
+  const rulerMarks = useMemo(() => {
     if (!spec) return [];
     const total = Math.max(0.001, spec.totalSec);
-    const items: {
-      id: string;
-      label: string;
-      startSec: number;
-      durSec: number;
-      leftPct: number;
-      widthPct: number;
-      isCTA: boolean;
-      kind: "hook" | "block";
-    }[] = [];
-    if (spec.hook.text.trim()) {
-      items.push({
-        id: "hook",
-        label: "Hook",
-        startSec: 0,
-        durSec: spec.hook.durationSec,
-        leftPct: 0,
-        widthPct: (spec.hook.durationSec / total) * 100,
-        isCTA: false,
-        kind: "hook",
-      });
-    }
-    spec.blocks.forEach((b, i) => {
-      const dur = Math.max(0, b.endSec - b.startSec);
-      items.push({
-        id: b.id,
-        label: b.isCTA ? "CTA" : `B${i + 1}`,
-        startSec: b.startSec,
-        durSec: dur,
-        leftPct: (b.startSec / total) * 100,
-        widthPct: (dur / total) * 100,
-        isCTA: !!b.isCTA,
-        kind: "block",
-      });
+    const count = Math.min(7, Math.max(3, Math.floor(total) + 1));
+    return Array.from({ length: count }, (_, i) => {
+      const sec = count === 1 ? 0 : (total / (count - 1)) * i;
+      return { sec, leftPct: (sec / total) * 100 };
     });
-    return items;
   }, [spec]);
 
-  /** Visible empty windows between adjacent segments. We draw a dashed badge so
-   *  the user can SEE the pause they set — without this, a small gap (e.g. 0.4s
-   *  on a 12s timeline = 3% of width) reads as "nothing happened". */
-  const gaps = useMemo(() => {
-    if (!spec) return [] as { id: string; leftPct: number; widthPct: number; sec: number }[];
-    const total = Math.max(0.001, spec.totalSec);
-    const out: { id: string; leftPct: number; widthPct: number; sec: number }[] = [];
-    for (let i = 0; i < segments.length - 1; i += 1) {
-      const a = segments[i]!;
-      const b = segments[i + 1]!;
-      const aEnd = a.startSec + a.durSec;
-      const gapSec = Math.max(0, b.startSec - aEnd);
-      if (gapSec < 0.05) continue;
-      out.push({
-        id: `gap-${a.id}-${b.id}`,
-        leftPct: (aEnd / total) * 100,
-        widthPct: (gapSec / total) * 100,
-        sec: gapSec,
-      });
-    }
-    return out;
-  }, [segments, spec]);
-
-  /** Boundary k sits between segments[k] and segments[k+1]. Dragging resizes the
-   *  LEFT segment's duration — same semantics as dragging that segment's out-point
-   *  in NLEs, without N duplicate right-edge grips cluttering narrow segments. */
+  /** Layer edge drag: left handle edits startSec, right handle edits endSec. */
   const dragStateRef = useRef<{
-    leftSegId: string;
+    layer: VideoLayerRow;
+    edge: "start" | "end";
     startClientX: number;
-    startDurationSec: number;
     pixelsPerSec: number;
-    minDur: number;
-    maxDur: number;
     moved: boolean;
-    lastDur: number;
+    lastTiming: { startSec?: number; endSec?: number };
   } | null>(null);
 
   const dragJustEndedRef = useRef(false);
 
-  const onBoundaryResizeStart = useCallback(
-    (e: ReactPointerEvent<HTMLButtonElement>, boundaryIndex: number) => {
+  const onLayerEdgeResizeStart = useCallback(
+    (e: ReactPointerEvent<HTMLButtonElement>, layer: VideoLayerRow, edge: "start" | "end") => {
       const stripEl = stripRef.current;
       if (!stripEl || !spec) return;
-      const left = segments[boundaryIndex];
-      if (!left || !segments[boundaryIndex + 1]) return;
       e.preventDefault();
       e.stopPropagation();
       const stripRect = stripEl.getBoundingClientRect();
       const pxPerSec = stripRect.width / Math.max(0.001, spec.totalSec);
-      const range = segmentDurationRange(left.id);
       dragStateRef.current = {
-        leftSegId: left.id,
+        layer,
+        edge,
         startClientX: e.clientX,
-        startDurationSec: left.durSec,
         pixelsPerSec: pxPerSec,
-        minDur: range.min,
-        maxDur: range.max,
         moved: false,
-        lastDur: left.durSec,
+        lastTiming: edge === "start" ? { startSec: layer.startSec } : { endSec: layer.endSec },
       };
       const onMove = (mv: PointerEvent) => {
         const st = dragStateRef.current;
@@ -191,12 +146,14 @@ function VideoSpecPreviewBase({
         const deltaPx = mv.clientX - st.startClientX;
         if (!st.moved && Math.abs(deltaPx) >= DRAG_THRESHOLD_PX) st.moved = true;
         if (!st.moved) return;
-        const rawDur = st.startDurationSec + deltaPx / st.pixelsPerSec;
-        const clamped = Math.max(st.minDur, Math.min(st.maxDur, rawDur));
-        const snapped = Math.round(clamped * 10) / 10;
-        if (snapped !== st.lastDur) {
-          st.lastDur = snapped;
-          onResizeSegmentDraft?.(st.leftSegId, snapped);
+        const deltaSec = deltaPx / st.pixelsPerSec;
+        const next =
+          st.edge === "start"
+            ? { startSec: Math.round((st.layer.startSec + deltaSec) * 10) / 10 }
+            : { endSec: Math.round((st.layer.endSec + deltaSec) * 10) / 10 };
+        if (next.startSec !== st.lastTiming.startSec || next.endSec !== st.lastTiming.endSec) {
+          st.lastTiming = next;
+          onResizeLayerTimingDraft?.(st.layer.id, next);
         }
       };
       const onUp = () => {
@@ -211,14 +168,14 @@ function VideoSpecPreviewBase({
           window.setTimeout(() => {
             dragJustEndedRef.current = false;
           }, 50);
-          onResizeSegmentCommit?.(st.leftSegId, st.lastDur);
+          onResizeLayerTimingCommit?.(st.layer.id, st.lastTiming);
         }
       };
       document.addEventListener("pointermove", onMove);
       document.addEventListener("pointerup", onUp);
       document.addEventListener("pointercancel", onUp);
     },
-    [onResizeSegmentDraft, onResizeSegmentCommit, segments, spec],
+    [onResizeLayerTimingDraft, onResizeLayerTimingCommit, spec],
   );
 
   const playheadPct = useMemo(() => {
@@ -294,96 +251,101 @@ function VideoSpecPreviewBase({
           );
         })() : null}
       </div>
-      {segments.length > 0 ? (
-        <div className="space-y-1">
+      {layers.length > 0 ? (
+        <div className="space-y-1.5">
           <div
             ref={stripRef}
-            className="relative h-9 w-full overflow-hidden rounded-md border border-app-divider/60 bg-app-chip-bg/30"
-            title={`${spec.totalSec.toFixed(1)}s total · click a segment · drag the vertical lines between segments to trim duration`}
+            className="relative overflow-hidden rounded-lg border border-app-divider/60 bg-app-chip-bg/25 p-2"
+            title={`${spec.totalSec.toFixed(1)}s total · click a layer · drag left/right handles to set when text appears and disappears`}
           >
-            {segments.map((s) => {
-              const isSelected = selectedSegmentId === s.id;
-              return (
-                <button
-                  key={s.id}
-                  type="button"
-                  onClick={(e) => {
-                    if (dragJustEndedRef.current) {
-                      e.preventDefault();
-                      return;
-                    }
-                    onSelectSegment?.(s.id);
-                    seekToSec(s.startSec + ENTRANCE_DURATION_SEC);
-                  }}
-                  style={{ left: `${s.leftPct}%`, width: `calc(${s.widthPct}% - 2px)` }}
-                  className={`absolute top-0 bottom-0 overflow-hidden whitespace-nowrap rounded-sm leading-none transition ${
-                    isSelected ? "z-10 ring-2 ring-amber-300 ring-offset-1 ring-offset-app-chip-bg/40" : "z-0"
-                  } ${
-                    s.isCTA
-                      ? "bg-amber-500/40 text-amber-100 hover:bg-amber-500/55"
-                      : s.kind === "hook"
-                        ? "bg-violet-500/35 text-violet-100 hover:bg-violet-500/50"
-                        : "bg-sky-500/25 text-sky-100 hover:bg-sky-500/40"
-                  }`}
-                  title={`${s.label} · ${s.durSec.toFixed(1)}s`}
+            <div className="relative mb-1 h-4 border-b border-app-divider/40">
+              {rulerMarks.map((m) => (
+                <span
+                  key={m.sec.toFixed(2)}
+                  className="absolute top-0 h-full border-l border-white/15 pl-0.5 text-[8px] font-semibold tabular-nums text-app-fg-subtle"
+                  style={{ left: `${m.leftPct}%` }}
                 >
-                  <div className="pointer-events-none flex h-full w-full flex-col items-center justify-center px-0.5">
-                    <span className="text-[8.5px] font-bold uppercase tracking-wide">{s.label}</span>
-                    <span className="text-[9px] font-semibold tabular-nums opacity-85">{s.durSec.toFixed(1)}s</span>
-                  </div>
-                </button>
-              );
-            })}
-            {/* Pause markers — visible quiet windows between segments. Without
-             *  this it's near-impossible to tell whether a small pause "took". */}
-            {gaps.map((g) => (
-              <div
-                key={g.id}
-                aria-hidden
-                title={`Pause · ${g.sec.toFixed(2)}s`}
-                style={{ left: `${g.leftPct}%`, width: `${g.widthPct}%` }}
-                className="pointer-events-none absolute top-0 bottom-0 z-[5] flex items-center justify-center rounded-sm border border-dashed border-amber-400/60 bg-amber-400/10"
-              >
-                <span className="rounded-sm bg-amber-400/80 px-1 py-px text-[8px] font-bold uppercase tracking-wide text-app-bg shadow-sm">
-                  {g.sec.toFixed(2)}s
+                  {m.sec.toFixed(m.sec >= 10 ? 0 : 1)}s
                 </span>
-              </div>
-            ))}
-            {/* One handle per cut between adjacent segments — same edit as resizing
-             *  the left clip's out-point; visually one line, not N orange edge slivers. */}
-            {segments.length >= 2 &&
-            onResizeSegmentDraft &&
-            onResizeSegmentCommit &&
-            segments.map((s, i) => {
-              if (i >= segments.length - 1) return null;
-              const boundaryPct = s.leftPct + s.widthPct;
-              return (
-                <button
-                  key={`b-${s.id}-${segments[i + 1]!.id}`}
-                  type="button"
-                  aria-label={`Resize between ${s.label} and ${segments[i + 1]!.label}`}
-                  title="Drag horizontally to shorten or lengthen the left segment (same as trimming its out-point)"
-                  onPointerDown={(e) => onBoundaryResizeStart(e, i)}
-                  className="group absolute top-0 bottom-0 z-20 flex cursor-ew-resize items-center justify-center border-0 bg-transparent p-0 outline-none hover:bg-white/10 active:bg-white/20"
-                  style={{
-                    left: `calc(${boundaryPct}% - ${BOUNDARY_HIT_PX / 2}px)`,
-                    width: BOUNDARY_HIT_PX,
-                  }}
-                >
-                  <span className="pointer-events-none h-4 w-px rounded-full bg-white/30 shadow-[0_0_2px_rgba(0,0,0,0.6)] transition-colors group-hover:bg-white/75 group-active:bg-white/90" />
-                </button>
-              );
-            })}
+              ))}
+            </div>
+            <div className="space-y-1">
+              {layers.map((s) => {
+                const isSelected = selectedSegmentId === s.id;
+                const canDragStart = s.kind !== "hook";
+                return (
+                  <div key={s.id} className="relative h-8 rounded-md bg-black/15">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        if (dragJustEndedRef.current) {
+                          e.preventDefault();
+                          return;
+                        }
+                        onSelectSegment?.(s.id);
+                        seekToSec(s.startSec + ENTRANCE_DURATION_SEC);
+                      }}
+                      style={{ left: `${s.leftPct}%`, width: `max(24px, calc(${s.widthPct}% - 2px))` }}
+                      className={`absolute top-1 bottom-1 overflow-hidden whitespace-nowrap rounded-md px-1.5 text-left leading-none transition ${
+                        isSelected ? "z-10 ring-2 ring-amber-300 ring-offset-1 ring-offset-app-chip-bg/40" : "z-0"
+                      } ${
+                        s.isCTA
+                          ? "bg-amber-500/55 text-amber-50 hover:bg-amber-500/70"
+                          : s.kind === "hook"
+                            ? "bg-violet-500/45 text-violet-50 hover:bg-violet-500/60"
+                            : "bg-fuchsia-500/45 text-fuchsia-50 hover:bg-fuchsia-500/60"
+                      }`}
+                      title={`${s.label} · ${s.startSec.toFixed(1)}s → ${s.endSec.toFixed(1)}s`}
+                    >
+                      <div className="pointer-events-none flex h-full items-center gap-1.5">
+                        <span className="shrink-0 text-[8.5px] font-black uppercase tracking-wide">{s.label}</span>
+                        <span className="min-w-0 truncate text-[9px] font-semibold opacity-90">{s.text}</span>
+                        <span className="ml-auto shrink-0 text-[8.5px] font-bold tabular-nums opacity-80">
+                          {s.durationSec.toFixed(1)}s
+                        </span>
+                      </div>
+                    </button>
+                    {canDragStart && onResizeLayerTimingDraft && onResizeLayerTimingCommit ? (
+                      <button
+                        type="button"
+                        aria-label={`Set start for ${s.label}`}
+                        title="Drag to change when this text appears"
+                        onPointerDown={(e) => onLayerEdgeResizeStart(e, s, "start")}
+                        className="group absolute top-1 bottom-1 z-20 cursor-ew-resize rounded-l-md bg-transparent p-0 outline-none hover:bg-white/10 active:bg-white/20"
+                        style={{ left: `calc(${s.leftPct}% - ${LAYER_HANDLE_PX / 2}px)`, width: LAYER_HANDLE_PX }}
+                      >
+                        <span className="mx-auto block h-full w-0.5 rounded-full bg-white/40 group-hover:bg-white/90" />
+                      </button>
+                    ) : null}
+                    {onResizeLayerTimingDraft && onResizeLayerTimingCommit ? (
+                      <button
+                        type="button"
+                        aria-label={`Set end for ${s.label}`}
+                        title="Drag to change when this text disappears"
+                        onPointerDown={(e) => onLayerEdgeResizeStart(e, s, "end")}
+                        className="group absolute top-1 bottom-1 z-20 cursor-ew-resize rounded-r-md bg-transparent p-0 outline-none hover:bg-white/10 active:bg-white/20"
+                        style={{
+                          left: `calc(${s.leftPct + s.widthPct}% - ${LAYER_HANDLE_PX / 2}px)`,
+                          width: LAYER_HANDLE_PX,
+                        }}
+                      >
+                        <span className="mx-auto block h-full w-0.5 rounded-full bg-white/40 group-hover:bg-white/90" />
+                      </button>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
             <span
               aria-hidden
-              className="pointer-events-none absolute top-0 bottom-0 z-30 w-0.5 bg-white/90 shadow-[0_0_4px_rgba(255,255,255,0.6)]"
+              className="pointer-events-none absolute top-2 bottom-2 z-30 w-0.5 bg-white/90 shadow-[0_0_4px_rgba(255,255,255,0.6)]"
               style={{ left: `${playheadPct}%`, transform: "translateX(-1px)" }}
             />
           </div>
           <div className="flex justify-end">
             <span
               className="rounded-sm bg-app-chip-bg/50 px-1.5 py-px text-[9px] font-bold tabular-nums text-app-fg-muted"
-              title={`${segments.length} segment${segments.length === 1 ? "" : "s"} · drag vertical lines on the bar to trim`}
+              title={`${layers.length} layer${layers.length === 1 ? "" : "s"} · drag each bar edge to trim timing`}
             >
               {spec.totalSec.toFixed(1)}s
             </span>
@@ -407,8 +369,8 @@ export const VideoSpecPreview = memo(VideoSpecPreviewBase, (prev, next) => {
     prev.layoutGuides === next.layoutGuides &&
     prev.selectedSegmentId === next.selectedSegmentId &&
     prev.onSelectSegment === next.onSelectSegment &&
-    prev.onResizeSegmentDraft === next.onResizeSegmentDraft &&
-    prev.onResizeSegmentCommit === next.onResizeSegmentCommit &&
+    prev.onResizeLayerTimingDraft === next.onResizeLayerTimingDraft &&
+    prev.onResizeLayerTimingCommit === next.onResizeLayerTimingCommit &&
     specsEqual(prev.spec, next.spec)
   );
 });

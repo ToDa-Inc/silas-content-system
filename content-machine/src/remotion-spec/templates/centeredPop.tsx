@@ -5,30 +5,13 @@ import { blockEntranceStyle } from '../animations';
 import { flexAlignForTextAlign } from '../alignLayout';
 import { resolveLayoutPx } from '../layout';
 import { isBoldOutlineTreatment, overlayBoldOutlineCaptionStyle } from '../textTreatment';
+import { activeCaptionLayers } from '../activeLayers';
 
 export default function CenteredPopTemplate({ spec, frame, fps }: VideoSpecWithTimeline) {
   const sec = frame / fps;
   const theme = resolveAppearance(spec);
   const layout = resolveLayoutPx(spec);
-  const hookDur = spec.hook.durationSec;
-  const showHook = sec < hookDur;
-
-  const inWindow = spec.blocks.filter((b) => sec >= b.startSec && sec < b.endSec);
-  const activeBlock = [...inWindow].sort((a, b) => b.startSec - a.startSec)[0];
-
-  const activeText = showHook ? spec.hook.text : activeBlock?.text;
-  const isCTA = !showHook && !!activeBlock?.isCTA;
-  const startFrame = showHook ? 0 : Math.round((activeBlock?.startSec ?? 0) * fps);
-  const anim = (showHook ? 'fade' : activeBlock?.animation ?? 'fade') as
-    | 'pop'
-    | 'fade'
-    | 'slide-up'
-    | 'none';
-  const animStyle = blockEntranceStyle(frame, fps, startFrame, anim);
-
-  const baseSize = showHook ? 68 : 60;
-  const ctaScaled = isCTA ? Math.round(baseSize * theme.ctaScale) : baseSize;
-  const fontSize = Math.round(ctaScaled * layout.scale);
+  const layers = activeCaptionLayers(spec, sec);
   const ta = layout.textAlign;
   const cross = flexAlignForTextAlign(ta);
 
@@ -63,14 +46,16 @@ export default function CenteredPopTemplate({ spec, frame, fps }: VideoSpecWithT
           transform: layout.translateY,
         }}
       >
-        {activeText ? (
-          <div
-            style={{
-              opacity: animStyle.opacity,
-              transform: animStyle.transform,
-            }}
-          >
-            <p
+        <div style={{ display: 'flex', flexDirection: 'column', gap: layout.stackGapPx, alignItems: cross }}>
+          {layers.map((layer) => {
+            const startFrame = Math.round(layer.startSec * fps);
+            const animStyle = blockEntranceStyle(frame, fps, startFrame, layer.animation);
+            const baseSize = layer.kind === 'hook' ? 68 : 60;
+            const ctaScaled = layer.isCTA ? Math.round(baseSize * theme.ctaScale) : baseSize;
+            const fontSize = Math.round(ctaScaled * layout.scale);
+            return (
+              <p
+                key={layer.key}
               style={{
                 fontSize,
                 fontWeight: 900,
@@ -78,9 +63,11 @@ export default function CenteredPopTemplate({ spec, frame, fps }: VideoSpecWithT
                 margin: 0,
                 padding: 0,
                 fontFamily: theme.bodyFontStack,
-                lineHeight: showHook ? 1.1 : 1.15,
-                letterSpacing: showHook ? '-1.5px' : '-1px',
+                lineHeight: layer.kind === 'hook' ? 1.1 : 1.15,
+                letterSpacing: layer.kind === 'hook' ? '-1.5px' : '-1px',
                 maxWidth: '100%',
+                opacity: animStyle.opacity,
+                transform: animStyle.transform,
                 ...(isBoldOutlineTreatment(spec)
                   ? overlayBoldOutlineCaptionStyle(spec)
                   : {
@@ -93,10 +80,11 @@ export default function CenteredPopTemplate({ spec, frame, fps }: VideoSpecWithT
                 overflowWrap: 'break-word',
               }}
             >
-              {activeText}
+              {layer.text}
             </p>
-          </div>
-        ) : null}
+            );
+          })}
+        </div>
       </div>
     </AbsoluteFill>
   );

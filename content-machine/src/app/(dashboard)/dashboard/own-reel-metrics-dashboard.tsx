@@ -43,16 +43,25 @@ const LINE_COLORS_DARK = [
   "#fb923c",
 ] as const;
 
-const MAX_SERIES = 8;
+/** Backend page size for collecting every reel in the selected publication-date window. */
+const BACKEND_REELS_PAGE_LIMIT = 100;
+/** Reels shown per UI page, ranked best to worst by the selected metric. */
+const REELS_PER_PAGE = 20;
 
 type MetricKey = "views" | "likes" | "comments";
 type ChartKind = "line" | "area" | "bars";
 type YScale = "linear" | "log";
-/** Presets use the latest snapshot as the window end; custom uses calendar from/to (local day bounds). */
+/** Presets and custom both filter by reel publication date (scraped_reels.posted_at). */
 type PresetTimeRange = "30d" | "90d" | "all";
 type TrendTimeRange = PresetTimeRange | "custom";
 
 type ChartRow = Record<string, string | number | null | undefined>;
+type BarRow = {
+  name: string;
+  v: number;
+  fill: string;
+  postUrl?: string | null;
+};
 
 const IG_POST_PATH = /instagram\.com\/(?:reel|reels|p|tv)\/([^/?#]+)/i;
 
@@ -88,28 +97,13 @@ function latestMetricValue(r: OwnReelsMetricsSeries, m: MetricKey): number {
   return 0;
 }
 
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
-function filterReelsByTimeRange(
-  reels: OwnReelsMetricsSeries[],
-  range: PresetTimeRange,
-): OwnReelsMetricsSeries[] {
-  if (range === "all") return reels;
-  const days = range === "30d" ? 30 : 90;
-  let anchor = 0;
-  for (const r of reels) {
-    for (const p of r.points) {
-      const t = new Date(p.scraped_at).getTime();
-      if (Number.isFinite(t)) anchor = Math.max(anchor, t);
-    }
-  }
-  if (!anchor) return reels;
-  const cut = anchor - days * MS_PER_DAY;
-  return reels.map((r) => ({
-    ...r,
-    points: r.points.filter((p) => new Date(p.scraped_at).getTime() >= cut),
-  }));
+function openInstagramReel(postUrl: string | null | undefined): void {
+  const url = (postUrl || "").trim();
+  if (!url) return;
+  window.open(url, "_blank", "noopener,noreferrer");
 }
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 function toYmdLocal(d: Date): string {
   const y = d.getFullYear();
@@ -118,50 +112,48 @@ function toYmdLocal(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-/** Default custom range: last 30 days before newest snapshot (same idea as the 30d preset). */
-function defaultCustomBounds(
-  reels: OwnReelsMetricsSeries[],
-): { from: string; to: string } {
-  let anchor = 0;
-  for (const r of reels) {
-    for (const p of r.points) {
-      const t = new Date(p.scraped_at).getTime();
-      if (Number.isFinite(t)) anchor = Math.max(anchor, t);
+/** Default custom range: last 30 days before today, scoped to local YYYY-MM-DD. */
+function defaultCustomBounds(): { from: string; to: string } {
+  const now = new Date();
+  const fromD = new Date(now.getTime() - 30 * MS_PER_DAY);
+  return { from: toYmdLocal(fromD), to: toYmdLocal(now) };
+}
+
+/**
+ * Translate the active time-range UI control into ISO bounds on
+ * scraped_reels.posted_at for the metrics endpoint. Returns undefined fields
+ * when no bound applies.
+ */
+function postedBoundsForRequest(
+  range: TrendTimeRange,
+  customFromYmd: string,
+  customToYmd: string,
+): { postedAfter?: string; postedBefore?: string } {
+  if (range === "all") return {};
+  if (range === "custom") {
+    if (!customFromYmd && !customToYmd) return {};
+    let startMs = customFromYmd ? new Date(`${customFromYmd}T00:00:00`).getTime() : Number.NaN;
+    let endMs = customToYmd ? new Date(`${customToYmd}T23:59:59.999`).getTime() : Number.NaN;
+    if (Number.isFinite(startMs) && Number.isFinite(endMs) && startMs > endMs) {
+      [startMs, endMs] = [endMs, startMs];
     }
+    return {
+      postedAfter: Number.isFinite(startMs) ? new Date(startMs).toISOString() : undefined,
+      postedBefore: Number.isFinite(endMs) ? new Date(endMs).toISOString() : undefined,
+    };
   }
-  if (!anchor) return { from: "", to: "" };
-  const toD = new Date(anchor);
-  const fromD = new Date(anchor - 30 * MS_PER_DAY);
-  return { from: toYmdLocal(fromD), to: toYmdLocal(toD) };
+  const days = range === "30d" ? 30 : 90;
+  return {
+    postedAfter: new Date(Date.now() - days * MS_PER_DAY).toISOString(),
+  };
 }
 
-function filterReelsByCustomRange(
-  reels: OwnReelsMetricsSeries[],
-  fromYmd: string,
-  toYmd: string,
-): OwnReelsMetricsSeries[] {
-  if (!fromYmd || !toYmd) return reels;
-  let startMs = new Date(`${fromYmd}T00:00:00`).getTime();
-  let endMs = new Date(`${toYmd}T23:59:59.999`).getTime();
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return reels;
-  if (startMs > endMs) [startMs, endMs] = [endMs, startMs];
-  return reels.map((r) => ({
-    ...r,
-    points: r.points.filter((p) => {
-      const t = new Date(p.scraped_at).getTime();
-      return Number.isFinite(t) && t >= startMs && t <= endMs;
-    }),
-  }));
-}
-
+/** Loaded reels that have at least one valid point for the chosen metric. */
 function pickSeries(
   reels: OwnReelsMetricsSeries[],
   m: MetricKey,
 ): OwnReelsMetricsSeries[] {
-  return [...reels]
-    .filter((r) => r.points.some((p) => metricAtPoint(p, m) !== null))
-    .sort((a, b) => latestMetricValue(b, m) - latestMetricValue(a, m))
-    .slice(0, MAX_SERIES);
+  return reels.filter((r) => r.points.some((p) => metricAtPoint(p, m) !== null));
 }
 
 /**
@@ -269,7 +261,7 @@ function proxiedThumbSrc(raw: string | null | undefined): string {
 type Props = {
   clientSlug: string;
   orgSlug: string;
-  /** When set (e.g. from `/dashboard?focusReel=`), isolate this reel on first load. */
+  /** When set (e.g. from `/dashboard?focusReel=`), ensure this reel stays visible on first load. */
   focusReelId?: string;
 };
 
@@ -394,48 +386,93 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug, focusReelId }: Pr
   const appliedFocusKey = useRef<string | null>(null);
   const [metric, setMetric] = useState<MetricKey>("views");
   const [chartKind, setChartKind] = useState<ChartKind>("line");
-  const [timeRange, setTimeRange] = useState<TrendTimeRange>("all");
+  const [timeRange, setTimeRange] = useState<TrendTimeRange>("30d");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
+  /** Reels in the selected publication-date window, newest first. */
   const [raw, setRaw] = useState<OwnReelsMetricsSeries[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [hiddenReelIds, setHiddenReelIds] = useState<Set<string>>(new Set());
   const [yScale, setYScale] = useState<YScale>("linear");
-  // True until the user interacts with the picker; lets us auto-default the
-  // top-4 visible state without ever overriding an explicit user choice.
-  const [autoHideApplied, setAutoHideApplied] = useState<boolean>(false);
+  const [currentPage, setCurrentPage] = useState(0);
+  /** Server-reported total reels matching the current posted-date filters. */
+  const [total, setTotal] = useState<number>(0);
   const canFetch = Boolean(clientSlug.trim() && orgSlug.trim());
   const [loading, setLoading] = useState(canFetch);
 
+  // Track the request bound key so a slow first-page response from a previous
+  // filter can never overwrite a fresher one.
+  const requestKeyRef = useRef<string>("");
+  const buildRequestKey = (
+    cs: string,
+    os: string,
+    range: TrendTimeRange,
+    cf: string,
+    ct: string,
+  ) => `${cs}|${os}|${range}|${cf}|${ct}`;
+
+  // Date-window fetch: replace the shown reels whenever the publication-date
+  // range changes. There is no pagination; the date range is the selection tool.
   useEffect(() => {
     if (!canFetch) {
+      setRaw(null);
+      setTotal(0);
+      setLoading(false);
       return;
     }
     let cancelled = false;
+    const key = buildRequestKey(clientSlug, orgSlug, timeRange, customFrom, customTo);
+    requestKeyRef.current = key;
+    setLoading(true);
+    setErr(null);
     queueMicrotask(() => {
       if (cancelled) return;
-      setLoading(true);
-      setErr(null);
       void (async () => {
-        const res = await fetchOwnReelsMetrics(clientSlug, orgSlug);
-        if (cancelled) return;
-        if (!res.ok) {
-          setErr(res.error);
-          setRaw(null);
-        } else {
-          setRaw(res.data.reels);
+        const bounds = postedBoundsForRequest(timeRange, customFrom, customTo);
+        const allReels: OwnReelsMetricsSeries[] = [];
+        let nextOffset = 0;
+        let nextTotal = 0;
+        let hasMore = true;
+
+        while (hasMore) {
+          const res = await fetchOwnReelsMetrics(clientSlug, orgSlug, {
+            limit: BACKEND_REELS_PAGE_LIMIT,
+            offset: nextOffset,
+            postedAfter: bounds.postedAfter,
+            postedBefore: bounds.postedBefore,
+          });
+          if (cancelled || requestKeyRef.current !== key) return;
+          if (!res.ok) {
+            setErr(res.error);
+            setRaw(null);
+            setTotal(0);
+            setLoading(false);
+            return;
+          }
+          allReels.push(...res.data.reels);
+          nextTotal = res.data.total;
+          hasMore = res.data.has_more && res.data.reels.length > 0;
+          nextOffset += res.data.reels.length;
         }
+
+        if (cancelled || requestKeyRef.current !== key) return;
+        setRaw(allReels);
+        setTotal(nextTotal);
         setLoading(false);
       })();
     });
     return () => {
       cancelled = true;
     };
-  }, [canFetch, clientSlug, orgSlug]);
+  }, [canFetch, clientSlug, orgSlug, timeRange, customFrom, customTo]);
 
   useEffect(() => {
     appliedFocusKey.current = null;
   }, [clientSlug, orgSlug, focusReelId]);
+
+  useEffect(() => {
+    setCurrentPage(0);
+  }, [clientSlug, orgSlug, timeRange, customFrom, customTo, metric]);
 
   useEffect(() => {
     const fid = focusReelId?.trim();
@@ -445,28 +482,33 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug, focusReelId }: Pr
     const key = `${clientSlug}:${orgSlug}:${fid}`;
     if (appliedFocusKey.current === key) return;
     appliedFocusKey.current = key;
-    const all = new Set(raw.map((r) => r.reel_id));
-    setHiddenReelIds(new Set([...all].filter((id) => id !== fid)));
-    setAutoHideApplied(true);
+    setHiddenReelIds((prev) => {
+      if (!prev.has(fid)) return prev;
+      const next = new Set(prev);
+      next.delete(fid);
+      return next;
+    });
   }, [raw, focusReelId, clientSlug, orgSlug]);
 
+  // Custom range default: prefill from/to (last 30 days) when user picks "Custom"
+  // without typing dates. Independent of the loaded dataset since we now filter
+  // by reel posted_at, not by snapshot times.
   useEffect(() => {
-    if (timeRange !== "custom" || !raw?.length) return;
+    if (timeRange !== "custom") return;
     if (customFrom && customTo) return;
-    const d = defaultCustomBounds(raw);
+    const d = defaultCustomBounds();
     if (d.from && d.to) {
       setCustomFrom(d.from);
       setCustomTo(d.to);
     }
-  }, [timeRange, raw, customFrom, customTo]);
+  }, [timeRange, customFrom, customTo]);
 
-  // Reset the auto-hide gate whenever a fresh dataset arrives so the top-4
-  // default re-applies after a client switch or manual reload.
+  // Reset manual hidden state whenever the active ranked page changes.
   useEffect(() => {
-    setAutoHideApplied(false);
-  }, [raw]);
+    setHiddenReelIds(new Set());
+  }, [clientSlug, orgSlug, timeRange, customFrom, customTo, metric, currentPage]);
 
-  // Prune stale hidden IDs (reels no longer in dataset).
+  // Prune stale hidden IDs (reels no longer in dataset, e.g. after a filter switch).
   useEffect(() => {
     if (!raw) return;
     setHiddenReelIds((prev) => {
@@ -478,7 +520,6 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug, focusReelId }: Pr
   }, [raw]);
 
   const toggleReelVisibility = (reelId: string) => {
-    setAutoHideApplied(true); // user interacted — stop auto-managing
     setHiddenReelIds((prev) => {
       const next = new Set(prev);
       if (next.has(reelId)) next.delete(reelId);
@@ -497,62 +538,46 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug, focusReelId }: Pr
 
   const effectiveRaw = canFetch ? raw : null;
 
-  const snapshotYmdBounds = useMemo(() => {
-    if (!effectiveRaw?.length) return { min: "", max: "" };
-    let lo = Infinity;
-    let hi = 0;
-    for (const r of effectiveRaw) {
-      for (const p of r.points) {
-        const t = new Date(p.scraped_at).getTime();
-        if (Number.isFinite(t)) {
-          lo = Math.min(lo, t);
-          hi = Math.max(hi, t);
-        }
-      }
-    }
-    if (!Number.isFinite(lo) || !hi) return { min: "", max: "" };
-    return { min: toYmdLocal(new Date(lo)), max: toYmdLocal(new Date(hi)) };
-  }, [effectiveRaw]);
+  // Date inputs use today as upper bound — server-side `posted_after`/`posted_before`
+  // already drive the filter, so we don't need a min/max derived from the dataset.
+  const todayYmd = useMemo(() => toYmdLocal(new Date()), []);
 
-  const rangeFilteredRaw = useMemo(() => {
-    if (!effectiveRaw) return null;
-    if (timeRange === "custom") {
-      if (!customFrom || !customTo) return effectiveRaw;
-      return filterReelsByCustomRange(effectiveRaw, customFrom, customTo);
-    }
-    return filterReelsByTimeRange(effectiveRaw, timeRange);
-  }, [effectiveRaw, timeRange, customFrom, customTo]);
-
-  const series = useMemo(
-    () => (rangeFilteredRaw ? pickSeries(rangeFilteredRaw, metric) : []),
-    [rangeFilteredRaw, metric],
+  const loadedSeries = useMemo(
+    () => (effectiveRaw ? pickSeries(effectiveRaw, metric) : []),
+    [effectiveRaw, metric],
   );
+
+  const rankedSeries = useMemo(
+    () =>
+      [...loadedSeries].sort(
+        (a, b) => latestMetricValue(b, metric) - latestMetricValue(a, metric),
+      ),
+    [loadedSeries, metric],
+  );
+
+  const totalPages = Math.max(1, Math.ceil(rankedSeries.length / REELS_PER_PAGE));
+  const safeCurrentPage = Math.min(currentPage, totalPages - 1);
+  const pageStart = safeCurrentPage * REELS_PER_PAGE;
+  const pageEnd = Math.min(pageStart + REELS_PER_PAGE, rankedSeries.length);
+  const pageSeries = useMemo(
+    () => rankedSeries.slice(pageStart, pageEnd),
+    [rankedSeries, pageStart, pageEnd],
+  );
+
+  const series = pageSeries;
 
   const { rows, dataKeys, labels } = useMemo(
     () => buildMergedRows(series, metric),
     [series, metric],
   );
 
-  // Default: only top 4 by latest metric are visible. Picker still shows all
-  // MAX_SERIES so the user can toggle any of the quiet reels on. Applies once
-  // per dataset; any manual toggle disables auto-management.
-  const DEFAULT_VISIBLE = 4;
-  useEffect(() => {
-    if (autoHideApplied || series.length <= DEFAULT_VISIBLE) return;
-    const rankedIds = [...series]
-      .sort((a, b) => latestMetricValue(b, metric) - latestMetricValue(a, metric))
-      .map((r) => r.reel_id);
-    const hide = new Set(rankedIds.slice(DEFAULT_VISIBLE));
-    setHiddenReelIds(hide);
-    setAutoHideApplied(true);
-  }, [series, metric, autoHideApplied]);
-
-  const barRows = useMemo(() => {
+  const barRows = useMemo<BarRow[]>(() => {
     return series.map((r, i) => ({
       name:
         labels[i].length > 18 ? `${labels[i].slice(0, 16)}…` : labels[i],
       v: latestMetricValue(r, metric),
       fill: lineColors[i % lineColors.length],
+      postUrl: r.post_url,
     }));
   }, [series, labels, metric, lineColors]);
 
@@ -562,21 +587,61 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug, focusReelId }: Pr
     dataKeys.some((k) => row[k] != null && row[k] !== ""),
   );
 
-  const hasSnapshotsInRange = useMemo(() => {
-    if (!rangeFilteredRaw) return false;
-    return rangeFilteredRaw.some((r) => r.points.length > 0);
-  }, [rangeFilteredRaw]);
-
-  const rangeHasNoSnapshots =
-    Boolean(effectiveRaw?.length) &&
-    timeRange !== "all" &&
-    !(timeRange === "custom" && (!customFrom || !customTo)) &&
-    !hasSnapshotsInRange;
-
   const hasBarData = barRows.some((r) => r.v > 0);
 
-  /** One snapshot → many series share the same X → line/area stacks dots; use bars + copy instead. */
-  const singleSnapshotOnly = rows.length < 2;
+  const visibleDataKeys = useMemo(
+    () =>
+      dataKeys.filter((_, i) => {
+        const reelId = series[i]?.reel_id ?? "";
+        return reelId && !hiddenReelIds.has(reelId);
+      }),
+    [dataKeys, series, hiddenReelIds],
+  );
+
+  const visibleRowsWithAnyPoint = useMemo(
+    () =>
+      rows.filter((row) =>
+        visibleDataKeys.some((k) => row[k] != null && row[k] !== ""),
+      ).length,
+    [rows, visibleDataKeys],
+  );
+
+  const loadedReelCount = effectiveRaw?.length ?? 0;
+  const rankedReelCount = rankedSeries.length;
+  const dateRangeStrip = effectiveRaw?.length ? (
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-[11px] text-app-fg-subtle">
+      <p>
+        Showing {rankedReelCount ? pageStart + 1 : 0}-{pageEnd} of {rankedReelCount} reels ranked by {metric}
+        {total > loadedReelCount ? ` (${loadedReelCount} of ${total} loaded)` : ""}.
+      </p>
+      {rankedReelCount > REELS_PER_PAGE ? (
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setCurrentPage((p) => Math.max(0, p - 1))}
+            disabled={safeCurrentPage <= 0}
+            className="rounded-full border border-app-card-border bg-app-chip-bg px-3 py-1 text-[11px] font-semibold text-app-fg-secondary transition-colors hover:bg-app-chip-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Previous
+          </button>
+          <span>
+            Page {safeCurrentPage + 1} of {totalPages}
+          </span>
+          <button
+            type="button"
+            onClick={() => setCurrentPage((p) => Math.min(totalPages - 1, p + 1))}
+            disabled={safeCurrentPage >= totalPages - 1}
+            className="rounded-full border border-app-card-border bg-app-chip-bg px-3 py-1 text-[11px] font-semibold text-app-fg-secondary transition-colors hover:bg-app-chip-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Next
+          </button>
+        </div>
+      ) : null}
+    </div>
+  ) : null;
+
+  /** One visible snapshot → line/area looks empty; use bars + copy instead. */
+  const singleSnapshotOnly = visibleRowsWithAnyPoint < 2;
 
   /** Recharts tooltips inherit app text color — force label/body colors per theme. */
   const tooltipContentStyle: CSSProperties = {
@@ -737,8 +802,7 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug, focusReelId }: Pr
                 type="date"
                 value={customFrom}
                 onChange={(e) => setCustomFrom(e.target.value)}
-                min={snapshotYmdBounds.min || undefined}
-                max={customTo || snapshotYmdBounds.max || undefined}
+                max={customTo || todayYmd}
                 className="rounded-lg border border-app-card-border bg-app-chip-bg px-2 py-1.5 text-xs text-app-fg [color-scheme:light] dark:[color-scheme:dark]"
               />
             </label>
@@ -748,8 +812,8 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug, focusReelId }: Pr
                 type="date"
                 value={customTo}
                 onChange={(e) => setCustomTo(e.target.value)}
-                min={customFrom || snapshotYmdBounds.min || undefined}
-                max={snapshotYmdBounds.max || undefined}
+                min={customFrom || undefined}
+                max={todayYmd}
                 className="rounded-lg border border-app-card-border bg-app-chip-bg px-2 py-1.5 text-xs text-app-fg [color-scheme:light] dark:[color-scheme:dark]"
               />
             </label>
@@ -767,35 +831,45 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug, focusReelId }: Pr
         <p className="text-sm text-app-callout-warning-fg">{err}</p>
       ) : !effectiveRaw?.length ? (
         <div className="space-y-2 py-12 text-center">
-          <p className="text-sm font-medium text-app-fg">No own reels stored yet</p>
-          <p className="text-xs text-app-fg-muted">
-            Finish onboarding, then use <strong className="text-app-fg">Update my reels</strong> at the
-            top of the Dashboard (or Intelligence) to pull your posts from Instagram.
+          <p className="text-sm font-medium text-app-fg">
+            {timeRange === "all"
+              ? "No own reels stored yet"
+              : "No reels match this date range"}
           </p>
-          <Link
-            href="/intelligence"
-            className="inline-block text-xs font-semibold text-app-accent underline-offset-2 hover:underline"
-          >
-            Open Intelligence
-          </Link>
-        </div>
-      ) : rangeHasNoSnapshots ? (
-        <div className="space-y-2 py-12 text-center">
-          <p className="text-sm font-medium text-app-fg">No snapshots in this range</p>
           <p className="text-xs text-app-fg-muted">
-            Try <strong className="text-app-fg">Historic</strong> or widen your custom dates, or sync reels
-            again so data falls inside the window.
+            {timeRange === "all" ? (
+              <>
+                Finish onboarding, then use <strong className="text-app-fg">Update my reels</strong> at the
+                top of the Dashboard (or Intelligence) to pull your posts from Instagram.
+              </>
+            ) : (
+              <>
+                Try <strong className="text-app-fg">All</strong> or widen your custom dates to see more reels.
+              </>
+            )}
           </p>
+          {timeRange === "all" ? (
+            <Link
+              href="/intelligence"
+              className="inline-block text-xs font-semibold text-app-accent underline-offset-2 hover:underline"
+            >
+              Open Intelligence
+            </Link>
+          ) : null}
         </div>
       ) : chartKind === "bars" ? (
         !hasBarData ? (
-          <div className="py-12 text-center text-sm text-app-fg-muted">
-            No {metric} values to compare yet.
-          </div>
+          <>
+            {dateRangeStrip}
+            <div className="py-12 text-center text-sm text-app-fg-muted">
+              No {metric} values to compare yet.
+            </div>
+          </>
         ) : (
           <>
+            {dateRangeStrip}
             <p className="mb-3 text-[11px] text-app-fg-subtle">
-              Latest {metric} per reel (top {barRows.length} by {metric})
+              Latest {metric} per reel ({barRows.length} reels by {metric})
             </p>
             <div style={{ height: barChartHeight }} className="w-full min-w-0">
               <ResponsiveContainer width="100%" height="100%">
@@ -829,7 +903,16 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug, focusReelId }: Pr
                       metric,
                     ]}
                   />
-                  <Bar dataKey="v" radius={[0, 6, 6, 0]} maxBarSize={28}>
+                  <Bar
+                    dataKey="v"
+                    radius={[0, 6, 6, 0]}
+                    maxBarSize={28}
+                    cursor="pointer"
+                    onClick={(data: unknown) => {
+                      const row = data as { payload?: BarRow };
+                      openInstagramReel(row.payload?.postUrl);
+                    }}
+                  >
                     {barRows.map((e, i) => (
                       <Cell key={`c-${i}`} fill={e.fill} />
                     ))}
@@ -840,14 +923,18 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug, focusReelId }: Pr
           </>
         )
       ) : !hasAnyPoint ? (
-        <div className="space-y-2 py-12 text-center">
-          <p className="text-sm font-medium text-app-fg">No history for {metric} yet</p>
-          <p className="text-xs text-app-fg-muted">
-            After you pull your reels again, more snapshot points will show up here.
-          </p>
-        </div>
+        <>
+          {dateRangeStrip}
+          <div className="space-y-2 py-12 text-center">
+            <p className="text-sm font-medium text-app-fg">No history for {metric} yet</p>
+            <p className="text-xs text-app-fg-muted">
+              After you pull your reels again, more snapshot points will show up here.
+            </p>
+          </div>
+        </>
       ) : singleSnapshotOnly ? (
         <>
+          {dateRangeStrip}
           <div className="mb-4 rounded-xl border border-app-accent/25 bg-app-accent/10 px-3 py-2.5 text-[11px] leading-relaxed text-app-fg-secondary">
             <span className="font-semibold text-app-on-amber-title dark:text-amber-100/90">
               One snapshot so far.
@@ -897,7 +984,16 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug, focusReelId }: Pr
                         metric,
                       ]}
                     />
-                    <Bar dataKey="v" radius={[0, 6, 6, 0]} maxBarSize={28}>
+                    <Bar
+                      dataKey="v"
+                      radius={[0, 6, 6, 0]}
+                      maxBarSize={28}
+                      cursor="pointer"
+                      onClick={(data: unknown) => {
+                        const row = data as { payload?: BarRow };
+                        openInstagramReel(row.payload?.postUrl);
+                      }}
+                    >
                       {barRows.map((e, i) => (
                         <Cell key={`snap-${i}`} fill={e.fill} />
                       ))}
@@ -910,14 +1006,7 @@ export function OwnReelMetricsDashboard({ clientSlug, orgSlug, focusReelId }: Pr
         </>
       ) : (
         <>
-          {effectiveRaw.length > MAX_SERIES ? (
-            <p className="mb-4 text-[11px] text-app-fg-subtle">
-              Showing top {MAX_SERIES} reels by latest {metric}.{" "}
-              <Link href="/intelligence/reels" className="text-app-accent hover:underline">
-                View all reels
-              </Link>
-            </p>
-          ) : null}
+          {dateRangeStrip}
           <ReelPickerStrip
             series={series}
             labels={labels}

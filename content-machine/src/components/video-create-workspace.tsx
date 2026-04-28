@@ -55,6 +55,7 @@ import {
   type GenerationSession,
   type TextBlock,
 } from "@/lib/api-client";
+import { DEFAULT_COVER_EDIT, coverPayload, type CoverEditState } from "@/lib/cover-edit";
 import {
   buildPreviewSpecFromSession,
   DEFAULT_APPEARANCE,
@@ -76,6 +77,13 @@ import {
   type CascadeMode,
 } from "@/lib/video-spec-timing";
 import { effectivePausesSec, relayoutTimeline } from "@/lib/video-spec-timeline";
+import {
+  buildLayerRows,
+  computeLayerTimingChange,
+  createTextLayer,
+  deleteTextLayer,
+  editTextLayer,
+} from "@/lib/video-spec-layer-timeline";
 import {
   APPEARANCE_CLEAR_OPS,
   appearanceOpsToPatchOps,
@@ -732,9 +740,12 @@ function ReelCoverSection({
   thumbnailBusy,
   coverText,
   selectedImageId,
+  selectedCoverTemplate,
+  coverEdit,
   mode,
   onModeChange,
   onCoverTextChange,
+  onCoverEditChange,
   onSelectImage,
   onGenerateAi,
   onComposeFromImage,
@@ -751,9 +762,12 @@ function ReelCoverSection({
   thumbnailBusy: boolean;
   coverText: string;
   selectedImageId: string;
+  selectedCoverTemplate?: GenerationSession["selected_cover_template"] | null;
+  coverEdit: CoverEditState;
   mode: CoverMode;
   onModeChange: (m: CoverMode) => void;
   onCoverTextChange: (s: string) => void;
+  onCoverEditChange: (next: CoverEditState) => void;
   onSelectImage: (id: string) => void;
   onGenerateAi: () => void;
   onComposeFromImage: () => void;
@@ -763,69 +777,122 @@ function ReelCoverSection({
   const chipItems: string[] = usingCoverOptions
     ? coverOptions
     : hooks.map((h) => h?.text ?? "").filter(Boolean);
+  const selectedImage = images.find((img) => img.id === selectedImageId) ?? null;
+  const previewText = coverText.trim() || "Cover headline";
+  const coverFormat = layoutFormatFromTemplateId(coverEdit.templateId);
+  const coverPin = coverEdit.templateId === "top-banner" ? "top" : coverEdit.layout.verticalAnchor ?? "center";
+  const coverFontMood = inferFontMood(coverEdit.appearance);
+  const coverContrast = inferContrast(coverEdit.appearance, coverEdit.templateId, coverEdit.themeId as VideoThemeId);
+  const coverHasAppearanceOverrides = appearanceHasSavedOverrides(coverEdit.appearance);
+  const coverFontFamily =
+    coverEdit.appearance.fontId === "playfair"
+      ? "Georgia, 'Times New Roman', serif"
+      : coverEdit.appearance.fontId === "patrick"
+        ? "'Segoe Print', 'Bradley Hand', cursive"
+        : "ui-sans-serif, system-ui";
+  const coverTextColor = coverEdit.appearance.overlayTextColor ?? (coverContrast === "light" ? "#ffffff" : "#0a0a0a");
+  const coverStroke = coverEdit.textTreatment === "bold-outline" ? (coverEdit.appearance.overlayStroke ?? "#000000") : "transparent";
+  const coverCardBg =
+    coverEdit.appearance.cardBg ??
+    (coverContrast === "light" ? "rgba(20,20,20,0.72)" : coverFormat === "center" ? "transparent" : "rgba(255,255,255,0.88)");
+  const coverTextTop =
+    coverPin === "top"
+      ? `${16 + coverEdit.layout.verticalOffset * 100}%`
+      : coverPin === "bottom"
+        ? undefined
+        : `${50 + coverEdit.layout.verticalOffset * 100}%`;
+  const coverTextBottom = coverPin === "bottom" ? `${16 - coverEdit.layout.verticalOffset * 100}%` : undefined;
+  const setCoverLayout = <K extends keyof VideoSpecLayout>(key: K, value: VideoSpecLayout[K]) =>
+    onCoverEditChange({ ...coverEdit, layout: { ...coverEdit.layout, [key]: value } });
+  const setCoverAppearanceOps = (ops: AppearanceOp[]) =>
+    onCoverEditChange({ ...coverEdit, appearance: mergeAppearanceOpsIntoDraft(coverEdit.appearance, ops) });
   return (
     <div className="glass rounded-2xl border border-app-divider/80 p-5 md:p-6">
       <StepHeader n={step} label="Reel cover" done={Boolean(thumbnailUrl)}>
         <span className="text-[10px] text-app-fg-subtle">Instagram cover · 9:16</span>
       </StepHeader>
 
-      {/* Source toggle: AI image vs. existing client image */}
-      <div className="mb-4 inline-flex rounded-xl border border-app-divider bg-app-chip-bg/40 p-1">
-        <button
-          type="button"
-          onClick={() => onModeChange("ai")}
-          className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-colors ${
-            mode === "ai" ? "bg-white/10 text-app-fg shadow-sm" : "text-app-fg-muted hover:text-app-fg"
-          }`}
-        >
-          <Sparkles className="h-3 w-3" /> AI image
-        </button>
-        <button
-          type="button"
-          onClick={() => onModeChange("image")}
-          className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-colors ${
-            mode === "image" ? "bg-white/10 text-app-fg shadow-sm" : "text-app-fg-muted hover:text-app-fg"
-          }`}
-        >
-          <ImageIcon className="h-3 w-3" /> Client image
-        </button>
-      </div>
+      {selectedCoverTemplate ? (
+        <div className="mb-4 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-app-fg-muted">
+          <span className="font-semibold text-app-fg">Template:</span>{" "}
+          {selectedCoverTemplate.name}
+          {selectedCoverTemplate.instruction ? ` · ${selectedCoverTemplate.instruction}` : ""}
+        </div>
+      ) : null}
 
-      <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
-        <div className="mx-auto shrink-0 sm:mx-0">
-          {thumbnailBusy ? (
-            <div
-              className="flex w-[140px] flex-col items-center justify-center gap-2 rounded-xl border border-app-divider bg-app-chip-bg/40"
-              style={{ aspectRatio: "9/16" }}
-            >
-              <Loader2 className="h-6 w-6 animate-spin text-app-fg-subtle" />
-              <p className="text-[10px] text-app-fg-muted">{mode === "ai" ? "~30–60s" : "few seconds"}</p>
-            </div>
-          ) : thumbnailUrl ? (
-            <a href={thumbnailUrl} target="_blank" rel="noreferrer" title="Open full size">
-              <div className="w-[140px] overflow-hidden rounded-xl border border-app-divider shadow-md">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={thumbnailUrl}
-                  alt="Reel cover"
-                  width={140}
-                  className="block w-full object-cover"
-                  style={{ aspectRatio: "9/16" }}
-                />
+      <div className="grid gap-6 lg:grid-cols-[300px_minmax(0,1fr)] lg:items-start">
+        <div className="mx-auto w-full max-w-[300px] lg:mx-0">
+          <div className="relative aspect-[9/16] w-full overflow-hidden rounded-xl border border-app-divider bg-zinc-950 shadow-lg shadow-black/40 ring-1 ring-white/5">
+            {thumbnailBusy ? (
+              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-black/45">
+                <Loader2 className="h-6 w-6 animate-spin text-app-fg-subtle" />
+                <p className="text-[10px] text-app-fg-muted">{mode === "ai" ? "~30–60s" : "few seconds"}</p>
               </div>
-            </a>
-          ) : (
+            ) : null}
+            {mode === "image" && selectedImage ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={selectedImage.file_url}
+                alt=""
+                className={`h-full w-full object-cover ${coverEdit.wash ? "grayscale opacity-70" : ""}`}
+                style={{
+                  objectPosition: `50% ${Math.round(coverEdit.cropY * 100)}%`,
+                  transform: `scale(${coverEdit.zoom})`,
+                }}
+              />
+            ) : thumbnailUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={thumbnailUrl} alt="Reel cover" className="block h-full w-full object-cover" />
+            ) : (
+              <div className="h-full w-full bg-[radial-gradient(circle_at_50%_35%,rgba(255,255,255,0.9),rgba(245,210,160,0.45),rgba(20,20,20,0.2))]" />
+            )}
             <div
-              className="flex w-[140px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-app-divider/70 bg-app-chip-bg/20"
-              style={{ aspectRatio: "9/16" }}
+              className="absolute font-bold leading-tight"
+              style={{
+                left: `${Math.round(coverEdit.layout.sidePadding * 100)}%`,
+                right: `${Math.round(coverEdit.layout.sidePadding * 100)}%`,
+                top: coverTextTop,
+                bottom: coverTextBottom,
+                transform: coverPin === "center" ? "translateY(-50%)" : undefined,
+                textAlign: coverEdit.layout.textAlign,
+                fontSize: `${Math.round(38 * coverEdit.layout.scale)}px`,
+                fontFamily: coverFontFamily,
+                color: coverTextColor,
+                background: coverFormat === "center" ? "transparent" : coverCardBg,
+                borderRadius: coverFormat === "center" ? undefined : "14px",
+                padding: coverFormat === "center" ? undefined : "16px",
+                WebkitTextStroke: coverEdit.textTreatment === "bold-outline" ? `1.8px ${coverStroke}` : undefined,
+                textShadow: coverContrast === "light" ? "0 2px 8px rgba(0,0,0,0.9)" : undefined,
+              }}
             >
-              <ImageIcon className="h-6 w-6 text-app-fg-subtle opacity-30" />
-              <p className="px-3 text-center text-[10px] text-app-fg-subtle">No cover yet</p>
+              {previewText.length > 80 ? `${previewText.slice(0, 80)}…` : previewText}
             </div>
-          )}
+          </div>
+          <p className="mt-2 text-center text-[10px] text-app-fg-subtle">Instagram cover · 9:16</p>
         </div>
 
-        <div className="flex min-w-0 flex-1 flex-col gap-3">
+        <div className="flex min-w-0 flex-col gap-4">
+          {/* Source toggle: AI image vs. existing client image */}
+          <div className="inline-flex self-start rounded-xl border border-app-divider bg-app-chip-bg/40 p-1">
+            <button
+              type="button"
+              onClick={() => onModeChange("ai")}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-colors ${
+                mode === "ai" ? "bg-white/10 text-app-fg shadow-sm" : "text-app-fg-muted hover:text-app-fg"
+              }`}
+            >
+              <Sparkles className="h-3 w-3" /> AI image
+            </button>
+            <button
+              type="button"
+              onClick={() => onModeChange("image")}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-colors ${
+                mode === "image" ? "bg-white/10 text-app-fg shadow-sm" : "text-app-fg-muted hover:text-app-fg"
+              }`}
+            >
+              <ImageIcon className="h-3 w-3" /> Client image
+            </button>
+          </div>
           <p className="text-xs leading-relaxed text-app-fg-muted">
             {mode === "ai"
               ? "AI generates a 9:16 background with the hook burned in."
@@ -877,17 +944,367 @@ function ReelCoverSection({
             </div>
           )}
 
-          <div>
-            <p className="mb-1 text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">
-              Or type a custom headline
-            </p>
-            <textarea
-              value={coverText}
-              onChange={(e) => onCoverTextChange(e.target.value)}
-              placeholder="Short, punchy headline for the cover…"
-              rows={2}
-              className="glass-inset w-full resize-none rounded-xl px-3 py-2 text-sm text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-2 focus:ring-amber-500/35"
-            />
+          <div className="grid gap-6 rounded-xl border border-app-divider/50 bg-app-chip-bg/15 p-4 lg:grid-cols-2 lg:items-start">
+            <div className="min-w-0 space-y-4">
+              <div className="space-y-1.5">
+                <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Format</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {(
+                    [
+                      { id: "center" as const, label: "Center", templateId: "centered-pop" as const, title: "Headline stack in the middle" },
+                      { id: "card" as const, label: "Card", templateId: "bottom-card" as const, title: "Caption on a card — use Position for top / middle / bottom" },
+                      { id: "stack" as const, label: "Stack", templateId: "stacked-cards" as const, title: "One card per beat in a vertical stack" },
+                    ] as const
+                  ).map((t) => {
+                    const active = coverFormat === t.id;
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        aria-pressed={active}
+                        title={t.title}
+                        onClick={() => onCoverEditChange({ ...coverEdit, templateId: t.templateId })}
+                        className={`inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[10px] font-semibold transition ${
+                          active ? STYLE_CHIP_ON : STYLE_CHIP_OFF
+                        }`}
+                      >
+                        <FormatGlyph format={t.id} />
+                        {t.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              {(coverFormat === "card" || coverFormat === "stack") && (
+                <div className="space-y-1.5">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Position</p>
+                  <div className="flex flex-wrap gap-1">
+                    {(
+                      [
+                        { id: "top" as const, label: "Top" },
+                        { id: "center" as const, label: "Middle" },
+                        { id: "bottom" as const, label: "Bottom" },
+                      ] as const
+                    ).map((p) => {
+                      const active = coverPin === p.id;
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          aria-pressed={active}
+                          title="Where the caption block sits vertically"
+                          onClick={() =>
+                            onCoverEditChange({
+                              ...coverEdit,
+                              templateId: coverFormat === "card" && p.id === "top" ? "top-banner" : coverEdit.templateId === "top-banner" ? "bottom-card" : coverEdit.templateId,
+                              layout: { ...coverEdit.layout, verticalAnchor: p.id },
+                            })
+                          }
+                          className={`rounded-md border px-2 py-1 text-[10px] font-semibold transition ${
+                            active ? STYLE_CHIP_ON : STYLE_CHIP_OFF
+                          }`}
+                        >
+                          {p.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              <div className="space-y-2 border-t border-app-divider/30 pt-4">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Layout</p>
+                      {JSON.stringify(coverEdit.layout) !== JSON.stringify(DEFAULT_COVER_EDIT.layout) ? (
+                        <span className="rounded-sm bg-emerald-500/15 px-1 py-px text-[8px] font-semibold uppercase tracking-wide text-emerald-300">
+                          Saved
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="mt-0.5 text-[9px] text-app-fg-subtle">
+                      Alignment, nudge, and size — use Format → Position for top / middle / bottom on cards.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={JSON.stringify(coverEdit.layout) === JSON.stringify(DEFAULT_COVER_EDIT.layout)}
+                    onClick={() => onCoverEditChange({ ...coverEdit, layout: DEFAULT_COVER_EDIT.layout })}
+                    className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-subtle hover:text-app-fg disabled:opacity-30"
+                  >
+                    Reset
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  <div className="space-y-1">
+                    <p className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-muted">Text alignment</p>
+                    <div className="flex flex-wrap gap-1">
+                      {(
+                        [
+                          { id: "left" as const, label: "Left" },
+                          { id: "center" as const, label: "Center" },
+                          { id: "right" as const, label: "Right" },
+                        ] as const
+                      ).map((opt) => {
+                        const active = coverEdit.layout.textAlign === opt.id;
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            aria-pressed={active}
+                            onClick={() => setCoverLayout("textAlign", opt.id)}
+                            className={`rounded-md border px-2 py-1 text-[10px] font-semibold transition ${
+                              active ? "border-amber-500 bg-amber-500/15 text-amber-200" : "border-app-divider text-app-fg-muted hover:border-amber-500/40"
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <LayoutSlider
+                    label="Nudge up / down"
+                    title="Fine vertical move for the whole caption area: fraction of frame height (negative = up, positive = down). Works on every template."
+                    leftHint="Up"
+                    rightHint="Down"
+                    min={-0.2}
+                    max={0.2}
+                    step={0.01}
+                    value={coverEdit.layout.verticalOffset}
+                    formatValue={(v) => (v === 0 ? "0" : `${v > 0 ? "+" : ""}${Math.round(v * 100)}%`)}
+                    onChange={(v) => setCoverLayout("verticalOffset", v)}
+                    onCommit={(v) => setCoverLayout("verticalOffset", v)}
+                  />
+                  <LayoutSlider
+                    label="Size"
+                    leftHint="Smaller"
+                    rightHint="Larger"
+                    min={0.7}
+                    max={1.3}
+                    step={0.05}
+                    value={coverEdit.layout.scale}
+                    formatValue={(v) => `${v.toFixed(2)}x`}
+                    onChange={(v) => setCoverLayout("scale", v)}
+                    onCommit={(v) => setCoverLayout("scale", v)}
+                  />
+                </div>
+                <details className="group rounded-lg border border-app-divider/50 bg-app-chip-bg/10 px-2 py-1.5">
+                  <summary className="cursor-pointer select-none text-[9px] font-bold uppercase tracking-wide text-app-fg-muted marker:text-app-fg-subtle">
+                    Advanced layout
+                  </summary>
+                  <div className="mt-2 space-y-3 border-t border-app-divider/30 pt-2">
+                    <LayoutSlider
+                      label="Side padding"
+                      title="Horizontal inset: space between the left/right frame edge and the text block (not top/bottom)."
+                      leftHint="Tight"
+                      rightHint="Roomy"
+                      min={0.02}
+                      max={0.12}
+                      step={0.005}
+                      value={coverEdit.layout.sidePadding}
+                      formatValue={(v) => `${Math.round(v * 100)}%`}
+                      onChange={(v) => setCoverLayout("sidePadding", v)}
+                      onCommit={(v) => setCoverLayout("sidePadding", v)}
+                    />
+                  </div>
+                </details>
+              </div>
+            </div>
+            <div className="min-w-0 space-y-4">
+              <div className="space-y-1.5">
+                <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Look</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {LOOK_VISUAL.map((t) => {
+                    const active = coverEdit.themeId === t.id;
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        aria-pressed={active}
+                        title={t.title}
+                        onClick={() => onCoverEditChange({ ...coverEdit, themeId: t.id })}
+                        className={`inline-flex min-w-0 items-center gap-1.5 rounded-lg border px-2 py-1 text-[10px] font-semibold transition ${
+                          active ? STYLE_CHIP_ON : STYLE_CHIP_OFF
+                        }`}
+                      >
+                        <span className="flex shrink-0 gap-0.5" aria-hidden>
+                          {t.swatches.map((c) => (
+                            <span key={c} className="h-3 w-1.5 rounded-sm border border-white/10" style={{ background: c }} />
+                          ))}
+                        </span>
+                        <span className="text-[11px] font-bold leading-none text-app-fg-muted" style={{ fontFamily: t.fontFamily }}>
+                          Aa
+                        </span>
+                        <span className="truncate">{t.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="space-y-2 border-t border-app-divider/30 pt-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Style</p>
+                  <button
+                    type="button"
+                    disabled={!coverHasAppearanceOverrides}
+                    title="Reset to look defaults"
+                    onClick={() => onCoverEditChange({ ...coverEdit, appearance: {} })}
+                    className="inline-flex items-center gap-1 rounded-md border border-app-divider/60 px-1.5 py-1 text-app-fg-muted transition hover:border-amber-500/40 hover:text-app-fg disabled:opacity-30"
+                  >
+                    <RotateCcw className="h-3 w-3" aria-hidden />
+                    <span className="text-[9px] font-semibold uppercase tracking-wide">Reset</span>
+                  </button>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-muted">Font</p>
+                  <div className="flex flex-wrap gap-1">
+                    {(
+                      [
+                        { id: "auto" as const, label: "Auto" },
+                        { id: "modern" as const, label: "Modern" },
+                        { id: "clean" as const, label: "Clean" },
+                        { id: "editorial" as const, label: "Serif" },
+                        { id: "hand" as const, label: "Hand" },
+                      ] as const
+                    ).map((row) => {
+                      const active = coverFontMood === row.id;
+                      return (
+                        <button
+                          key={row.id}
+                          type="button"
+                          aria-pressed={active}
+                          onClick={() => setCoverAppearanceOps(opsForFontMood(row.id))}
+                          className={`rounded-md border px-2 py-1 text-[10px] font-semibold transition ${
+                            active ? STYLE_CHIP_ON : STYLE_CHIP_OFF
+                          }`}
+                        >
+                          {row.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-muted">Contrast</p>
+                  <div className="flex flex-wrap gap-1">
+                    {(
+                      [
+                        { id: "auto" as const, label: "Auto" },
+                        { id: "light" as const, label: "Light on dark" },
+                        { id: "dark" as const, label: "Dark on light" },
+                      ] as const
+                    ).map((row) => {
+                      const active = coverContrast === row.id;
+                      return (
+                        <button
+                          key={row.id}
+                          type="button"
+                          aria-pressed={active}
+                          onClick={() => setCoverAppearanceOps(opsForContrast(row.id, { templateId: coverEdit.templateId, themeId: coverEdit.themeId as VideoThemeId }))}
+                          className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-semibold transition ${
+                            active ? STYLE_CHIP_ON : STYLE_CHIP_OFF
+                          }`}
+                        >
+                          {row.id !== "auto" ? (
+                            <span
+                              className="h-3 w-3 shrink-0 rounded-full border border-white/15"
+                              style={{
+                                background:
+                                  row.id === "light"
+                                    ? "linear-gradient(90deg,#0a0a0a 50%,#f8fafc 50%)"
+                                    : "linear-gradient(90deg,#f8fafc 50%,#0a0a0a 50%)",
+                              }}
+                              aria-hidden
+                            />
+                          ) : null}
+                          {row.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-[9px] font-semibold uppercase tracking-wide text-app-fg-muted">Text treatment</p>
+                  <p className="text-[9px] text-app-fg-subtle">
+                    Outline adds a heavy outer stroke on top of your format (Center, Card, or Stack).
+                  </p>
+                  <div className="flex flex-wrap gap-1">
+                    <button
+                      type="button"
+                      aria-pressed={!coverEdit.textTreatment}
+                      title="Standard caption lettering for the selected format"
+                      onClick={() => onCoverEditChange({ ...coverEdit, textTreatment: undefined })}
+                      className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-semibold transition ${
+                        !coverEdit.textTreatment ? STYLE_CHIP_ON : STYLE_CHIP_OFF
+                      }`}
+                    >
+                      Default
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={coverEdit.textTreatment === "bold-outline"}
+                      title="Punchy heavy-stroke lettering — works with Center, Card, and Stack"
+                      onClick={() => onCoverEditChange({ ...coverEdit, textTreatment: "bold-outline" })}
+                      className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] font-semibold transition ${
+                        coverEdit.textTreatment === "bold-outline" ? STYLE_CHIP_ON : STYLE_CHIP_OFF
+                      }`}
+                    >
+                      <OutlineGlyph />
+                      Outline
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-2 rounded-md border border-app-divider/50 bg-app-chip-bg/15 p-2">
+                <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Layer text</p>
+                <textarea
+                  value={coverText}
+                  onChange={(e) => onCoverTextChange(e.target.value)}
+                  rows={2}
+                  className="glass-inset w-full resize-none rounded-lg px-2 py-1.5 text-[11px] text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-1 focus:ring-amber-500/35 disabled:opacity-50"
+                />
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => onCoverEditChange({ ...coverEdit, wash: !coverEdit.wash })}
+                  className={`rounded-md border px-2 py-1 text-[10px] font-semibold ${
+                    coverEdit.wash ? STYLE_CHIP_ON : STYLE_CHIP_OFF
+                  }`}
+                >
+                  Washed
+                </button>
+              </div>
+              {mode === "image" ? (
+                <div className="grid gap-2">
+                  <label className="text-[10px] font-semibold text-app-fg-muted">
+                    Image position
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={coverEdit.cropY}
+                      onChange={(e) => onCoverEditChange({ ...coverEdit, cropY: Number(e.target.value) })}
+                      className="mt-1 w-full accent-amber-500"
+                    />
+                  </label>
+                  <label className="text-[10px] font-semibold text-app-fg-muted">
+                    Zoom
+                    <input
+                      type="range"
+                      min={1}
+                      max={2}
+                      step={0.01}
+                      value={coverEdit.zoom}
+                      onChange={(e) => onCoverEditChange({ ...coverEdit, zoom: Number(e.target.value) })}
+                      className="mt-1 w-full accent-amber-500"
+                    />
+                  </label>
+                </div>
+              ) : null}
+            </div>
           </div>
 
           {mode === "image" && (
@@ -1077,6 +1494,7 @@ export function VideoCreateWorkspace({
   const [coverText, setCoverText] = useState("");
   const [coverMode, setCoverMode] = useState<CoverMode>("ai");
   const [coverImageId, setCoverImageId] = useState("");
+  const [coverEdit, setCoverEdit] = useState<CoverEditState>(DEFAULT_COVER_EDIT);
   const [coverRegenBusy, setCoverRegenBusy] = useState(false);
   const [regenBusy, setRegenBusy] = useState(false);
   /**
@@ -1112,6 +1530,10 @@ export function VideoCreateWorkspace({
     setScriptDraft(s.script ?? "");
     setSelectedClipId(s.broll_clip_id ?? "");
     setSelectedImageId(s.client_image_id ?? "");
+    if (s.selected_cover_template?.reference_image_id) {
+      setCoverMode("image");
+      setCoverImageId(s.selected_cover_template.reference_image_id);
+    }
     if (s.thumbnail_url) setThumbnailUrl(s.thumbnail_url);
     if (Array.isArray(s.carousel_slides)) {
       const sorted = [...s.carousel_slides].sort((a, b) => a.idx - b.idx);
@@ -1199,6 +1621,10 @@ export function VideoCreateWorkspace({
    *  `layoutDraft` — flushes optimistically into `livePreviewSpec`, commits on
    *  release. `null` = not currently dragging; preview reflects saved spec. */
   const [timingDraft, setTimingDraft] = useState<{ id: string; durationSec: number } | null>(null);
+  const [layerTimingDraft, setLayerTimingDraft] = useState<{
+    id: string;
+    timing: { startSec?: number; endSec?: number };
+  } | null>(null);
   /** In-flight edit for a single transition: pause before block `idx` (0 = after hook). */
   const [pauseDraft, setPauseDraft] = useState<{ idx: number; sec: number } | null>(null);
   /** Which inter-beat gap the compact Timing panel is editing (dropdown). */
@@ -1239,7 +1665,7 @@ export function VideoCreateWorkspace({
     setBgSource(next);
   }, []);
 
-  const savedBlocks = session?.text_blocks ?? [];
+  const savedBlocks = useMemo(() => session?.text_blocks ?? [], [session?.text_blocks]);
   const hasUnsavedBlocks = useMemo(() => {
     if (textDraft.length !== savedBlocks.length) return true;
     return textDraft.some((b, i) => b.text !== savedBlocks[i]?.text || b.isCTA !== savedBlocks[i]?.isCTA);
@@ -1287,6 +1713,7 @@ export function VideoCreateWorkspace({
   const sessionAppearance: VideoSpecAppearance = previewVideoSpec?.appearance ?? DEFAULT_APPEARANCE;
   const [appearanceDraft, setAppearanceDraft] = useState<VideoSpecAppearance>(sessionAppearance);
   const appearanceSyncKey = `${session?.id ?? ""}|${JSON.stringify(sessionAppearance)}`;
+  const appearanceDraftKey = JSON.stringify(appearanceDraft);
   useEffect(() => {
     setAppearanceDraft(sessionAppearance);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1322,12 +1749,18 @@ export function VideoCreateWorkspace({
     // Apply in-flight timing drag through the same cascade math the server will
     // run — guarantees what the user sees during the drag matches what gets
     // persisted on release.
-    const raw =
+    const durationAdjusted =
       timingDraft != null
         ? computeTimingChange(base, timingDraft.id, timingDraft.durationSec, cascadeMode).spec
         : base;
-    const draggingTimingOrPause = pauseDraft != null || timingDraft != null;
-    return relayoutTimeline(raw, { applyClipCap: !draggingTimingOrPause });
+    const raw =
+      layerTimingDraft != null
+        ? computeLayerTimingChange(durationAdjusted, layerTimingDraft.id, layerTimingDraft.timing).spec
+        : durationAdjusted;
+    // Layer bars are absolute windows. Relayout is only for the legacy gap editor;
+    // running it after layer drags would push later bars and destroy overlaps.
+    if (pauseDraft != null) return relayoutTimeline(raw, { applyClipCap: false });
+    return raw;
     // Depend on primitives, not object refs — avoids spurious recomputes when
     // `previewVideoSpec` is reparsed but its content is unchanged.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1342,11 +1775,14 @@ export function VideoCreateWorkspace({
     layoutDraft.textAlign,
     layoutDraft.stackGap,
     layoutDraft.stackGrowth,
-    JSON.stringify(appearanceDraft),
+    appearanceDraftKey,
     pauseDraft?.idx,
     pauseDraft?.sec,
     timingDraft?.id,
     timingDraft?.durationSec,
+    layerTimingDraft?.id,
+    layerTimingDraft?.timing.startSec,
+    layerTimingDraft?.timing.endSec,
     cascadeMode,
   ]);
 
@@ -1365,6 +1801,18 @@ export function VideoCreateWorkspace({
       return (layoutDraft.verticalAnchor ?? "bottom") as VideoSpecLayout["verticalAnchor"];
     return "center" as const;
   })();
+
+  const selectedLayerRows = useMemo(
+    () => (livePreviewSpec ? buildLayerRows(livePreviewSpec) : previewVideoSpec ? buildLayerRows(previewVideoSpec) : []),
+    [livePreviewSpec, previewVideoSpec],
+  );
+  const selectedLayer = selectedLayerRows.find((r) => r.id === selectedSegmentId) ?? selectedLayerRows[0] ?? null;
+  const [layerTextDraft, setLayerTextDraft] = useState("");
+  const [layerCtaDraft, setLayerCtaDraft] = useState(false);
+  useEffect(() => {
+    setLayerTextDraft(selectedLayer?.text ?? "");
+    setLayerCtaDraft(Boolean(selectedLayer?.isCTA));
+  }, [selectedLayer?.id, selectedLayer?.text, selectedLayer?.isCTA]);
 
   const saveTextBlocks = useCallback(async () => {
     const cs = clientSlug.trim();
@@ -1889,11 +2337,12 @@ export function VideoCreateWorkspace({
   useEffect(() => {
     setTimingDraft(null);
     setPauseDraft(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setLayerTimingDraft(null);
   }, [timingSyncKey]);
 
   useEffect(() => {
     setPauseDraft(null);
+    setLayerTimingDraft(null);
   }, [selectedSegmentId]);
 
   /** If the selected segment disappears (e.g. an AI refine deletes a block),
@@ -1904,20 +2353,6 @@ export function VideoCreateWorkspace({
     const exists = previewVideoSpec.blocks.some((b) => b.id === selectedSegmentId);
     if (!exists) setSelectedSegmentId("hook");
   }, [previewVideoSpec, selectedSegmentId]);
-
-  /** Bridge from the timeline strip's drag-handles into the same draft+commit
-   *  pipeline the slider uses. Selecting on drag-start mirrors how editors like
-   *  Premiere highlight the clip you're resizing — feels obvious in practice.
-   *  These callbacks MUST stay identity-stable across renders or VideoSpecPreview's
-   *  React.memo bails and we re-mount the Player on every spec tick. */
-  const onResizeSegmentDraft = useCallback((id: string, durationSec: number) => {
-    setSelectedSegmentId(id);
-    setTimingDraft({ id, durationSec });
-  }, []);
-  const onCommitTimingRef = useRef<((id: string, durationSec: number) => Promise<void>) | null>(null);
-  const onResizeSegmentCommit = useCallback((id: string, durationSec: number) => {
-    void onCommitTimingRef.current?.(id, durationSec);
-  }, []);
 
   /** Persist a duration edit. Generates the same atomic multi-op patch that
    *  the live preview math used (push-cascade or compress-cascade), so what
@@ -1955,11 +2390,108 @@ export function VideoCreateWorkspace({
     [applySession, cascadeMode, clientSlug, orgSlug, previewVideoSpec, session, show],
   );
 
-  // Keep the resize-handle bridge pointing at the latest commit closure without
-  // re-creating the (memoized) callback identity that VideoSpecPreview depends on.
+  const onCommitLayerTiming = useCallback(
+    async (segmentId: string, timing: { startSec?: number; endSec?: number }) => {
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!session || !cs || !os || !previewVideoSpec) return;
+      const result = computeLayerTimingChange(previewVideoSpec, segmentId, timing);
+      if (result.ops.length === 0) {
+        setLayerTimingDraft(null);
+        return;
+      }
+      setSpecInFlight((n) => n + 1);
+      const reqId = ++specReqIdRef.current;
+      try {
+        const res = await patchSessionVideoSpec(cs, os, session.id, { ops: result.ops });
+        if (reqId !== specReqIdRef.current) return;
+        if (!res.ok) {
+          show(res.error, "error");
+          setLayerTimingDraft(null);
+          return;
+        }
+        applySession(res.data);
+        setLayerTimingDraft(null);
+      } finally {
+        setSpecInFlight((n) => Math.max(0, n - 1));
+      }
+    },
+    [applySession, clientSlug, orgSlug, previewVideoSpec, session, show],
+  );
+
+  const onCommitLayerTimingRef = useRef<typeof onCommitLayerTiming | null>(null);
+  const onResizeLayerTimingDraft = useCallback((id: string, timing: { startSec?: number; endSec?: number }) => {
+    setSelectedSegmentId(id);
+    setTimingDraft(null);
+    setLayerTimingDraft({ id, timing });
+  }, []);
+  const onResizeLayerTimingCommit = useCallback((id: string, timing: { startSec?: number; endSec?: number }) => {
+    void onCommitLayerTimingRef.current?.(id, timing);
+  }, []);
   useEffect(() => {
-    onCommitTimingRef.current = onCommitTiming;
-  }, [onCommitTiming]);
+    onCommitLayerTimingRef.current = onCommitLayerTiming;
+  }, [onCommitLayerTiming]);
+
+  const applyVideoSpecOps = useCallback(
+    async (ops: Operation[], afterApply?: (s: GenerationSession) => void) => {
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!session || !cs || !os || ops.length === 0) return;
+      setSpecInFlight((n) => n + 1);
+      const reqId = ++specReqIdRef.current;
+      try {
+        const res = await patchSessionVideoSpec(cs, os, session.id, { ops });
+        if (reqId !== specReqIdRef.current) return;
+        if (!res.ok) {
+          show(res.error, "error");
+          return;
+        }
+        applySession(res.data);
+        afterApply?.(res.data);
+      } finally {
+        setSpecInFlight((n) => Math.max(0, n - 1));
+      }
+    },
+    [applySession, clientSlug, orgSlug, session, show],
+  );
+
+  const onAddTextLayer = useCallback(async () => {
+    if (!previewVideoSpec) return;
+    const id =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? `layer-${crypto.randomUUID()}`
+        : `layer-${Date.now().toString(36)}`;
+    const result = createTextLayer(previewVideoSpec, {
+      afterLayerId: selectedSegmentId,
+      text: "New text",
+      id,
+    });
+    await applyVideoSpecOps(result.ops, () => setSelectedSegmentId(id));
+  }, [applyVideoSpecOps, previewVideoSpec, selectedSegmentId]);
+
+  const onDeleteSelectedLayer = useCallback(async () => {
+    if (!previewVideoSpec || selectedSegmentId === "hook") return;
+    const result = deleteTextLayer(previewVideoSpec, selectedSegmentId);
+    await applyVideoSpecOps(result.ops, () => setSelectedSegmentId("hook"));
+  }, [applyVideoSpecOps, previewVideoSpec, selectedSegmentId]);
+
+  const onSaveSelectedLayer = useCallback(async () => {
+    if (!previewVideoSpec || !selectedLayer) return;
+    const text = layerTextDraft.trim();
+    if (!text) {
+      show("Layer text cannot be empty.", "error");
+      return;
+    }
+    if (selectedLayer.id === "hook") {
+      await applyVideoSpecOps([{ op: "replace", path: "/hook/text", value: text }]);
+      return;
+    }
+    const result = editTextLayer(previewVideoSpec, selectedLayer.id, {
+      text,
+      isCTA: layerCtaDraft,
+    });
+    await applyVideoSpecOps(result.ops);
+  }, [applyVideoSpecOps, layerCtaDraft, layerTextDraft, previewVideoSpec, selectedLayer, show]);
 
   const onVideoRefineApply = useCallback(async () => {
     const cs = clientSlug.trim();
@@ -2029,7 +2561,7 @@ export function VideoCreateWorkspace({
     const text = coverText.trim() || undefined;
     setThumbnailBusy(true);
     try {
-      const res = await generationGenerateThumbnail(cs, os, session.id, text);
+      const res = await generationGenerateThumbnail(cs, os, session.id, text, coverPayload(coverEdit));
       if (!res.ok) {
         show(res.error, "error");
         return;
@@ -2038,7 +2570,7 @@ export function VideoCreateWorkspace({
     } finally {
       setThumbnailBusy(false);
     }
-  }, [clientSlug, orgSlug, session, coverText, show]);
+  }, [clientSlug, orgSlug, session, coverText, coverEdit, show]);
 
   const onComposeCoverFromImage = useCallback(async () => {
     const cs = clientSlug.trim();
@@ -2047,7 +2579,7 @@ export function VideoCreateWorkspace({
     const text = coverText.trim() || undefined;
     setThumbnailBusy(true);
     try {
-      const res = await generationComposeThumbnail(cs, os, session.id, coverImageId, text);
+      const res = await generationComposeThumbnail(cs, os, session.id, coverImageId, text, coverPayload(coverEdit));
       if (!res.ok) {
         show(res.error, "error");
         return;
@@ -2057,7 +2589,7 @@ export function VideoCreateWorkspace({
     } finally {
       setThumbnailBusy(false);
     }
-  }, [clientSlug, orgSlug, session, coverImageId, coverText, show]);
+  }, [clientSlug, orgSlug, session, coverImageId, coverText, coverEdit, show]);
 
   const onSetBackgroundImage = useCallback(
     async (imageId: string) => {
@@ -2258,9 +2790,12 @@ export function VideoCreateWorkspace({
           thumbnailBusy={thumbnailBusy}
           coverText={coverText}
           selectedImageId={coverImageId}
+          selectedCoverTemplate={session.selected_cover_template ?? null}
+          coverEdit={coverEdit}
           mode={coverMode}
           onModeChange={setCoverMode}
           onCoverTextChange={setCoverText}
+          onCoverEditChange={setCoverEdit}
           onSelectImage={setCoverImageId}
           onGenerateAi={onGenerateThumbnail}
           onComposeFromImage={onComposeCoverFromImage}
@@ -2639,8 +3174,8 @@ export function VideoCreateWorkspace({
                   width={300}
                   selectedSegmentId={selectedSegmentId}
                   onSelectSegment={setSelectedSegmentId}
-                  onResizeSegmentDraft={onResizeSegmentDraft}
-                  onResizeSegmentCommit={onResizeSegmentCommit}
+                  onResizeLayerTimingDraft={onResizeLayerTimingDraft}
+                  onResizeLayerTimingCommit={onResizeLayerTimingCommit}
                 />
                 {((isTextOverlay && bgSource === "clip") || isBroll) && (
                   <>
@@ -3287,6 +3822,97 @@ export function VideoCreateWorkspace({
                         </div>
                         <p className="mt-0.5 truncate text-[10px] italic text-app-fg-subtle">{excerpt}</p>
                       </div>
+                      {selectedLayer ? (
+                        <div className="space-y-2 rounded-md border border-app-divider/50 bg-app-chip-bg/15 p-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">
+                              Layer text
+                            </p>
+                            <button
+                              type="button"
+                              disabled={!session.background_url || textDraft.length >= 6}
+                              onClick={() => void onAddTextLayer()}
+                              className="inline-flex items-center gap-1 rounded-sm border border-app-divider/60 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-app-fg-muted hover:border-amber-500/40 hover:text-app-fg disabled:opacity-30"
+                              title="Add a new text layer after the selected layer"
+                            >
+                              <Plus className="h-3 w-3" /> Add
+                            </button>
+                          </div>
+                          <textarea
+                            value={layerTextDraft}
+                            onChange={(e) => setLayerTextDraft(e.target.value)}
+                            rows={2}
+                            disabled={!session.background_url}
+                            className="glass-inset w-full resize-none rounded-lg px-2 py-1.5 text-[11px] text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-1 focus:ring-amber-500/35 disabled:opacity-50"
+                          />
+                          <div className="grid grid-cols-2 gap-2">
+                            <label className="text-[9px] font-bold uppercase tracking-wide text-app-fg-muted">
+                              Appears
+                              <input
+                                key={`${selectedLayer.id}-start-${selectedLayer.startSec}`}
+                                type="number"
+                                min={0}
+                                step={0.1}
+                                defaultValue={selectedLayer.startSec.toFixed(1)}
+                                disabled={!session.background_url || selectedLayer.id === "hook"}
+                                onBlur={(e) => {
+                                  const v = Number(e.currentTarget.value);
+                                  if (Number.isFinite(v)) void onCommitLayerTiming(selectedLayer.id, { startSec: v });
+                                }}
+                                className="glass-inset mt-1 w-full rounded-md px-2 py-1 text-[11px] font-semibold tabular-nums text-app-fg disabled:opacity-50"
+                              />
+                            </label>
+                            <label className="text-[9px] font-bold uppercase tracking-wide text-app-fg-muted">
+                              Disappears
+                              <input
+                                key={`${selectedLayer.id}-end-${selectedLayer.endSec}`}
+                                type="number"
+                                min={0.5}
+                                step={0.1}
+                                defaultValue={selectedLayer.endSec.toFixed(1)}
+                                disabled={!session.background_url}
+                                onBlur={(e) => {
+                                  const v = Number(e.currentTarget.value);
+                                  if (Number.isFinite(v)) void onCommitLayerTiming(selectedLayer.id, { endSec: v });
+                                }}
+                                className="glass-inset mt-1 w-full rounded-md px-2 py-1 text-[11px] font-semibold tabular-nums text-app-fg disabled:opacity-50"
+                              />
+                            </label>
+                          </div>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <label className="inline-flex cursor-pointer select-none items-center gap-1.5 text-[10px] font-semibold text-app-fg-muted">
+                              <input
+                                type="checkbox"
+                                checked={layerCtaDraft}
+                                disabled={!session.background_url || selectedLayer.id === "hook"}
+                                onChange={(e) => setLayerCtaDraft(e.target.checked)}
+                                className="h-3 w-3 accent-amber-500"
+                              />
+                              CTA layer
+                            </label>
+                            <div className="flex items-center gap-1.5">
+                              {selectedLayer.id !== "hook" ? (
+                                <button
+                                  type="button"
+                                  disabled={!session.background_url}
+                                  onClick={() => void onDeleteSelectedLayer()}
+                                  className="rounded-sm border border-red-500/30 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-red-300 hover:bg-red-500/10 disabled:opacity-30"
+                                >
+                                  Delete
+                                </button>
+                              ) : null}
+                              <button
+                                type="button"
+                                disabled={!session.background_url || !layerTextDraft.trim()}
+                                onClick={() => void onSaveSelectedLayer()}
+                                className="rounded-sm border border-amber-500/50 bg-amber-500/10 px-1.5 py-px text-[9px] font-bold uppercase tracking-wide text-amber-100 hover:bg-amber-500/20 disabled:opacity-30"
+                              >
+                                Save layer
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
                       <LayoutSlider
                         label="Duration"
                         leftHint={`${range.min.toFixed(1)}s`}
@@ -3595,9 +4221,12 @@ export function VideoCreateWorkspace({
         thumbnailBusy={thumbnailBusy}
         coverText={coverText}
         selectedImageId={coverImageId}
+        selectedCoverTemplate={session.selected_cover_template ?? null}
+        coverEdit={coverEdit}
         mode={coverMode}
         onModeChange={setCoverMode}
         onCoverTextChange={setCoverText}
+        onCoverEditChange={setCoverEdit}
         onSelectImage={setCoverImageId}
         onGenerateAi={onGenerateThumbnail}
         onComposeFromImage={onComposeCoverFromImage}

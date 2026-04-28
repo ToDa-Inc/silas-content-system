@@ -26,7 +26,7 @@ import {
 import { ReelThumbnail } from "@/components/reel-thumbnail";
 import { AppSelect } from "@/components/ui/app-select";
 import { Tooltip } from "@/components/ui/tooltip";
-import type { ReelsListSortBy, ScrapedReelRow } from "@/lib/api";
+import type { ReelsListSortBy, ReelsMediaType, ScrapedReelRow } from "@/lib/api";
 import { formatViewsToComments, viewsToCommentsRatio } from "@/lib/reel-comment-view";
 import {
   clientApiHeaders,
@@ -72,6 +72,7 @@ type ServerState = {
   outliersOnly: boolean;
   ownReelsOnly: boolean;
   source: string;
+  mediaType: ReelsMediaType;
   competitorId: string;
   minViews: number | null;
   maxViews: number | null;
@@ -130,6 +131,12 @@ const BULK_POLL_MS = 2500;
 const BULK_MAX_URLS = 20;
 const SEGMENT_MS = 20_000;
 const STALE_MS = 15 * 60 * 1000;
+const MEDIA_TYPE_LABELS: Record<ReelsMediaType, string> = {
+  all: "All media",
+  short: "text overlay",
+  long: "talking head",
+  carousel: "Carousel",
+};
 /** Subtle styling for empty cells (`0` or `—`) so populated values pop. */
 const EMPTY_CELL_CLASS = "text-zinc-400 dark:text-app-fg-faint";
 
@@ -976,6 +983,8 @@ export function IntelligenceReelsTable({
   const viewsChip = fmtRange(serverState.minViews, serverState.maxViews);
   const likesChip = fmtRange(serverState.minLikes, serverState.maxLikes);
   const commentsChip = fmtRange(serverState.minComments, serverState.maxComments);
+  const mediaTypeChip =
+    serverState.mediaType !== "all" ? MEDIA_TYPE_LABELS[serverState.mediaType] : null;
   const postedChip = (() => {
     if (serverState.postedAfter && serverState.postedBefore)
       return `${serverState.postedAfter} → ${serverState.postedBefore}`;
@@ -986,6 +995,7 @@ export function IntelligenceReelsTable({
 
   const serverFilterCount =
     (serverState.creator ? 1 : 0) +
+    (mediaTypeChip ? 1 : 0) +
     (viewsChip ? 1 : 0) +
     (likesChip ? 1 : 0) +
     (commentsChip ? 1 : 0) +
@@ -1060,6 +1070,20 @@ export function IntelligenceReelsTable({
               { value: "all", label: "All reels" },
               { value: "analyzed", label: "Analyzed only" },
               { value: "pending", label: "Not analyzed" },
+            ]}
+          />
+          <AppSelect
+            ariaLabel="Filter by media type"
+            triggerClassName="h-9 min-w-[140px] py-0"
+            value={serverState.mediaType}
+            onChange={(v) =>
+              pushFilters({ media_type: v && v !== "all" ? v : null, page: null })
+            }
+            options={[
+              { value: "all", label: "All media" },
+              { value: "short", label: "text overlay" },
+              { value: "long", label: "talking head" },
+              { value: "carousel", label: "Carousel" },
             ]}
           />
           <div className="glass-inset relative flex h-9 min-w-[220px] items-center rounded-lg border border-zinc-200/80 bg-white/80 text-sm text-zinc-900 shadow-sm transition-colors focus-within:border-zinc-300/90 focus-within:ring-2 focus-within:ring-amber-500/30 dark:border-white/10 dark:bg-zinc-900/80 dark:text-app-fg dark:focus-within:ring-amber-400/25">
@@ -1276,6 +1300,13 @@ export function IntelligenceReelsTable({
                   onClear={() =>
                     pushFilters({ min_views: null, max_views: null, page: null })
                   }
+                />
+              ) : null}
+              {mediaTypeChip ? (
+                <FilterChip
+                  label="Media"
+                  value={mediaTypeChip}
+                  onClear={() => pushFilters({ media_type: null, page: null })}
                 />
               ) : null}
               {likesChip ? (

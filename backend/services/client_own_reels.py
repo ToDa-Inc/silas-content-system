@@ -143,12 +143,19 @@ def upsert_client_own_reels(
         .eq("source", "client_baseline")
         .execute()
     )
-    orphan_ids: List[str] = []
-    for er in fresh_res.data or []:
-        n = canonical_instagram_post_url(str(er.get("post_url") or ""))
-        if n not in normalized_keys:
-            orphan_ids.append(str(er["id"]))
-    if orphan_ids:
-        supabase.table("scraped_reels").delete().in_("id", orphan_ids).execute()
+    existing_rows = fresh_res.data or []
+
+    # Defensive guard: with full-history sync (results_limit ≫ 30) a partial
+    # Apify run that returns fewer items than we already have stored should not
+    # silently wipe older reels. Only run orphan cleanup when the fresh batch is
+    # at least as large as the prior stored set, so we know we saw a full pull.
+    if len(rows) >= len(existing_rows):
+        orphan_ids: List[str] = []
+        for er in existing_rows:
+            n = canonical_instagram_post_url(str(er.get("post_url") or ""))
+            if n not in normalized_keys:
+                orphan_ids.append(str(er["id"]))
+        if orphan_ids:
+            supabase.table("scraped_reels").delete().in_("id", orphan_ids).execute()
 
     return len(rows)
