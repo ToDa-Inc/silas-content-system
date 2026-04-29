@@ -6,6 +6,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 _REPO_ROOT = _BACKEND_DIR.parent
+OPENROUTER_PRIMARY_MODEL = "google/gemini-3-flash-preview"
+OPENROUTER_FALLBACK_MODEL = "google/gemini-3.1-flash-lite-preview"
+_LEGACY_OPENROUTER_DEFAULTS = {
+    "google/gemini-2.0-flash-001",
+    "z-ai/glm-5-turbo",
+}
 
 
 class Settings(BaseSettings):
@@ -80,18 +86,34 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return v.strip()
         return v
-    openrouter_model: str = "google/gemini-2.0-flash-001"
+    openrouter_model: str = Field(
+        default=OPENROUTER_PRIMARY_MODEL,
+        validation_alias=AliasChoices("OPENROUTER_MODEL"),
+    )
     openrouter_model_fallback: str = Field(
-        default="",
+        default=OPENROUTER_FALLBACK_MODEL,
         validation_alias=AliasChoices("OPENROUTER_MODEL_FALLBACK"),
         description="Optional model id; after 429 backoff on primary, try this model (text paths; off for image gen / some video).",
     )
+
+    @field_validator("openrouter_model", mode="before")
+    @classmethod
+    def normalize_openrouter_model(cls, v: object) -> object:
+        if isinstance(v, str):
+            s = v.strip()
+            if not s or s in _LEGACY_OPENROUTER_DEFAULTS:
+                return OPENROUTER_PRIMARY_MODEL
+            return s
+        return v
 
     @field_validator("openrouter_model_fallback", mode="before")
     @classmethod
     def strip_openrouter_model_fallback(cls, v: object) -> object:
         if isinstance(v, str):
-            return v.strip()
+            s = v.strip()
+            if not s or s in _LEGACY_OPENROUTER_DEFAULTS:
+                return OPENROUTER_FALLBACK_MODEL
+            return s
         return v
 
     openrouter_429_max_attempts: int = Field(
