@@ -9,9 +9,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-import httpx
-
 from core.config import Settings
+from services.openrouter import openrouter_post_chat_completions
 from services.niche_keywords_compile import (
     generate_similarity_keywords_auto,
     merge_similarity_keywords_into_dna,
@@ -149,19 +148,13 @@ def compile_client_dna(
         "max_tokens": 12_288,
         "temperature": 0.2,
     }
-    with httpx.Client(timeout=300.0) as client:
-        r = client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {openrouter_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://silas-content-system.local",
-                "X-Title": "Content Machine",
-            },
-            json=payload,
-        )
-        r.raise_for_status()
-        data = r.json()
+    r = openrouter_post_chat_completions(
+        openrouter_key,
+        payload,
+        timeout=300.0,
+        enable_model_fallback=True,
+    )
+    data = r.json()
     if data.get("error"):
         raise RuntimeError(data["error"].get("message", str(data["error"])))
     content = data["choices"][0]["message"]["content"]

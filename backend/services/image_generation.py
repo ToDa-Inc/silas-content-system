@@ -16,7 +16,8 @@ from typing import Any, Dict, Optional, Tuple
 
 import httpx
 
-# ── Pillow import (lazy-safe) ─────────────────────────────────────────────────
+from services.openrouter import openrouter_post_chat_completions
+
 try:
     from PIL import Image, ImageDraw, ImageFont  # type: ignore[import]
     _PILLOW_AVAILABLE = True
@@ -444,7 +445,6 @@ def _resize_cover(
     return img.crop((left, top, left + w, top + h))
 
 
-OPENROUTER_IMAGE_URL = "https://openrouter.ai/api/v1/chat/completions"
 IMAGE_MODEL = "openai/gpt-5-image"
 
 
@@ -513,19 +513,13 @@ def generate_image_via_openrouter(
         "modalities": ["image", "text"],
         "image_config": {"aspect_ratio": aspect_ratio},
     }
-    with httpx.Client(timeout=timeout_s) as client:
-        r = client.post(
-            OPENROUTER_IMAGE_URL,
-            headers={
-                "Authorization": f"Bearer {openrouter_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://silas-content-system.local",
-                "X-Title": "Content Machine",
-            },
-            json=payload,
-        )
-        r.raise_for_status()
-        data = r.json()
+    r = openrouter_post_chat_completions(
+        openrouter_key,
+        payload,
+        timeout=timeout_s,
+        enable_model_fallback=False,
+    )
+    data = r.json()
 
     choices = data.get("choices")
     if not isinstance(choices, list) or not choices:

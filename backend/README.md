@@ -60,7 +60,7 @@ Optional: `backend/.env` or `config/.env` for overrides (see load order in root 
    - Same idea as `OPENROUTER_API_KEY` in `config/.env` for the JS scripts.
 
 7. **`OPENROUTER_MODEL`** — optional; default is fine unless you want another model.  
-   **`OPENROUTER_MODEL_FALLBACK`** — optional second model id; if the primary returns **HTTP 429**, the API retries once with the fallback (text JSON/chat paths; skipped when sending **video** bytes to the reel analyzer).
+   **`OPENROUTER_MODEL_FALLBACK`** — optional second model id; on **HTTP 429** the client waits per **Retry-After** / backoff (see **`OPENROUTER_429_MAX_ATTEMPTS`**, **`OPENROUTER_429_MAX_SLEEP_S`** in `.env.example`), then may try the fallback (text/chat; **not** used for image generation or video multimodal). Account-wide/concurrent traffic still counts against the same API key—add OpenRouter credits or reduce worker parallelism if 429 persists.
 
 8. **`OPENAI_API_KEY`** — required for **Create → Generate image** (gpt-image-1.5). Set in repo root `.env`.
 

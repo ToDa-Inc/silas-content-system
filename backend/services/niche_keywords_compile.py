@@ -8,7 +8,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-import httpx
+from services.openrouter import openrouter_post_chat_completions
 
 logger = logging.getLogger(__name__)
 
@@ -50,19 +50,13 @@ def generate_similarity_keywords_auto(
         "max_tokens": 1024,
         "temperature": 0.2,
     }
-    with httpx.Client(timeout=120.0) as client:
-        r = client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {openrouter_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://silas-content-system.local",
-                "X-Title": "Content Machine",
-            },
-            json=payload,
-        )
-        r.raise_for_status()
-        data = r.json()
+    r = openrouter_post_chat_completions(
+        openrouter_key,
+        payload,
+        timeout=120.0,
+        enable_model_fallback=True,
+    )
+    data = r.json()
     if data.get("error"):
         raise RuntimeError(data["error"].get("message", str(data["error"])))
     content = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""

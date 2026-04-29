@@ -8,6 +8,8 @@ from typing import Any, Dict
 
 import httpx
 
+from services.openrouter import openrouter_post_chat_completions
+
 SECTION_KEYS = (
     "icp",
     "brand_map",
@@ -50,19 +52,13 @@ def generate_sections_from_transcript(
         "temperature": 0.2,
     }
     try:
-        with httpx.Client(timeout=180.0) as client:
-            r = client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {openrouter_key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://silas-content-system.local",
-                    "X-Title": "Content Machine",
-                },
-                json=payload,
-            )
-            r.raise_for_status()
-            data = r.json()
+        r = openrouter_post_chat_completions(
+            openrouter_key,
+            payload,
+            timeout=180.0,
+            enable_model_fallback=True,
+        )
+        data = r.json()
     except httpx.HTTPStatusError as e:
         tail = (e.response.text or "")[:400]
         raise RuntimeError(f"OpenRouter HTTP {e.response.status_code}: {tail}") from e

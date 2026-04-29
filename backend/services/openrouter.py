@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
+import random
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, List
@@ -13,6 +16,10 @@ import httpx
 
 _MAX_VIDEO_BYTES = 15 * 1024 * 1024
 _OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+logger = logging.getLogger(__name__)
+_request_lock = threading.Lock()
+_last_request_at = 0.0
 
 
 def _openrouter_request_headers(openrouter_key: str) -> dict[str, str]:
@@ -24,6 +31,67 @@ def _openrouter_request_headers(openrouter_key: str) -> dict[str, str]:
     }
 
 
+def _sleep_seconds_for_429(
+    response: httpx.Response, attempt_idx: int, max_sleep: float
+) -> float:
+    """Derive wait time from Retry-After / rate-limit headers, else exponential backoff + jitter."""
+    ra = response.headers.get("retry-after")
+    if ra:
+        try:
+            return min(max_sleep, max(0.5, float(ra)))
+        except ValueError:
+            pass
+    reset = response.headers.get("x-ratelimit-reset")
+    if reset:
+        try:
+            ts = float(reset)
+            if ts > 1e12:
+                ts = ts / 1000.0
+            wait = ts - time.time()
+            if wait > 0:
+                return min(max_sleep, wait + random.uniform(0.1, 0.4))
+        except ValueError:
+            pass
+    return min(
+        max_sleep,
+        max(0.5, (2**attempt_idx) * 0.75 + random.uniform(0, 0.35)),
+    )
+
+
+def _wait_for_process_slot(min_interval_s: float) -> None:
+    """Throttle OpenRouter calls inside this process to avoid self-inflicted bursts."""
+    if min_interval_s <= 0:
+        return
+    global _last_request_at
+    with _request_lock:
+        now = time.monotonic()
+        wait = (_last_request_at + min_interval_s) - now
+        if wait > 0:
+            time.sleep(wait)
+        _last_request_at = time.monotonic()
+
+
+def openrouter_post_chat_completions(
+    openrouter_key: str,
+    payload: dict[str, Any],
+    *,
+    timeout: float,
+    enable_model_fallback: bool = True,
+) -> httpx.Response:
+    """POST ``/v1/chat/completions`` with 429 backoff and optional ``OPENROUTER_MODEL_FALLBACK``.
+
+    Use this for any code path that would otherwise call OpenRouter with raw httpx.
+    """
+    primary = str(payload.get("model") or "")
+    return _post_chat_completions_with_optional_fallback(
+        openrouter_key,
+        payload,
+        timeout=timeout,
+        primary_model=primary,
+        enable_model_fallback=enable_model_fallback,
+    )
+
+
 def _post_chat_completions_with_optional_fallback(
     openrouter_key: str,
     payload: dict[str, Any],
@@ -32,34 +100,48 @@ def _post_chat_completions_with_optional_fallback(
     primary_model: str,
     enable_model_fallback: bool,
 ) -> httpx.Response:
-    """POST chat/completions. On HTTP 429, optionally retry with ``OPENROUTER_MODEL_FALLBACK``."""
+    """POST chat/completions: retry 429s with backoff, then optional fallback model."""
     from core.config import get_settings
+
+    settings = get_settings()
+    max_attempts = max(1, int(settings.openrouter_429_max_attempts))
+    max_sleep = float(settings.openrouter_429_max_sleep_s)
+    min_interval = float(settings.openrouter_min_interval_s)
 
     models: list[str] = [primary_model]
     if enable_model_fallback:
-        fb = (get_settings().openrouter_model_fallback or "").strip()
+        fb = (settings.openrouter_model_fallback or "").strip()
         if fb and fb != primary_model:
             models.append(fb)
 
     headers = _openrouter_request_headers(openrouter_key)
     last: httpx.Response | None = None
     with httpx.Client(timeout=timeout) as client:
-        for i, model in enumerate(models):
-            body = {**payload, "model": model}
-            r = client.post(_OPENROUTER_CHAT_URL, headers=headers, json=body)
-            last = r
-            if r.status_code == 429 and i < len(models) - 1:
-                ra = r.headers.get("retry-after")
-                delay = 0.5
-                if ra:
-                    try:
-                        delay = min(3.0, float(ra))
-                    except ValueError:
-                        pass
-                time.sleep(delay)
-                continue
-            r.raise_for_status()
-            return r
+        for model_idx, model in enumerate(models):
+            for attempt in range(max_attempts):
+                body = {**payload, "model": model}
+                _wait_for_process_slot(min_interval)
+                r = client.post(_OPENROUTER_CHAT_URL, headers=headers, json=body)
+                last = r
+                if r.status_code == 429:
+                    delay = _sleep_seconds_for_429(r, attempt, max_sleep)
+                    logger.warning(
+                        "OpenRouter 429 model=%s attempt=%s/%s sleep=%.1fs remaining=%s reset=%s",
+                        model,
+                        attempt + 1,
+                        max_attempts,
+                        delay,
+                        r.headers.get("x-ratelimit-remaining"),
+                        r.headers.get("x-ratelimit-reset"),
+                    )
+                    if attempt < max_attempts - 1:
+                        time.sleep(delay)
+                        continue
+                    if model_idx < len(models) - 1:
+                        time.sleep(min(2.0, max_sleep))
+                    break
+                r.raise_for_status()
+                return r
     assert last is not None
     last.raise_for_status()
     return last

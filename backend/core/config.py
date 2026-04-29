@@ -84,7 +84,7 @@ class Settings(BaseSettings):
     openrouter_model_fallback: str = Field(
         default="",
         validation_alias=AliasChoices("OPENROUTER_MODEL_FALLBACK"),
-        description="Optional OpenRouter model id; on 429 from primary, retry once with this model (text/chat paths; skipped for video multimodal).",
+        description="Optional model id; after 429 backoff on primary, try this model (text paths; off for image gen / some video).",
     )
 
     @field_validator("openrouter_model_fallback", mode="before")
@@ -93,6 +93,31 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return v.strip()
         return v
+
+    openrouter_429_max_attempts: int = Field(
+        default=6,
+        ge=1,
+        le=20,
+        validation_alias=AliasChoices("OPENROUTER_429_MAX_ATTEMPTS"),
+        description=(
+            "HTTP attempts per model when OpenRouter returns 429: respects Retry-After / backoff "
+            "before retrying the same model or trying OPENROUTER_MODEL_FALLBACK."
+        ),
+    )
+    openrouter_429_max_sleep_s: float = Field(
+        default=120.0,
+        ge=1.0,
+        le=600.0,
+        validation_alias=AliasChoices("OPENROUTER_429_MAX_SLEEP_S"),
+        description="Upper bound (seconds) for a single sleep between 429 retries.",
+    )
+    openrouter_min_interval_s: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=30.0,
+        validation_alias=AliasChoices("OPENROUTER_MIN_INTERVAL_S"),
+        description="Minimum spacing between OpenRouter requests in this process.",
+    )
 
     openrouter_reel_analyze_model: str = Field(
         default="google/gemini-3-flash-preview",
