@@ -110,12 +110,18 @@ def composition_id_for_session(_session: Dict[str, Any]) -> str:
 
 
 def _resolve_render_entry(settings: Settings, remotion_dir: Path) -> str:
-    """Use the baked bundle when present; otherwise render from ``Root.tsx`` locally."""
-    bundle = remotion_dir / "build" / "index.html"
-    if bundle.is_file():
-        return str(bundle.resolve())
+    """Pre-bundled ``build/`` (from ``npx remotion bundle``) or ``src/Root.tsx`` for CLI render.
+
+    Pass the **directory** that contains ``index.html``, not ``index.html`` itself — the CLI
+    treats a file path as a webpack entry (must call ``registerRoot()``).
+    """
+    bundle_dir = remotion_dir / "build"
+    if (bundle_dir / "index.html").is_file():
+        return str(bundle_dir.resolve())
     entry = remotion_dir / "src" / "Root.tsx"
-    return str(entry)
+    if not entry.is_file():
+        raise ValueError(f"Remotion entry missing: {entry}")
+    return str(entry.resolve())
 
 
 def _build_remotion_render_cmd(
