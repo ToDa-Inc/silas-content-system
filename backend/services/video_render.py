@@ -20,9 +20,15 @@ logger = logging.getLogger(__name__)
 
 from core.config import Settings
 from core.database import get_supabase_for_settings
+from services.broll_normalize import ensure_session_broll_master
+from services.video_probe import verify_render_output_mp4
 from services.video_spec_defaults import finalize_spec_for_render
 
 RENDERS_BUCKET = "renders"
+RENDER_CODEC = "h264"
+RENDER_CRF = 20
+RENDER_PIXEL_FORMAT = "yuv420p"
+RENDER_LOG_LEVEL = "verbose"
 
 _FRAME_PROGRESS = re.compile(
     r"(?:Rendered|Encoded)\s+(\d+)\s*/\s*(\d+)",
@@ -100,6 +106,47 @@ def build_remotion_props(
 
 def composition_id_for_session(_session: Dict[str, Any]) -> str:
     return "video-spec"
+
+
+def _resolve_render_entry(settings: Settings, remotion_dir: Path) -> str:
+    """Use the baked bundle when present; otherwise render from ``Root.tsx`` locally."""
+    bundle = remotion_dir / "build" / "index.html"
+    if bundle.is_file():
+        return str(bundle.resolve())
+    entry = remotion_dir / "src" / "Root.tsx"
+    return str(entry)
+
+
+def _build_remotion_render_cmd(
+    settings: Settings,
+    *,
+    cli_js: Path,
+    render_entry: str,
+    comp_id: str,
+    out_mp4: str,
+    props_path: str,
+) -> List[str]:
+    cmd: List[str] = [
+        "node",
+        str(cli_js),
+        "render",
+        render_entry,
+        comp_id,
+        out_mp4,
+        f"--props={props_path}",
+        "--overwrite",
+        "--codec",
+        RENDER_CODEC,
+        "--pixel-format",
+        RENDER_PIXEL_FORMAT,
+        f"--crf={RENDER_CRF}",
+        "--log",
+        RENDER_LOG_LEVEL,
+    ]
+    browser_exe = os.environ.get("REMOTION_BROWSER_EXECUTABLE", "").strip()
+    if browser_exe:
+        cmd.extend(["--browser-executable", browser_exe])
+    return cmd
 
 
 def _parse_iso_ts(raw: Any) -> Optional[datetime]:
@@ -217,6 +264,17 @@ def run_video_render_job(settings: Settings, job_id: str, *, from_worker: bool =
     session = dict(sres.data[0])
 
     try:
+        ensure_session_broll_master(settings, supabase, session)
+    except Exception as e:
+        fail_video_render_job(
+            supabase,
+            job_id,
+            session_id,
+            f"B-roll prepare failed: {e}",
+        )
+        return
+
+    try:
         cres = supabase.table("clients").select("brand_theme").eq("id", client_id).limit(1).execute()
         client_row = dict(cres.data[0]) if cres.data else None
     except Exception as e:
@@ -234,9 +292,14 @@ def run_video_render_job(settings: Settings, job_id: str, *, from_worker: bool =
     except ValueError as e:
         fail_video_render_job(supabase, job_id, session_id, str(e))
         return
-    entry = remotion_dir / "src" / "Root.tsx"
-    if not entry.is_file():
-        fail_video_render_job(supabase, job_id, session_id, f"Remotion entry missing: {entry}")
+    render_entry = _resolve_render_entry(settings, remotion_dir)
+    if not Path(render_entry).is_file():
+        fail_video_render_job(
+            supabase,
+            job_id,
+            session_id,
+            f"Remotion render entry missing: {render_entry}",
+        )
         return
 
     try:
@@ -270,19 +333,14 @@ def run_video_render_job(settings: Settings, job_id: str, *, from_worker: bool =
 
         props_arg = os.path.abspath(props_path)
 
-        cmd = [
-            "node",
-            str(cli_js),
-            "render",
-            str(entry),
-            comp_id,
-            out_mp4,
-            f"--props={props_arg}",
-            "--overwrite",
-        ]
-        browser_exe = os.environ.get("REMOTION_BROWSER_EXECUTABLE", "").strip()
-        if browser_exe:
-            cmd.extend(["--browser-executable", browser_exe])
+        cmd = _build_remotion_render_cmd(
+            settings,
+            cli_js=cli_js,
+            render_entry=render_entry,
+            comp_id=comp_id,
+            out_mp4=out_mp4,
+            props_path=props_arg,
+        )
         env = {**os.environ, "NODE_ENV": "production"}
         proc = subprocess.Popen(
             cmd,
@@ -365,6 +423,19 @@ def run_video_render_job(settings: Settings, job_id: str, *, from_worker: bool =
             )
             return
 
+        try:
+            expected_sec = float(props.get("totalSec") or 0)
+            render_manifest = verify_render_output_mp4(out_mp4, expected_duration_sec=expected_sec)
+            render_manifest["log_tail"] = _tail_remotion_log(output_lines, max_chars=4000)
+        except ValueError as e:
+            fail_video_render_job(
+                supabase,
+                job_id,
+                session_id,
+                f"Rendered MP4 failed verification: {e}",
+            )
+            return
+
         storage_path = f"{client_id}/{session_id}.mp4"
         with open(out_mp4, "rb") as vid:
             data = vid.read()
@@ -396,7 +467,11 @@ def run_video_render_job(settings: Settings, job_id: str, *, from_worker: bool =
             "status": "completed",
             "completed_at": now,
             "progress_pct": 100,
-            "result": {"rendered_video_url": public_url, "session_id": session_id},
+            "result": {
+                "rendered_video_url": public_url,
+                "session_id": session_id,
+                "render_manifest": render_manifest,
+            },
         }
     ).eq("id", job_id).execute()
 

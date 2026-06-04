@@ -43,6 +43,8 @@ export type VideoSpecBackground = {
   focalPoint: FocalPoint;
   /** B-roll length (seconds) when known — composition totalSec matches this. */
   durationSec?: number;
+  trimStartSec?: number;
+  trimEndSec?: number | null;
 };
 
 export type VideoSpecHook = {

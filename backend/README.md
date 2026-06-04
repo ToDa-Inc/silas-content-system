@@ -14,6 +14,7 @@ FastAPI service + background worker for clients, competitors, baselines, and job
   - **Client brain (Context page, PDF/DOCX uploads):** run **[sql/phase4_client_context.sql](sql/phase4_client_context.sql)** once. Adds `clients.client_context` and the private **`client-context`** storage bucket.
   - **Client DNA (compressed briefs for reel analysis / generation):** run **[sql/phase5_client_dna.sql](sql/phase5_client_dna.sql)** once. Adds `clients.client_dna`. See **`docs/client_dna.md`**.
   - **Phase 4 video (generation_sessions + B-roll library):** run **[sql/phase9_video_creation.sql](sql/phase9_video_creation.sql)** once. Adds `text_blocks`, render columns, and **`broll_clips`**. In Supabase Storage, create public buckets **`renders`** and **`broll`** (or match your RLS policy) so `rendered_video_url` / clip URLs resolve in the dashboard.
+  - **B-roll render masters (fixes juddery exports):** run **[sql/phase31_broll_render_master.sql](sql/phase31_broll_render_master.sql)** once. Adds `master_url`, `duration_sec`, `normalize_status` on **`broll_clips`**. Worker must handle job type **`broll_normalize`** (upload enqueues it automatically).
 
 **Signup without email confirmation (local dev):** Authentication → Email → disable **Confirm email**. **Site URL** `http://localhost:3000`.
 

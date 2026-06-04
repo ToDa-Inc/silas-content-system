@@ -57,11 +57,32 @@ from services.video_spec_defaults import (
 )
 from services.video_spec_edit import propose_spec_patch_with_retry
 from services.video_spec_patch import apply_ops_to_spec
-from services.video_spec_timeline import ffprobe_duration_seconds
+from services.broll_normalize import NORMALIZE_STATUS_PENDING, broll_playback_url
+from services.video_probe import ffprobe_duration_seconds
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["creation"])
+
+
+def _enqueue_broll_normalize_job(
+    supabase: Client,
+    *,
+    client_id: str,
+    clip_id: str,
+    org_id: Optional[str] = None,
+) -> None:
+    row: Dict[str, Any] = {
+        "id": generate_job_id(),
+        "client_id": client_id,
+        "job_type": "broll_normalize",
+        "payload": {"clip_id": clip_id},
+        "status": "queued",
+        "priority": 18,
+    }
+    if org_id:
+        row["org_id"] = org_id
+    supabase.table("background_jobs").insert(row).execute()
 
 
 def _dispatch_video_render_job(job_id: str) -> None:
@@ -510,7 +531,7 @@ def set_session_broll(
     cid = body.broll_clip_id.strip()
     cres = (
         supabase.table("broll_clips")
-        .select("id, file_url")
+        .select("id, file_url, master_url")
         .eq("id", cid)
         .eq("client_id", client_id)
         .limit(1)
@@ -519,15 +540,15 @@ def set_session_broll(
     if not cres.data:
         raise HTTPException(status_code=404, detail="B-roll clip not found")
     clip = dict(cres.data[0])
-    file_url = str(clip.get("file_url") or "").strip()
-    if not file_url:
+    playback_url = broll_playback_url(clip)
+    if not playback_url:
         raise HTTPException(status_code=400, detail="Clip has no file_url")
 
     now = _now_iso()
     supabase.table("generation_sessions").update(
         {
             "background_type": "broll",
-            "background_url": file_url,
+            "background_url": playback_url,
             "broll_clip_id": cid,
             "client_image_id": None,
             "updated_at": now,
@@ -1676,7 +1697,8 @@ async def upload_broll_clip(
     url = _public_object_url(settings.supabase_url, BROLL_BUCKET, path)
 
     dur_raw = ffprobe_duration_seconds(data)
-    duration_s = int(math.ceil(dur_raw)) if dur_raw is not None and dur_raw > 0 else None
+    duration_sec = round(float(dur_raw), 3) if dur_raw is not None and dur_raw > 0 else None
+    duration_s = int(round(dur_raw)) if dur_raw is not None and dur_raw > 0 else None
 
     # Extract thumbnail — best-effort, never fails the upload
     thumb_url: Optional[str] = None
@@ -1694,23 +1716,25 @@ async def upload_broll_clip(
             pass  # thumbnail is non-critical
 
     now = _now_iso()
-    ins = (
-        supabase.table("broll_clips")
-        .insert(
-            {
-                "id": clip_id,
-                "client_id": client_id,
-                "file_url": url,
-                "thumbnail_url": thumb_url,
-                "label": (label or "").strip()[:200] or None,
-                "duration_s": duration_s,
-                "created_at": now,
-            }
-        )
-        .execute()
-    )
+    clip_row: Dict[str, Any] = {
+        "id": clip_id,
+        "client_id": client_id,
+        "file_url": url,
+        "thumbnail_url": thumb_url,
+        "label": (label or "").strip()[:200] or None,
+        "duration_s": duration_s,
+        "created_at": now,
+        "normalize_status": NORMALIZE_STATUS_PENDING,
+    }
+    if duration_sec is not None:
+        clip_row["duration_sec"] = duration_sec
+    ins = supabase.table("broll_clips").insert(clip_row).execute()
     if not ins.data:
         raise HTTPException(status_code=500, detail="Failed to create broll_clips row")
+    try:
+        _enqueue_broll_normalize_job(supabase, client_id=client_id, clip_id=clip_id)
+    except Exception:
+        logger.exception("Failed to enqueue broll_normalize for clip %s", clip_id)
     return dict(ins.data[0])
 
 

@@ -29,6 +29,7 @@ from jobs.batch_rescore_scraped_reels_similarity import run_batch_rescore_scrape
 from jobs.keyword_reel_similarity import run_keyword_reel_similarity
 from jobs.niche_reel_scrape import run_niche_reel_scrape
 from jobs.reel_analyze_url import run_reel_analyze_bulk, run_reel_analyze_url
+from jobs.broll_normalize import run_broll_normalize
 from jobs.scraped_reels_refresh import run_scraped_reels_refresh
 from services.video_render import recover_stale_video_render_jobs, run_video_render_job
 
@@ -155,6 +156,8 @@ def _process_job_sync(settings: Settings, job: Dict[str, Any]) -> None:
         jid = str(job.get("id") or "").strip()
         if jid:
             run_video_render_job(settings, jid, from_worker=True)
+    elif jt == "broll_normalize":
+        run_broll_normalize(settings, job)
     else:
         _fail_job(settings, job["id"], f"Unknown job_type: {jt}")
 

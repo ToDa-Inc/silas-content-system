@@ -25,7 +25,8 @@ RUN apt-get update \
 
 COPY video-production/broll-caption-editor/ /opt/broll-caption-editor/
 WORKDIR /opt/broll-caption-editor
-RUN npm ci
+RUN npm ci \
+  && npx remotion bundle src/Root.tsx
 WORKDIR /app
 
 COPY backend/requirements.txt .
