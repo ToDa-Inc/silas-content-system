@@ -112,6 +112,7 @@ export const videoSpecZ = z.object({
      * Backend serializes `Optional[float]` as JSON `null`; use `.nullish()` so the
      * round-trip parse succeeds (same gotcha that bit `brand.accent` above). */
     durationSec: z.number().positive().max(600).nullish(),
+    durationFrames: z.number().int().positive().max(18000).nullish(),
     trimStartSec: z.number().min(0).max(600).optional().default(0),
     trimEndSec: z.number().positive().max(600).nullish(),
   }),
@@ -134,10 +135,39 @@ export const videoSpecZ = z.object({
 export type VideoSpec = z.infer<typeof videoSpecZ>;
 export type VideoSpecBlock = z.infer<typeof videoSpecBlockZ>;
 
+const COMPOSITION_FPS = 30;
+
+function secToFrame(sec: number): number {
+  return Math.max(0, Math.round(sec * COMPOSITION_FPS));
+}
+
+export function playableBackgroundFrames(
+  bg: VideoSpec["background"] | null | undefined,
+): number | null {
+  if (!bg || bg.kind !== "video") return null;
+  let sourceFrames: number;
+  if (bg.durationFrames != null && bg.durationFrames > 0) {
+    sourceFrames = bg.durationFrames;
+  } else if (bg.durationSec != null && bg.durationSec > 0) {
+    sourceFrames = Math.max(1, Math.round(Number(bg.durationSec) * COMPOSITION_FPS));
+  } else {
+    return null;
+  }
+  const startF = Math.min(secToFrame(Number(bg.trimStartSec ?? 0)), sourceFrames - 1);
+  const endF =
+    bg.trimEndSec != null
+      ? Math.min(secToFrame(Number(bg.trimEndSec)), sourceFrames)
+      : sourceFrames;
+  const endClamped = Math.max(startF + 1, Math.min(endF, sourceFrames));
+  return Math.max(1, endClamped - startF);
+}
+
 /** Playable B-roll window for timeline caps — not the raw asset length. */
 export function effectiveBackgroundDuration(
   bg: VideoSpec["background"] | null | undefined,
 ): number | null {
+  const frames = playableBackgroundFrames(bg);
+  if (frames != null) return frames / COMPOSITION_FPS;
   if (!bg || bg.kind !== "video" || bg.durationSec == null) return null;
   const source = Number(bg.durationSec);
   if (!Number.isFinite(source) || source <= 0) return null;

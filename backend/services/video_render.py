@@ -22,6 +22,7 @@ from core.config import Settings
 from core.database import get_supabase_for_settings
 from services.broll_normalize import ensure_session_broll_master
 from services.video_probe import verify_render_output_mp4
+from models.video_spec import VideoSpecV1, playable_background_frames
 from services.video_spec_defaults import finalize_spec_for_render
 
 RENDERS_BUCKET = "renders"
@@ -425,7 +426,17 @@ def run_video_render_job(settings: Settings, job_id: str, *, from_worker: bool =
 
         try:
             expected_sec = float(props.get("totalSec") or 0)
-            render_manifest = verify_render_output_mp4(out_mp4, expected_duration_sec=expected_sec)
+            expected_frames: Optional[int] = None
+            try:
+                spec = VideoSpecV1.model_validate(props)
+                expected_frames = playable_background_frames(spec.background)
+            except Exception:
+                pass
+            render_manifest = verify_render_output_mp4(
+                out_mp4,
+                expected_duration_sec=expected_sec,
+                expected_duration_frames=expected_frames,
+            )
             render_manifest["log_tail"] = _tail_remotion_log(output_lines, max_chars=4000)
         except ValueError as e:
             fail_video_render_job(

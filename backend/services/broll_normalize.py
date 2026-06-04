@@ -11,7 +11,12 @@ from typing import Any, Dict, Optional, Tuple
 import httpx
 
 from core.config import Settings
-from services.video_probe import ffprobe_duration_seconds_path
+from services.video_probe import (
+    COMPOSITION_FPS,
+    ffprobe_duration_seconds_path,
+    ffprobe_video_frame_count,
+    frame_to_sec,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +37,30 @@ def broll_playback_url(clip: Dict[str, Any]) -> str:
     return str(clip.get("file_url") or "").strip()
 
 
+def broll_frames_from_row(clip: Dict[str, Any]) -> Optional[int]:
+    raw = clip.get("duration_frames")
+    if raw is not None:
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            n = 0
+        if n > 0:
+            return n
+    dur = broll_duration_from_row(clip)
+    if dur is None:
+        return None
+    return max(1, round(dur * COMPOSITION_FPS))
+
+
 def broll_duration_from_row(clip: Dict[str, Any]) -> Optional[float]:
+    frames = clip.get("duration_frames")
+    if frames is not None:
+        try:
+            n = int(frames)
+        except (TypeError, ValueError):
+            n = 0
+        if n > 0:
+            return frame_to_sec(n)
     raw = clip.get("duration_sec")
     if raw is None:
         raw = clip.get("duration_s")
@@ -50,8 +78,8 @@ def _public_object_url(supabase_url: str, bucket: str, path: str) -> str:
     return f"{base}/storage/v1/object/public/{bucket}/{path}"
 
 
-def transcode_render_master(input_path: str, output_path: str) -> float:
-    """FFmpeg: strip audio, CFR 30fps, H.264 yuv420p, faststart. Returns duration seconds."""
+def transcode_render_master(input_path: str, output_path: str) -> Tuple[int, float]:
+    """FFmpeg: strip audio, CFR 30fps, H.264 yuv420p, faststart. Returns (frames, seconds)."""
     vf = f"fps={RENDER_MASTER_FPS},scale=trunc(iw/2)*2:trunc(ih/2)*2"
     proc = subprocess.run(
         [
@@ -62,6 +90,8 @@ def transcode_render_master(input_path: str, output_path: str) -> float:
             "-an",
             "-vf",
             vf,
+            "-r",
+            str(RENDER_MASTER_FPS),
             "-c:v",
             "libx264",
             "-preset",
@@ -81,10 +111,10 @@ def transcode_render_master(input_path: str, output_path: str) -> float:
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "")[-2000:]
         raise RuntimeError(f"ffmpeg transcode failed (exit {proc.returncode}): {tail}")
-    dur = ffprobe_duration_seconds_path(output_path)
-    if dur is None or dur <= 0:
-        raise RuntimeError("ffmpeg produced a file with no readable duration")
-    return float(dur)
+    frames = ffprobe_video_frame_count(output_path)
+    if frames is None or frames <= 0:
+        raise RuntimeError("ffmpeg produced a file with no readable frame count")
+    return frames, frame_to_sec(frames)
 
 
 def _download_url(url: str, *, timeout: float = 180.0) -> bytes:
@@ -105,7 +135,10 @@ def normalize_broll_clip_row(
     """Ensure ``master_url`` exists; return (playback_url, duration_sec)."""
     res = (
         supabase.table("broll_clips")
-        .select("id, client_id, file_url, master_url, normalize_status, duration_sec, duration_s")
+        .select(
+            "id, client_id, file_url, master_url, normalize_status, "
+            "duration_frames, duration_sec, duration_s"
+        )
         .eq("id", clip_id)
         .eq("client_id", client_id)
         .limit(1)
@@ -140,7 +173,7 @@ def normalize_broll_clip_row(
             inf.write(data)
             in_path = inf.name
         out_path = in_path.replace(".mp4", "_master.mp4")
-        duration = transcode_render_master(in_path, out_path)
+        frames, duration = transcode_render_master(in_path, out_path)
         with open(out_path, "rb") as f:
             master_bytes = f.read()
         master_storage_path = f"{client_id}/{clip_id}_master.mp4"
@@ -150,16 +183,16 @@ def normalize_broll_clip_row(
             {"content-type": "video/mp4", "upsert": "true"},
         )
         master_url = _public_object_url(settings.supabase_url, BROLL_BUCKET, master_storage_path)
-        duration_rounded = round(duration, 3)
         supabase.table("broll_clips").update(
             {
                 "master_url": master_url,
                 "normalize_status": NORMALIZE_STATUS_READY,
-                "duration_sec": duration_rounded,
+                "duration_frames": int(frames),
+                "duration_sec": frame_to_sec(frames),
                 "duration_s": int(round(duration)),
             }
         ).eq("id", clip_id).eq("client_id", client_id).execute()
-        return master_url, duration_rounded
+        return master_url, frame_to_sec(frames)
     except Exception as e:
         logger.exception("broll normalize failed clip_id=%s", clip_id)
         try:

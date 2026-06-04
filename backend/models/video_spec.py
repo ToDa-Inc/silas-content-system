@@ -22,6 +22,15 @@ StackGrowth = Literal["up", "down"]
 
 FONT_SCALE_MIN = 0.5
 FONT_SCALE_MAX = 2.0
+COMPOSITION_FPS = 30
+
+
+def _sec_to_frame(sec: float) -> int:
+    return max(0, round(float(sec) * COMPOSITION_FPS))
+
+
+def frame_to_sec(frames: int) -> float:
+    return max(0, int(frames)) / float(COMPOSITION_FPS)
 
 
 def _coerce_font_scale(v: Any) -> Optional[float]:
@@ -34,8 +43,30 @@ def _coerce_font_scale(v: Any) -> Optional[float]:
     return max(FONT_SCALE_MIN, min(FONT_SCALE_MAX, x))
 
 
+def playable_background_frames(bg: "VideoSpecBackground") -> Optional[int]:
+    """Playable frame count at 30fps after trim — authoritative for composition length."""
+    if bg.kind != "video":
+        return None
+    if bg.durationFrames is not None and bg.durationFrames > 0:
+        source_frames = int(bg.durationFrames)
+    elif bg.durationSec is not None and bg.durationSec > 0:
+        source_frames = max(1, round(float(bg.durationSec) * COMPOSITION_FPS))
+    else:
+        return None
+    start_f = min(_sec_to_frame(float(bg.trimStartSec or 0)), source_frames - 1)
+    if bg.trimEndSec is not None:
+        end_f = min(_sec_to_frame(float(bg.trimEndSec)), source_frames)
+    else:
+        end_f = source_frames
+    end_f = max(start_f + 1, min(end_f, source_frames))
+    return max(1, end_f - start_f)
+
+
 def effective_background_duration(bg: "VideoSpecBackground") -> Optional[float]:
     """Playable B-roll window for timeline caps — not the raw asset length."""
+    frames = playable_background_frames(bg)
+    if frames is not None:
+        return frame_to_sec(frames)
     if bg.kind != "video" or bg.durationSec is None:
         return None
     source = float(bg.durationSec)
@@ -62,12 +93,26 @@ class VideoSpecBackground(BaseModel):
     url: str = Field(..., min_length=1, max_length=4096)
     kind: BackgroundKind = "image"
     focalPoint: FocalPoint = "center"
-    """When ``kind`` is ``video`` (B-roll), set from ``broll_clips.duration_s`` so
-    ``totalSec`` matches the clip and the timeline is fitted to that cap."""
+    """When ``kind`` is ``video`` (B-roll), set from ``broll_clips`` so the timeline
+    matches the clip. ``durationFrames`` is authoritative for export frame count."""
     durationSec: Optional[float] = None
+    durationFrames: Optional[int] = None
     """In-point on the source file (seconds). Out-point is ``trimEndSec`` or full ``durationSec``."""
     trimStartSec: float = Field(default=0.0, ge=0.0, le=600.0)
     trimEndSec: Optional[float] = Field(default=None)
+
+    @field_validator("durationFrames", mode="before")
+    @classmethod
+    def _duration_frames(cls, v: Any) -> Optional[int]:
+        if v is None or v == "":
+            return None
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return None
+        if n <= 0 or n > 18000:
+            return None
+        return n
 
     @field_validator("durationSec", mode="before")
     @classmethod
@@ -347,7 +392,10 @@ class VideoSpecV1(BaseModel):
         # Align with ``relayout_spec``: when B-roll length is known, composition
         # length is min(content end, clip) — never keep a stale ``totalSec``
         # above the clip after blocks were fitted.
-        if cap is None:
+        pf = playable_background_frames(self.background)
+        if pf is not None:
+            new_total = frame_to_sec(pf)
+        elif cap is None:
             new_total = max(float(self.totalSec), min_total)
         else:
             new_total = min(min_total, float(cap))

@@ -21,6 +21,13 @@ def test_broll_duration_from_row_prefers_duration_sec() -> None:
     assert broll_duration_from_row({"duration_s": 8}) == 8.0
 
 
+def test_broll_duration_from_row_prefers_duration_frames() -> None:
+    from services.broll_normalize import broll_frames_from_row
+
+    assert broll_frames_from_row({"duration_frames": 215}) == 215
+    assert broll_duration_from_row({"duration_frames": 215}) == 215 / 30
+
+
 def test_parse_fps_fraction() -> None:
     assert _parse_fps("30/1") == 30.0
     assert _parse_fps("30000/1001") is not None

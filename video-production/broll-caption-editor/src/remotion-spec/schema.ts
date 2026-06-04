@@ -43,9 +43,52 @@ export type VideoSpecBackground = {
   focalPoint: FocalPoint;
   /** B-roll length (seconds) when known — composition totalSec matches this. */
   durationSec?: number;
+  /** Exact frame count of master at 30fps — authoritative for export length. */
+  durationFrames?: number;
   trimStartSec?: number;
   trimEndSec?: number | null;
 };
+
+export const COMPOSITION_FPS = 30;
+
+function secToFrame(sec: number): number {
+  return Math.max(0, Math.round(sec * COMPOSITION_FPS));
+}
+
+export function frameToSec(frames: number): number {
+  return Math.max(0, frames) / COMPOSITION_FPS;
+}
+
+export function playableBackgroundFrames(
+  bg: VideoSpecBackground | undefined,
+): number | null {
+  if (!bg || bg.kind !== 'video') return null;
+  let sourceFrames: number;
+  if (bg.durationFrames != null && bg.durationFrames > 0) {
+    sourceFrames = bg.durationFrames;
+  } else if (bg.durationSec != null && bg.durationSec > 0) {
+    sourceFrames = Math.max(1, Math.round(bg.durationSec * COMPOSITION_FPS));
+  } else {
+    return null;
+  }
+  const startF = Math.min(secToFrame(bg.trimStartSec ?? 0), sourceFrames - 1);
+  const endF =
+    bg.trimEndSec != null
+      ? Math.min(secToFrame(bg.trimEndSec), sourceFrames)
+      : sourceFrames;
+  const endClamped = Math.max(startF + 1, Math.min(endF, sourceFrames));
+  return Math.max(1, endClamped - startF);
+}
+
+/** Remotion ``durationInFrames`` — never ``ceil(totalSec * fps)`` when frames are known. */
+export function compositionDurationInFrames(spec: {
+  totalSec: number;
+  background?: VideoSpecBackground;
+}): number {
+  const pf = playableBackgroundFrames(spec.background);
+  if (pf != null && pf > 0) return pf;
+  return Math.max(1, Math.ceil(Math.max(0.001, spec.totalSec) * COMPOSITION_FPS));
+}
 
 export type VideoSpecHook = {
   text: string;

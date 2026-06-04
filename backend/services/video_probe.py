@@ -13,6 +13,14 @@ COMPOSITION_WIDTH = 1080
 COMPOSITION_HEIGHT = 1920
 
 
+def sec_to_frame(sec: float, *, fps: int = COMPOSITION_FPS) -> int:
+    return max(0, round(float(sec) * fps))
+
+
+def frame_to_sec(frames: int, *, fps: int = COMPOSITION_FPS) -> float:
+    return max(0, int(frames)) / float(fps)
+
+
 def ffprobe_duration_seconds(video_bytes: bytes) -> Optional[float]:
     """Return container duration in seconds, or None if ffprobe unavailable."""
     path = ""
@@ -57,6 +65,38 @@ def ffprobe_duration_seconds_path(path: str) -> Optional[float]:
     except ValueError:
         return None
     return v if v > 0 else None
+
+
+def ffprobe_video_frame_count(path: str) -> Optional[int]:
+    """Exact decoded frame count (slow; use on normalized masters only)."""
+    proc = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-count_frames",
+            "-show_entries",
+            "stream=nb_read_frames",
+            "-of",
+            "default=nokey=1:noprint_wrappers=1",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if proc.returncode != 0:
+        return None
+    s = (proc.stdout or "").strip()
+    if not s:
+        return None
+    try:
+        n = int(s)
+    except ValueError:
+        return None
+    return n if n > 0 else None
 
 
 def ffprobe_video_stream(path: str) -> Optional[Dict[str, Any]]:
@@ -133,6 +173,7 @@ def verify_render_output_mp4(
     path: str,
     *,
     expected_duration_sec: float,
+    expected_duration_frames: Optional[int] = None,
     duration_tolerance_sec: float = 0.35,
 ) -> Dict[str, Any]:
     """Assert the rendered file is IG-safe; return a small manifest dict."""
@@ -149,6 +190,13 @@ def verify_render_output_mp4(
             f"Rendered duration {duration:.2f}s differs from spec totalSec "
             f"{expected_duration_sec:.2f}s by more than {duration_tolerance_sec}s"
         )
+
+    frame_count = ffprobe_video_frame_count(path)
+    if expected_duration_frames is not None and frame_count is not None:
+        if frame_count != int(expected_duration_frames):
+            raise ValueError(
+                f"Rendered frame count {frame_count} != expected {expected_duration_frames}"
+            )
 
     width = int(meta.get("width") or 0)
     height = int(meta.get("height") or 0)
@@ -169,6 +217,7 @@ def verify_render_output_mp4(
 
     return {
         "duration_sec": round(float(duration), 3),
+        "duration_frames": frame_count,
         "width": width,
         "height": height,
         "pix_fmt": pix,

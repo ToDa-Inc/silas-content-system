@@ -27,7 +27,9 @@ from services.video_spec_timeline import (
     MIN_BLOCK,
     clamp_gap,
     effective_pauses_sec,
+    clamp_spec_to_video_frames,
     fetch_broll_duration_sec,
+    fetch_broll_timing,
     fit_block_durs_to_available,
     probe_http_video_duration_sec,
     relayout_spec,
@@ -392,22 +394,26 @@ def hydrate_video_spec_broll_duration_if_needed(
     session: Dict[str, Any],
     supabase: Any,
 ) -> VideoSpecV1:
-    """Fill ``background.durationSec`` when missing: ``broll_clips`` (incl. ffprobe on ``file_url``), else background URL."""
-    if spec.background.kind != "video" or spec.background.durationSec is not None:
+    """Fill ``background.durationSec`` / ``durationFrames`` when missing."""
+    if spec.background.kind != "video":
+        return spec
+    if spec.background.durationSec is not None and spec.background.durationFrames is not None:
         return spec
     client_id = str(session.get("client_id") or "").strip()
     clip_id = str(session.get("broll_clip_id") or "").strip()
+    frames: Optional[int] = None
     dur: Optional[float] = None
     if clip_id and client_id and supabase is not None:
-        dur = fetch_broll_duration_sec(supabase, client_id, clip_id)
+        frames, dur = fetch_broll_timing(supabase, client_id, clip_id)
     if dur is None:
         dur = probe_http_video_duration_sec(str(spec.background.url or "").strip())
     if dur is None or not math.isfinite(dur) or dur <= 0:
         return spec
+    bg_updates: Dict[str, Any] = {"durationSec": float(dur)}
+    if frames is not None:
+        bg_updates["durationFrames"] = int(frames)
     merged = spec.model_copy(
-        update={
-            "background": spec.background.model_copy(update={"durationSec": float(dur)}),
-        }
+        update={"background": spec.background.model_copy(update=bg_updates)}
     )
     # Do not run ``relayout_spec`` here: it rebuilds block windows from pauses and
     # would erase independently authored layer timing. Pydantic validation only
@@ -474,7 +480,7 @@ def finalize_spec_for_render(
     # user has to manually shrink each block.
     client_id = str(session.get("client_id") or "").strip()
     clip_id = str(session.get("broll_clip_id") or "").strip()
-    dur = fetch_broll_duration_sec(supabase, client_id, clip_id) if supabase else None
+    frames, dur = fetch_broll_timing(supabase, client_id, clip_id) if supabase else (None, None)
     stored_spec = parse_video_spec(session.get("video_spec"))
     has_stored_spec = stored_spec is not None
     spec = ensure_video_spec(session, client_row=client_row, broll_duration_sec=dur)
@@ -491,19 +497,30 @@ def finalize_spec_for_render(
         spec = spec.model_copy(update={"hook": spec.hook.model_copy(update={"text": ht[:500]})})
     spec = apply_visual_style_hints(spec, session)
     if spec.background.kind == "video":
+        bg_updates: Dict[str, Any] = {}
         if dur is not None:
+            bg_updates["durationSec"] = float(dur)
+        if frames is not None:
+            bg_updates["durationFrames"] = int(frames)
+        if bg_updates:
+            spec = spec.model_copy(
+                update={"background": spec.background.model_copy(update=bg_updates)}
+            )
+        elif dur is None:
             spec = spec.model_copy(
                 update={
-                    "background": spec.background.model_copy(update={"durationSec": float(dur)}),
+                    "background": spec.background.model_copy(
+                        update={"durationSec": None, "durationFrames": None}
+                    )
                 }
-            )
-        else:
-            spec = spec.model_copy(
-                update={"background": spec.background.model_copy(update={"durationSec": None})}
             )
     else:
         spec = spec.model_copy(
-            update={"background": spec.background.model_copy(update={"durationSec": None})}
+            update={
+                "background": spec.background.model_copy(
+                    update={"durationSec": None, "durationFrames": None}
+                )
+            }
         )
     if not preserve_explicit_windows:
         spec = relayout_spec(spec)
@@ -511,6 +528,8 @@ def finalize_spec_for_render(
     # in JSON — probe clip URL / background URL so relayout cap can run.
     if not preserve_explicit_windows:
         spec = hydrate_video_spec_broll_duration_if_needed(spec, session, supabase)
+    if spec.background.kind == "video":
+        spec = clamp_spec_to_video_frames(spec)
     return apply_live_session_fields(spec, session)
 
 

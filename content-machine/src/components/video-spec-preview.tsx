@@ -8,6 +8,7 @@ import { playerSpecRenderKey } from "@/lib/player-spec";
 import { DEFAULT_LAYOUT, type VideoSpec } from "@/lib/video-spec";
 import { buildLayerRows } from "@/lib/video-spec-layer-timeline";
 import Renderer from "@/remotion-spec/Renderer";
+import { compositionDurationInFrames } from "@/remotion-spec/schema";
 
 const Player = dynamic(
   () => import("@remotion/player").then((m) => m.Player),
@@ -101,10 +102,13 @@ function VideoSpecPreviewBase({
     [spec?.totalSec],
   );
 
-  const durationInFrames = useMemo(
-    () => Math.max(1, Math.ceil(Math.max(0.001, renderSpec?.totalSec ?? timelineSec) * FPS)),
-    [renderSpec?.totalSec, timelineSec],
-  );
+  const durationInFrames = useMemo(() => {
+    const total = Math.max(0.001, renderSpec?.totalSec ?? timelineSec);
+    return compositionDurationInFrames({
+      totalSec: total,
+      background: renderSpec?.background,
+    });
+  }, [renderSpec?.totalSec, renderSpec?.background, timelineSec]);
 
   const initialFrame = useMemo(
     () => Math.min(durationInFrames - 1, Math.round(ENTRANCE_DURATION_SEC * FPS)),
