@@ -13,7 +13,8 @@ import httpx
 from core.config import Settings
 from services.video_probe import (
     COMPOSITION_FPS,
-    ffprobe_duration_seconds_path,
+    COMPOSITION_HEIGHT,
+    COMPOSITION_WIDTH,
     ffprobe_video_frame_count,
     frame_to_sec,
 )
@@ -22,7 +23,9 @@ logger = logging.getLogger(__name__)
 
 BROLL_BUCKET = "broll"
 RENDER_MASTER_FPS = 30
-RENDER_MASTER_CRF = 16
+RENDER_MASTER_CRF = 20
+# Supabase Storage default per-object limit is 50 MB; stay under for upload headroom.
+MAX_MASTER_UPLOAD_BYTES = 48 * 1024 * 1024
 NORMALIZE_STATUS_READY = "ready"
 NORMALIZE_STATUS_FAILED = "failed"
 NORMALIZE_STATUS_PENDING = "pending"
@@ -78,9 +81,27 @@ def _public_object_url(supabase_url: str, bucket: str, path: str) -> str:
     return f"{base}/storage/v1/object/public/{bucket}/{path}"
 
 
-def transcode_render_master(input_path: str, output_path: str) -> Tuple[int, float]:
+def _render_master_vf() -> str:
+    """Cover-crop to composition (1080×1920) — matches Remotion ``object-fit: cover``."""
+    w, h = COMPOSITION_WIDTH, COMPOSITION_HEIGHT
+    return (
+        f"fps={RENDER_MASTER_FPS},"
+        f"scale={w}:{h}:force_original_aspect_ratio=increase,"
+        f"crop={w}:{h},"
+        "setsar=1"
+    )
+
+
+def transcode_render_master(
+    input_path: str,
+    output_path: str,
+    *,
+    crf: int = RENDER_MASTER_CRF,
+    maxrate: str = "5M",
+) -> Tuple[int, float]:
     """FFmpeg: strip audio, CFR 30fps, H.264 yuv420p, faststart. Returns (frames, seconds)."""
-    vf = f"fps={RENDER_MASTER_FPS},scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    vf = _render_master_vf()
+    bufsize = "10M" if maxrate == "5M" else "6M"
     proc = subprocess.run(
         [
             "ffmpeg",
@@ -97,7 +118,11 @@ def transcode_render_master(input_path: str, output_path: str) -> Tuple[int, flo
             "-preset",
             "medium",
             "-crf",
-            str(RENDER_MASTER_CRF),
+            str(crf),
+            "-maxrate",
+            maxrate,
+            "-bufsize",
+            bufsize,
             "-pix_fmt",
             "yuv420p",
             "-movflags",
@@ -123,6 +148,62 @@ def _download_url(url: str, *, timeout: float = 180.0) -> bytes:
     if r.status_code != 200 or not r.content:
         raise RuntimeError(f"Failed to download B-roll ({r.status_code})")
     return r.content
+
+
+def _load_source_bytes(
+    supabase: Any, *, client_id: str, clip_id: str, file_url: str
+) -> bytes:
+    """Prefer Storage API download (same bucket) over HTTP re-fetch."""
+    storage_path = f"{client_id}/{clip_id}.mp4"
+    try:
+        data = supabase.storage.from_(BROLL_BUCKET).download(storage_path)
+        if data:
+            return bytes(data)
+    except Exception:
+        pass
+    return _download_url(file_url)
+
+
+def _storage_upload_file(
+    supabase: Any,
+    *,
+    bucket: str,
+    object_path: str,
+    local_path: str,
+    content_type: str,
+) -> None:
+    with open(local_path, "rb") as fh:
+        supabase.storage.from_(bucket).upload(
+            object_path,
+            fh,
+            {"content-type": content_type, "upsert": "true"},
+        )
+
+
+def _transcode_master_for_upload(in_path: str, out_path: str) -> Tuple[int, float]:
+    """Transcode; retry with tighter caps if the master would exceed Storage limits."""
+    frames, duration = transcode_render_master(in_path, out_path)
+    try:
+        size = os.path.getsize(out_path)
+    except OSError:
+        size = 0
+    if size <= MAX_MASTER_UPLOAD_BYTES:
+        return frames, duration
+    logger.warning(
+        "broll master %s MB exceeds %s MB — re-encoding with tighter bitrate",
+        round(size / (1024 * 1024), 1),
+        MAX_MASTER_UPLOAD_BYTES // (1024 * 1024),
+    )
+    frames, duration = transcode_render_master(in_path, out_path, crf=26, maxrate="3M")
+    size = os.path.getsize(out_path)
+    if size > MAX_MASTER_UPLOAD_BYTES:
+        mb = round(size / (1024 * 1024), 1)
+        cap = MAX_MASTER_UPLOAD_BYTES // (1024 * 1024)
+        raise RuntimeError(
+            f"Normalized master is {mb} MB (storage limit {cap} MB). "
+            "Use a shorter clip or upload at 1080p or lower."
+        )
+    return frames, duration
 
 
 def normalize_broll_clip_row(
@@ -168,20 +249,31 @@ def normalize_broll_clip_row(
     in_path = ""
     out_path = ""
     try:
-        data = _download_url(file_url)
+        data = _load_source_bytes(
+            supabase, client_id=client_id, clip_id=clip_id, file_url=file_url
+        )
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as inf:
             inf.write(data)
             in_path = inf.name
         out_path = in_path.replace(".mp4", "_master.mp4")
-        frames, duration = transcode_render_master(in_path, out_path)
-        with open(out_path, "rb") as f:
-            master_bytes = f.read()
+        frames, duration = _transcode_master_for_upload(in_path, out_path)
         master_storage_path = f"{client_id}/{clip_id}_master.mp4"
-        supabase.storage.from_(BROLL_BUCKET).upload(
-            master_storage_path,
-            master_bytes,
-            {"content-type": "video/mp4", "upsert": "true"},
-        )
+        try:
+            _storage_upload_file(
+                supabase,
+                bucket=BROLL_BUCKET,
+                object_path=master_storage_path,
+                local_path=out_path,
+                content_type="video/mp4",
+            )
+        except Exception as upload_err:
+            err_s = str(upload_err)
+            if "413" in err_s or "Payload too large" in err_s:
+                raise RuntimeError(
+                    "Normalized master exceeds Supabase Storage size limit (~50 MB). "
+                    "Use a shorter clip or upload at 1080p or lower."
+                ) from upload_err
+            raise
         master_url = _public_object_url(settings.supabase_url, BROLL_BUCKET, master_storage_path)
         supabase.table("broll_clips").update(
             {
