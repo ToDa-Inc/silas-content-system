@@ -42,9 +42,9 @@ export type VideoSpecBackground = {
   kind: BackgroundKind;
   focalPoint: FocalPoint;
   /** B-roll length (seconds) when known — composition totalSec matches this. */
-  durationSec?: number;
+  durationSec?: number | null;
   /** Exact frame count of master at 30fps — authoritative for export length. */
-  durationFrames?: number;
+  durationFrames?: number | null;
   trimStartSec?: number;
   trimEndSec?: number | null;
 };
