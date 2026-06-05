@@ -11,6 +11,8 @@ from typing import Any, Dict, Optional
 COMPOSITION_FPS = 30
 COMPOSITION_WIDTH = 1080
 COMPOSITION_HEIGHT = 1920
+# Remotion may emit ``yuvj420p`` (JPEG range) even when ``--pixel-format=yuv420p`` is set.
+ACCEPTED_RENDER_PIX_FMTS = frozenset({"yuv420p", "yuvj420p"})
 
 
 def sec_to_frame(sec: float, *, fps: int = COMPOSITION_FPS) -> int:
@@ -204,8 +206,10 @@ def verify_render_output_mp4(
         raise ValueError(f"Rendered dimensions {width}x{height}, expected {COMPOSITION_WIDTH}x{COMPOSITION_HEIGHT}")
 
     pix = str(meta.get("pix_fmt") or "")
-    if pix and pix != "yuv420p":
-        raise ValueError(f"Rendered pix_fmt {pix!r}, expected yuv420p")
+    if pix and pix not in ACCEPTED_RENDER_PIX_FMTS:
+        raise ValueError(
+            f"Rendered pix_fmt {pix!r}, expected one of {sorted(ACCEPTED_RENDER_PIX_FMTS)}"
+        )
 
     fps = _parse_fps(meta.get("avg_frame_rate")) or _parse_fps(meta.get("r_frame_rate"))
     if fps is not None and abs(fps - COMPOSITION_FPS) > 0.6:

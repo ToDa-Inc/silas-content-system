@@ -2013,6 +2013,27 @@ export function VideoCreateWorkspace({
     await applyVideoSpecOps(result.ops, () => setSelectedSegmentId("hook"));
   }, [applyVideoSpecOps, previewVideoSpec, selectedSegmentId]);
 
+  /** Step 1 trash must remove the matching ``video_spec`` layer so the preview updates
+   *  immediately and surviving beats keep their on-screen duration. */
+  const onRemoveTextBlock = useCallback(
+    async (index: number) => {
+      if (!previewVideoSpec) {
+        setTextDraft((prev) => prev.filter((_, j) => j !== index));
+        return;
+      }
+      const blockId = previewVideoSpec.blocks[index]?.id;
+      if (blockId) {
+        const result = deleteTextLayer(previewVideoSpec, blockId);
+        if (result.ops.length > 0) {
+          await applyVideoSpecOps(result.ops, () => setSelectedSegmentId("hook"));
+        }
+        return;
+      }
+      setTextDraft((prev) => prev.filter((_, j) => j !== index));
+    },
+    [applyVideoSpecOps, previewVideoSpec],
+  );
+
   const onSaveSelectedLayer = useCallback(async () => {
     if (!previewVideoSpec || !selectedLayer) return;
     const text = layerTextDraft.trim();
@@ -3183,7 +3204,7 @@ export function VideoCreateWorkspace({
                     </label>
                     <button
                       type="button"
-                      onClick={() => setTextDraft((prev) => prev.filter((_, j) => j !== i))}
+                      onClick={() => void onRemoveTextBlock(i)}
                       className="rounded-lg p-2 text-app-fg-subtle hover:bg-red-500/10 hover:text-red-400"
                       aria-label="Remove block"
                     >

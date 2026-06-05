@@ -109,19 +109,24 @@ def composition_id_for_session(_session: Dict[str, Any]) -> str:
     return "video-spec"
 
 
-def _resolve_render_entry(settings: Settings, remotion_dir: Path) -> str:
-    """Pre-bundled ``build/`` (from ``npx remotion bundle``) or ``src/Root.tsx`` for CLI render.
+def _resolve_render_entry(remotion_dir: Path) -> str:
+    """Remotion CLI entry: pre-bundled ``build/`` dir, else ``src/Root.tsx``.
 
-    Pass the **directory** that contains ``index.html``, not ``index.html`` itself — the CLI
-    treats a file path as a webpack entry (must call ``registerRoot()``).
+    The CLI wants the **bundle directory** (contains ``index.html``), not ``index.html``
+    itself — a file path is treated as a webpack entry and must call ``registerRoot()``.
     """
     bundle_dir = remotion_dir / "build"
-    if (bundle_dir / "index.html").is_file():
+    bundle_index = bundle_dir / "index.html"
+    if bundle_index.is_file():
         return str(bundle_dir.resolve())
-    entry = remotion_dir / "src" / "Root.tsx"
-    if not entry.is_file():
-        raise ValueError(f"Remotion entry missing: {entry}")
-    return str(entry.resolve())
+    root_tsx = remotion_dir / "src" / "Root.tsx"
+    if root_tsx.is_file():
+        return str(root_tsx.resolve())
+    raise ValueError(
+        f"No Remotion render entry under {remotion_dir}. "
+        f"Expected {bundle_index} (run `npx remotion bundle src/Root.tsx` in broll-caption-editor) "
+        f"or {root_tsx}."
+    )
 
 
 def _build_remotion_render_cmd(
@@ -299,14 +304,10 @@ def run_video_render_job(settings: Settings, job_id: str, *, from_worker: bool =
     except ValueError as e:
         fail_video_render_job(supabase, job_id, session_id, str(e))
         return
-    render_entry = _resolve_render_entry(settings, remotion_dir)
-    if not Path(render_entry).is_file():
-        fail_video_render_job(
-            supabase,
-            job_id,
-            session_id,
-            f"Remotion render entry missing: {render_entry}",
-        )
+    try:
+        render_entry = _resolve_render_entry(remotion_dir)
+    except ValueError as e:
+        fail_video_render_job(supabase, job_id, session_id, str(e))
         return
 
     try:

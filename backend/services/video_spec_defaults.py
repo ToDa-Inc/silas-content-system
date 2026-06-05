@@ -533,13 +533,94 @@ def finalize_spec_for_render(
     return apply_live_session_fields(spec, session)
 
 
+def _text_row_eq(block: VideoSpecBlock, row: Dict[str, Any]) -> bool:
+    return str(block.text or "").strip() == str(row.get("text") or "").strip() and bool(
+        block.isCTA
+    ) == bool(row.get("isCTA"))
+
+
+def _find_single_deletion_index(
+    old: List[VideoSpecBlock], cleaned: List[Dict[str, Any]]
+) -> Optional[int]:
+    """Index removed from ``old`` when ``cleaned`` is exactly one beat shorter (same order)."""
+    if len(cleaned) != len(old) - 1:
+        return None
+    for k in range(len(old)):
+        ok = True
+        for j in range(len(cleaned)):
+            old_idx = j if j < k else j + 1
+            if not _text_row_eq(old[old_idx], cleaned[j]):
+                ok = False
+                break
+        if ok:
+            return k
+    return None
+
+
+def _pauses_from_block_windows(hook_sec: float, blocks: List[VideoSpecBlock]) -> Optional[List[float]]:
+    if not blocks:
+        return None
+    ordered = sorted(blocks, key=lambda b: (float(b.startSec), float(b.endSec)))
+    pauses: List[float] = []
+    for i, b in enumerate(ordered):
+        prev_end = hook_sec if i == 0 else float(ordered[i - 1].endSec)
+        pauses.append(clamp_gap(float(b.startSec) - prev_end))
+    return pauses
+
+
+def _total_sec_from_blocks(spec: VideoSpecV1, blocks: List[VideoSpecBlock]) -> float:
+    max_end = max((float(b.endSec) for b in blocks), default=0.0)
+    min_total = max(max_end, float(spec.hook.durationSec) + 0.5, 2.0)
+    cap = effective_background_duration(spec.background)
+    if cap is not None and cap > 0:
+        return min(min_total, float(cap))
+    return min_total
+
+
+def _block_from_row_preserve_timing(ob: VideoSpecBlock, row: Dict[str, Any]) -> VideoSpecBlock:
+    anim = "pop" if row["isCTA"] else "fade"
+    return ob.model_copy(
+        update={
+            "text": row["text"][:500],
+            "isCTA": row["isCTA"],
+            "animation": anim,  # type: ignore[arg-type]
+        }
+    )
+
+
+def _append_block_from_row(
+    spec: VideoSpecV1,
+    blocks: List[VideoSpecBlock],
+    row: Dict[str, Any],
+    *,
+    language: str,
+) -> VideoSpecBlock:
+    hook_s = float(spec.hook.durationSec)
+    gap = clamp_gap(getattr(spec, "gapBetweenBlocksSec", 0.0) or 0.0)
+    prev_end = float(blocks[-1].endSec) if blocks else hook_s
+    start = round(prev_end + gap, 2)
+    cap = effective_background_duration(spec.background)
+    dur = float(block_read_duration_sec(row["text"], language=language))
+    end = round(start + dur, 2)
+    if cap is not None and cap > 0:
+        end = min(float(cap), max(start + MIN_BLOCK, end))
+    return VideoSpecBlock(
+        id=str(uuid.uuid4()),
+        text=row["text"][:500],
+        isCTA=row["isCTA"],
+        startSec=start,
+        endSec=end,
+        animation=("pop" if row["isCTA"] else "fade"),  # type: ignore[arg-type]
+    )
+
+
 def merge_text_blocks_into_spec(
     spec: VideoSpecV1,
     text_blocks: List[Dict[str, Any]],
     *,
     language: str = "de",
 ) -> VideoSpecV1:
-    """Update spec blocks from legacy text_blocks; preserve ids when counts match, else re-time."""
+    """Sync ``text_blocks`` into ``video_spec.blocks`` without re-timing surviving beats."""
     cleaned: List[Dict[str, Any]] = []
     for b in text_blocks[:12]:
         if not isinstance(b, dict):
@@ -550,67 +631,47 @@ def merge_text_blocks_into_spec(
         cleaned.append({"text": t, "isCTA": bool(b.get("isCTA"))})
 
     if not cleaned:
-        return relayout_spec(spec.model_copy(update={"blocks": [], "pausesSec": None}))
+        empty = spec.model_copy(update={"blocks": [], "pausesSec": None})
+        return empty.model_copy(update={"totalSec": _total_sec_from_blocks(empty, [])})
 
     old = list(spec.blocks)
     lang = (language or "de").strip()[:8]
     new_blocks: List[VideoSpecBlock] = []
-    hook_s = spec.hook.durationSec
-    gap = clamp_gap(getattr(spec, "gapBetweenBlocksSec", 0.0) or 0.0)
-    new_pauses: List[float]
+    hook_s = float(spec.hook.durationSec)
+
     if len(cleaned) == len(old):
-        if spec.pausesSec is not None and len(spec.pausesSec) == len(old):
-            new_pauses = [clamp_gap(float(spec.pausesSec[i])) for i in range(len(cleaned))]  # type: ignore[index]
+        for i, row in enumerate(cleaned):
+            new_blocks.append(_block_from_row_preserve_timing(old[i], row))
+    elif len(cleaned) < len(old):
+        del_idx = _find_single_deletion_index(old, cleaned)
+        if del_idx is not None:
+            for j, row in enumerate(cleaned):
+                old_idx = j if j < del_idx else j + 1
+                new_blocks.append(_block_from_row_preserve_timing(old[old_idx], row))
         else:
-            new_pauses = [gap] * len(cleaned)
-        for i, row in enumerate(cleaned):
-            ob = old[i]
-            anim = "pop" if row["isCTA"] else "fade"
-            dur = max(1.0, round(float(ob.endSec - ob.startSec), 2))
-            new_blocks.append(
-                VideoSpecBlock(
-                    id=ob.id,
-                    text=row["text"][:500],
-                    isCTA=row["isCTA"],
-                    startSec=0.0,
-                    endSec=float(dur),
-                    animation=anim,  # type: ignore[arg-type]
-                )
-            )
+            oi = 0
+            for row in cleaned:
+                matched: Optional[VideoSpecBlock] = None
+                while oi < len(old):
+                    ob = old[oi]
+                    oi += 1
+                    if _text_row_eq(ob, row):
+                        matched = ob
+                        break
+                if matched is not None:
+                    new_blocks.append(_block_from_row_preserve_timing(matched, row))
+                else:
+                    new_blocks.append(_append_block_from_row(spec, new_blocks, row, language=lang))
     else:
-        old_ps = spec.pausesSec if (spec.pausesSec is not None and len(spec.pausesSec) == len(old)) else None
-        new_pauses = [
-            clamp_gap(float(old_ps[i])) if old_ps is not None and i < len(old_ps) else gap
-            for i in range(len(cleaned))
-        ]
-        # Reading-speed durations, then proportional-shrink to fit B-roll
-        # cap (when known). Same logic as ``build_default_video_spec``: only
-        # block on-screen time is auto-tuned, hook + pauses stay sacred.
-        raw_durs = [block_read_duration_sec(r["text"], language=lang) for r in cleaned]
-        cap_dur = effective_background_duration(spec.background)
-        if cap_dur is not None and cap_dur > 0:
-            available = max(MIN_BLOCK * len(raw_durs), cap_dur - float(hook_s) - sum(new_pauses))
-            raw_durs = fit_block_durs_to_available(raw_durs, available)
-        cursor = float(hook_s)
         for i, row in enumerate(cleaned):
-            cursor += new_pauses[i]
-            start = cursor
-            end = start + float(raw_durs[i])
-            cursor = end
-            bid = str(old[i].id) if i < len(old) else str(uuid.uuid4())
-            anim = "pop" if row["isCTA"] else "fade"
-            new_blocks.append(
-                VideoSpecBlock(
-                    id=bid,
-                    text=row["text"][:500],
-                    isCTA=row["isCTA"],
-                    startSec=start,
-                    endSec=end,
-                    animation=anim,  # type: ignore[arg-type]
-                )
-            )
-    merged = spec.model_copy(update={"blocks": new_blocks, "pausesSec": new_pauses, "gapBetweenBlocksSec": gap})
-    return relayout_spec(merged)
+            if i < len(old):
+                new_blocks.append(_block_from_row_preserve_timing(old[i], row))
+            else:
+                new_blocks.append(_append_block_from_row(spec, new_blocks, row, language=lang))
+
+    pauses = _pauses_from_block_windows(hook_s, new_blocks)
+    total = _total_sec_from_blocks(spec, new_blocks)
+    return spec.model_copy(update={"blocks": new_blocks, "pausesSec": pauses, "totalSec": total})
 
 
 def fit_spec_blocks_to_broll(spec: VideoSpecV1) -> VideoSpecV1:
