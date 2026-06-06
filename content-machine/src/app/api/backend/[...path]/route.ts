@@ -1,21 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Agent, fetch as undiciFetch } from "undici";
 
 /**
  * BFF proxy: browser calls same-origin `/api/backend/api/v1/...` so DevTools Network
  * shows every call to localhost:3000 (Next forwards to FastAPI — see `backendBase()`).
  * Server Components should keep using absolute `CONTENT_API_URL` in `getContentApiBase()` (server branch).
- *
- * Node's fetch (Undici) defaults to ~5m headers timeout — POST /sync can run much longer
- * (baseline + many competitor scrapes). Use a long-lived agent for this proxy only.
  */
 export const runtime = "nodejs";
-
-const BACKEND_PROXY_AGENT = new Agent({
-  connectTimeout: 120_000,
-  headersTimeout: 1_800_000, // 30 min
-  bodyTimeout: 1_800_000,
-});
 
 function backendBase(): string {
   return (
@@ -37,6 +27,7 @@ const HOP_BY_HOP = new Set([
   "upgrade",
   "host",
   "content-length",
+  "content-encoding",
 ]);
 
 async function proxyRequest(req: NextRequest, pathSegments: string[]) {
@@ -60,14 +51,15 @@ async function proxyRequest(req: NextRequest, pathSegments: string[]) {
     body = await req.arrayBuffer();
   }
 
-  let upstream: Awaited<ReturnType<typeof undiciFetch>>;
+  let upstream: Response;
   try {
-    upstream = await undiciFetch(target, {
+    upstream = await fetch(target, {
       method,
       headers,
       body,
       redirect: "manual",
-      dispatcher: BACKEND_PROXY_AGENT,
+      cache: "no-store",
+      signal: AbortSignal.timeout(1_800_000),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -86,17 +78,25 @@ async function proxyRequest(req: NextRequest, pathSegments: string[]) {
     );
   }
 
-  const res = new NextResponse(upstream.body as unknown as BodyInit, {
+  const responseBodyBuffer =
+    method === "HEAD" || upstream.status === 204 || upstream.status === 304
+      ? null
+      : Buffer.from(await upstream.arrayBuffer());
+
+  const res = new NextResponse(responseBodyBuffer, {
     status: upstream.status,
     statusText: upstream.statusText,
   });
 
   upstream.headers.forEach((value, key) => {
     const k = key.toLowerCase();
-    if (k === "transfer-encoding" || k === "connection") return;
+    if (HOP_BY_HOP.has(k)) return;
     res.headers.set(key, value);
   });
 
+  if (responseBodyBuffer) {
+    res.headers.set("Content-Length", String(responseBodyBuffer.byteLength));
+  }
   res.headers.set("X-Proxied-By", "content-machine-next");
 
   return res;
