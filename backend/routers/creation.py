@@ -190,6 +190,7 @@ class PatchCreateSessionBody(BaseModel):
     script: Optional[str] = Field(default=None, max_length=20_000)
     caption_body: Optional[str] = Field(default=None, max_length=20_000)
     hashtags: Optional[List[str]] = None
+    story_variants: Optional[List[str]] = Field(default=None, max_length=5)
 
 
 @router.get("/clients/{slug}/create/sessions", response_model=list[GenerationSessionOut])
@@ -224,7 +225,7 @@ def patch_create_session(
     """Edit fields the user can tweak from the unified create screen.
 
     - `text_blocks`: only allowed for visual formats (text_overlay, b_roll_reel, carousel).
-    - `script` / `caption_body` / `hashtags`: allowed for any content_ready/approved session
+    - `script` / `caption_body` / `hashtags` / `story_variants`: allowed for any content_ready/approved session
       (talking_head edits its script here; visual formats can also tweak caption).
     """
     _ = slug
@@ -259,6 +260,8 @@ def patch_create_session(
                 continue
             cleaned.append(t if t.startswith("#") else f"#{t.lstrip('#')}")
         patch["hashtags"] = cleaned
+    if body.story_variants is not None:
+        patch["story_variants"] = [str(t).strip()[:500] for t in body.story_variants if str(t).strip()]
 
     if not patch:
         raise HTTPException(status_code=400, detail="No fields to update")

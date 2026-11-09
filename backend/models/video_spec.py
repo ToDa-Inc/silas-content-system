@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 VideoTemplateId = Literal["bottom-card", "centered-pop", "top-banner", "capcut-highlight", "stacked-cards"]
+VideoFraming = Literal["full", "letterbox", "four_five"]
 VideoThemeId = Literal["bold-modern", "editorial", "casual-hand", "clean-minimal"]
 VideoTextTreatmentId = Literal["bold-outline"]
 AppearanceFontId = Literal["poppins", "inter", "playfair", "patrick"]
@@ -322,6 +323,9 @@ class VideoSpecV1(BaseModel):
     blocks: List[VideoSpecBlock] = Field(default_factory=list)
     # Existing rows in DB never had this field; default_factory backfills them on parse.
     layout: VideoSpecLayout = Field(default_factory=VideoSpecLayout)
+    """``full`` = media fills 9:16; ``letterbox`` = 16:9 band with black bars (hook top, captions bottom);
+    ``four_five`` = 4:5 picture centred in 9:16 (hook in top bar, captions over the picture)."""
+    framing: VideoFraming = "full"
     totalSec: float = Field(default=12.0, ge=2.0, le=600.0)
     # Per-pause / legacy gap cap. The real ceiling is ``totalSec`` ≤ 600; 5s
     # per gap is plenty for breathing room without being abusable.

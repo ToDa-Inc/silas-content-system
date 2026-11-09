@@ -1641,7 +1641,16 @@ def run_carousel_copy_package(
         "hashtags": _normalize_hashtags(data.get("hashtags")),
         "story_variants": [],
     }
-    return _apply_german_natural_polish(settings, client_row, out, mode="full")
+    out = _apply_german_natural_polish(settings, client_row, out, mode="full")
+    out["story_variants"] = _stories_or_empty(
+        settings,
+        client_row=client_row,
+        chosen_angle=chosen_angle,
+        hooks=out["hooks"],
+        caption_body=out["caption_body"],
+        selected_cta=selected_cta,
+    )
+    return out
 
 
 def _caption_rule_block(*, strict_blueprint: bool, caption_src_tail: str) -> str:
@@ -1871,7 +1880,18 @@ def run_content_package(
             out["visual_style"] = None
     else:
         out["text_blocks"] = None
-    return _apply_german_natural_polish(settings, client_row, out, mode=german_polish)
+    out = _apply_german_natural_polish(settings, client_row, out, mode=german_polish)
+    out["story_variants"] = _stories_or_empty(
+        settings,
+        client_row=client_row,
+        chosen_angle=chosen_angle,
+        hooks=out.get("hooks") or [],
+        caption_body=str(out.get("caption_body") or ""),
+        feedback=feedback,
+        current_stories=(previous or {}).get("story_variants") or None,
+        selected_cta=selected_cta,
+    )
+    return out
 
 
 def _carousel_regen_adapt_bundle(
@@ -2120,6 +2140,66 @@ def _run_regenerate_reel_caption_narrow(
         temperature=0.45,
     )
     return str(data.get("caption_body") or "").strip(), _normalize_hashtags(data.get("hashtags"))
+
+
+def run_story_variants(
+    settings: Settings,
+    *,
+    client_row: Dict[str, Any],
+    chosen_angle: Dict[str, Any],
+    hooks: List[Dict[str, Any]],
+    caption_body: str,
+    feedback: Optional[str] = None,
+    current_stories: Optional[List[str]] = None,
+    selected_cta: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """Exactly 3 short IG Story teaser lines that push viewers to the new post."""
+    lang = _lang_instruction(str(client_row.get("language") or "de"))
+    hook_texts = [str(h.get("text") or "").strip() for h in hooks if isinstance(h, dict)][:5]
+    prev_block = (
+        f"PREVIOUS_STORY_LINES (write different ones):\n{json.dumps(current_stories, ensure_ascii=False)}\n\n"
+        if current_stories
+        else ""
+    )
+    user = (
+        f"{lang}\n\n"
+        "TASK: Write 3 alternative Instagram Story texts that tease today's new post and make "
+        "followers tap through to it. Each is ONE short on-screen line (max ~15 words), "
+        "spoken-style, in the client's voice. Mix: a relatable question, a bold statement, a curiosity gap.\n"
+        "Do not copy the hook word for word. No hashtags. At most one emoji per line.\n"
+        'Output JSON only: {"story_variants": [string, string, string]}\n\n'
+        f"{prev_block}"
+        f"{_regen_feedback_block(feedback)}"
+        f"POST_HOOKS:\n{json.dumps(hook_texts, ensure_ascii=False)}\n\n"
+        f"POST_CAPTION_EXCERPT:\n{(caption_body or '')[:2000]}\n\n"
+        f"CHOSEN_ANGLE_JSON:\n{json.dumps(chosen_angle, ensure_ascii=False)[:6000]}\n\n"
+        f"CLIENT_CONTEXT:\n{_pack_client_row_for_llm(client_row, selected_cta)[:60_000]}\n"
+    )
+    data = chat_json_completion(
+        settings.openrouter_api_key,
+        settings.openrouter_model,
+        system=_SYSTEM_JSON,
+        user=user,
+        max_tokens=4096,
+        temperature=0.6,
+        reasoning_effort="high",
+    )
+    out = _apply_german_natural_polish(
+        settings,
+        client_row,
+        {"story_variants": _normalize_stories(data.get("story_variants"))[:3]},
+        mode="stories",
+    )
+    return _normalize_stories(out.get("story_variants"))[:3]
+
+
+def _stories_or_empty(settings: Settings, **kwargs: Any) -> List[str]:
+    """Story texts must never block a content package — log and return [] on failure."""
+    try:
+        return run_story_variants(settings, **kwargs)
+    except Exception:
+        logger.warning("story_variants generation failed; leaving empty", exc_info=True)
+        return []
 
 
 def _run_regenerate_script_narrow(
@@ -2391,7 +2471,18 @@ def run_regenerate(
     }
 
     if scope == "story":
-        return previous
+        out = dict(previous)
+        out["story_variants"] = run_story_variants(
+            settings,
+            client_row=client_row,
+            chosen_angle=chosen_angle,
+            hooks=current_hooks,
+            caption_body=current_caption,
+            feedback=feedback,
+            current_stories=current_stories or None,
+            selected_cta=selected_cta,
+        )
+        return out
 
     if scope == "all":
         if fk == "carousel":

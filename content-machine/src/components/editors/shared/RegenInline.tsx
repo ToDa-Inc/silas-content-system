@@ -13,7 +13,7 @@
 import { useState } from "react";
 import { Loader2, RefreshCw, Sparkles } from "lucide-react";
 
-export type RegenScope = "hooks" | "script" | "caption" | "text_blocks";
+export type RegenScope = "hooks" | "script" | "caption" | "story" | "text_blocks";
 
 type Props = {
   scope: RegenScope;

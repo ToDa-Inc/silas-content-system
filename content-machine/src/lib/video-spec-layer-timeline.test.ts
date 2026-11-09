@@ -18,6 +18,7 @@ function baseSpec(): VideoSpec {
     brand: { primary: "#fff", accent: null },
     background: { url: "https://example.com/bg.mp4", kind: "video", focalPoint: "center", trimStartSec: 0, durationSec: 12 },
     hook: { text: "Intro hook", durationSec: 2 },
+    framing: "full",
     blocks: [
       { id: "b1", text: "First beat", isCTA: false, startSec: 2, endSec: 4, animation: "fade" },
       { id: "b2", text: "Second beat", isCTA: true, startSec: 4.5, endSec: 6, animation: "pop" },

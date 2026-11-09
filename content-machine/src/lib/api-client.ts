@@ -1705,6 +1705,7 @@ export async function patchCreateSession(
     script?: string;
     caption_body?: string;
     hashtags?: string[];
+    story_variants?: string[];
   },
 ): Promise<{ ok: true; data: GenerationSession } | { ok: false; error: string }> {
   const base = getContentApiBase();

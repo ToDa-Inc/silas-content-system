@@ -133,7 +133,7 @@ def _ops_preserve_explicit_layer_timing(ops: List[Dict[str, Any]]) -> bool:
         or p.startswith("/layout")
         or p in ("/hook/durationSec", "/hook/text")
         or p.startswith("/appearance")
-        or p in ("/textTreatment", "/themeId", "/templateId")
+        or p in ("/textTreatment", "/themeId", "/templateId", "/framing")
         or p.startswith("/brand/")
         or (p.startswith("/background/") and p != "/background/durationSec")
         for p in paths

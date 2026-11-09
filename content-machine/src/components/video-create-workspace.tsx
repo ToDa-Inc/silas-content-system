@@ -44,6 +44,7 @@ import {
   type VideoEditorTab,
 } from "@/components/editor-ui";
 import { CaptionSection } from "@/components/editors/shared/CaptionSection";
+import { StorySection } from "@/components/editors/shared/StorySection";
 import { CoverTextLayerEditor } from "@/components/editors/cover/CoverTextLayerEditor";
 import { BackgroundPicker } from "@/components/editors/video/BackgroundPicker";
 import { CarouselTextLayerEditor } from "@/components/editors/carousel/CarouselTextLayerEditor";
@@ -1145,6 +1146,23 @@ export function VideoCreateWorkspace({
     [applySession, clientSlug, orgSlug, session, show],
   );
 
+  const saveStories = useCallback(
+    async (next: string[]): Promise<boolean> => {
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!session || !cs || !os) return false;
+      const res = await patchCreateSession(cs, os, session.id, { story_variants: next });
+      if (!res.ok) {
+        show(res.error, "error");
+        return false;
+      }
+      applySession(res.data);
+      show("Story texts saved.", "success");
+      return true;
+    },
+    [applySession, clientSlug, orgSlug, session, show],
+  );
+
   const onGenerateBg = useCallback(async () => {
     const cs = clientSlug.trim();
     const os = orgSlug.trim();
@@ -1297,6 +1315,56 @@ export function VideoCreateWorkspace({
       setRenderBusy(false);
     }
   }, [clientSlug, orgSlug, session, show, pollRenderJob]);
+
+  const onPatchFraming = useCallback(
+    async (framing: VideoSpec["framing"]) => {
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!session || !cs || !os) return;
+      const prevSpec = parseVideoSpec(session.video_spec ?? null);
+      if (prevSpec?.framing === framing) return;
+      if (prevSpec) undoStack.push({ label: `Framing → ${framing}`, value: prevSpec });
+      setSpecInFlight((n) => n + 1);
+      try {
+        const res = await patchSessionVideoSpec(cs, os, session.id, {
+          ops: [{ op: "replace", path: "/framing", value: framing }],
+        });
+        if (!res.ok) {
+          show(res.error, "error");
+          return;
+        }
+        applySession(res.data);
+      } finally {
+        setSpecInFlight((n) => Math.max(0, n - 1));
+      }
+    },
+    [applySession, clientSlug, orgSlug, session, show, undoStack],
+  );
+
+  const onPatchFocalPoint = useCallback(
+    async (focalPoint: VideoSpec["background"]["focalPoint"]) => {
+      const cs = clientSlug.trim();
+      const os = orgSlug.trim();
+      if (!session || !cs || !os) return;
+      const prevSpec = parseVideoSpec(session.video_spec ?? null);
+      if (prevSpec?.background.focalPoint === focalPoint) return;
+      if (prevSpec) undoStack.push({ label: `Crop → ${focalPoint}`, value: prevSpec });
+      setSpecInFlight((n) => n + 1);
+      try {
+        const res = await patchSessionVideoSpec(cs, os, session.id, {
+          ops: [{ op: "replace", path: "/background/focalPoint", value: focalPoint }],
+        });
+        if (!res.ok) {
+          show(res.error, "error");
+          return;
+        }
+        applySession(res.data);
+      } finally {
+        setSpecInFlight((n) => Math.max(0, n - 1));
+      }
+    },
+    [applySession, clientSlug, orgSlug, session, show, undoStack],
+  );
 
   const onPatchVideoTemplate = useCallback(
     async (templateId: VideoSpec["templateId"]) => {
@@ -2622,6 +2690,21 @@ export function VideoCreateWorkspace({
   const captionFull = `${session.caption_body ?? ""}${
     Array.isArray(session.hashtags) && session.hashtags.length ? `\n\n${session.hashtags.join(" ")}` : ""
   }`.trim();
+  const storySection = (
+    <StorySection
+      stories={session.story_variants ?? []}
+      onCopy={(text) => void copyText("story text", text)}
+      onSave={saveStories}
+      regenInline={
+        <RegenInline
+          scope="story"
+          busy={regenBusyScope === "story"}
+          onRegen={async (sc, fb) => onRegenSection(sc, fb)}
+          placeholder="More curious, shorter, …"
+        />
+      }
+    />
+  );
 
   // ────────────────────────────────────────────────────────────────────────────────────────────
   // FORMAT DISPATCH
@@ -2672,6 +2755,7 @@ export function VideoCreateWorkspace({
         captionBody={session.caption_body ?? ""}
         hashtags={session.hashtags ?? []}
         captionFull={captionFull}
+        storySection={storySection}
       />
     );
   }
@@ -2951,6 +3035,8 @@ export function VideoCreateWorkspace({
             />
           }
         />
+
+        {storySection}
 
         <AiContextSection
           hooks={hooks}
@@ -3368,6 +3454,67 @@ export function VideoCreateWorkspace({
                     })}
                   </div>
                 </div>
+                <div className="space-y-1.5">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Framing</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(
+                      [
+                        { id: "full" as const, label: "Full frame", title: "Video fills the whole 9:16 frame" },
+                        { id: "letterbox" as const, label: "Letterbox", title: "Cinematic 16:9 band — hook in the top bar, captions in the bottom bar" },
+                        { id: "four_five" as const, label: "4:5 centered", title: "Feed-style 4:5 picture — hook in the top bar, captions over the picture" },
+                      ] as const
+                    ).map((f) => {
+                      const active = (livePreviewSpec?.framing ?? previewVideoSpec?.framing ?? "full") === f.id;
+                      return (
+                        <button
+                          key={f.id}
+                          type="button"
+                          aria-pressed={active}
+                          title={f.title}
+                          disabled={!session.background_url}
+                          onClick={() => void onPatchFraming(f.id)}
+                          className={`inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[10px] font-semibold transition disabled:opacity-40 ${
+                            active ? STYLE_CHIP_ON : STYLE_CHIP_OFF
+                          }`}
+                        >
+                          {f.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                {(livePreviewSpec?.framing ?? previewVideoSpec?.framing ?? "full") !== "full" && (
+                  <div className="space-y-1.5">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Crop</p>
+                    <div className="flex flex-wrap gap-1">
+                      {(
+                        [
+                          { id: "top" as const, label: "Top" },
+                          { id: "center" as const, label: "Center" },
+                          { id: "bottom" as const, label: "Bottom" },
+                        ] as const
+                      ).map((c) => {
+                        const active =
+                          (livePreviewSpec?.background.focalPoint ?? previewVideoSpec?.background.focalPoint ?? "center") === c.id;
+                        return (
+                          <button
+                            key={c.id}
+                            type="button"
+                            aria-pressed={active}
+                            title="Which part of the picture stays visible inside the frame"
+                            disabled={!session.background_url}
+                            onClick={() => void onPatchFocalPoint(c.id)}
+                            className={`rounded-lg border px-2 py-1 text-[10px] font-semibold transition disabled:opacity-40 ${
+                              active ? STYLE_CHIP_ON : STYLE_CHIP_OFF
+                            }`}
+                          >
+                            {c.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
                 {(formatChipSelection === "card" || formatChipSelection === "stack") && (
                   <div className="space-y-1.5">
                     <p className="text-[10px] font-bold uppercase tracking-wide text-app-fg-muted">Position</p>
@@ -4190,6 +4337,8 @@ export function VideoCreateWorkspace({
           />
         }
       />
+
+      {storySection}
 
       <AiContextSection
         hooks={hooks}

@@ -13,6 +13,7 @@ export function playerSpecRenderKey(spec: VideoSpec): string {
     hook: spec.hook,
     blocks: spec.blocks,
     layout: spec.layout,
+    framing: spec.framing,
     gapBetweenBlocksSec: spec.gapBetweenBlocksSec,
     pausesSec: spec.pausesSec,
     totalSec: spec.totalSec,

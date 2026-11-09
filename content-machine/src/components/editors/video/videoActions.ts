@@ -24,7 +24,7 @@ export type VideoActionsHost = {
   /** True while AI refine is mid-flight; disables refine actions. */
   aiRefineBusy: boolean;
   /** True while the regen scope of that name is busy. */
-  regenBusyScope: "hooks" | "script" | "caption" | "text_blocks" | null;
+  regenBusyScope: "hooks" | "script" | "caption" | "story" | "text_blocks" | null;
 
   /** Current spec; some actions are spec-dependent (e.g. enable Outline only when text isn't already outlined). */
   spec: VideoSpec | null;

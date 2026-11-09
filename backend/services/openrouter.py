@@ -590,8 +590,13 @@ def _chat_completion_raw_text(
     max_tokens: int,
     temperature: float,
     timeout_s: float = 300.0,
+    reasoning_effort: Optional[str] = None,
 ) -> str:
-    """POST chat/completions; return assistant message text (trimmed, before fence stripping)."""
+    """POST chat/completions; return assistant message text (trimmed, before fence stripping).
+
+    ``reasoning_effort`` ("low" | "medium" | "high") is sent as OpenRouter's ``reasoning.effort``;
+    omitted when None so the model uses its default.
+    """
     payload: dict[str, Any] = {
         "model": model,
         "messages": [
@@ -601,6 +606,8 @@ def _chat_completion_raw_text(
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
+    if reasoning_effort:
+        payload["reasoning"] = {"effort": reasoning_effort}
     r = _post_chat_completions_with_optional_fallback(
         openrouter_key,
         payload,
@@ -698,6 +705,7 @@ def chat_json_completion(
     user: str,
     max_tokens: int = 12_288,
     temperature: float = 0.35,
+    reasoning_effort: Optional[str] = None,
 ) -> dict:
     """Chat completion; response must be a single JSON object (markdown fences stripped).
 
@@ -715,6 +723,7 @@ def chat_json_completion(
             user=user,
             max_tokens=max_tokens,
             temperature=t,
+            reasoning_effort=reasoning_effort,
         )
         cleaned = _strip_json_response_fences(last_text)
         try:

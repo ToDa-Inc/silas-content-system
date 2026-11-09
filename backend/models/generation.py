@@ -200,7 +200,7 @@ class GenerationChooseAngleBody(BaseModel):
 
 
 class GenerationRegenerateBody(BaseModel):
-    # "story" is kept for backwards-compat with old API callers; new sessions don't have story_variants.
+    # "story" regenerates only story_variants (3 IG Story teaser lines).
     # "text_blocks" is the new per-section regen scope used by the unified create screen.
     scope: Literal["hooks", "script", "caption", "story", "text_blocks", "all"] = "all"
     feedback: Optional[str] = Field(None, max_length=4000)

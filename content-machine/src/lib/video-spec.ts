@@ -125,6 +125,8 @@ export const videoSpecZ = z.object({
   // Older rows pre-date this field — Zod `.default()` backfills on parse so templates
   // can read `spec.layout` unconditionally (no scattered `?? DEFAULT_LAYOUT` checks).
   layout: videoSpecLayoutZ.default(DEFAULT_LAYOUT),
+  /** Media framing inside the 9:16 canvas (see remotion-spec/framing.ts). */
+  framing: z.enum(["full", "letterbox", "four_five"]).default("full"),
   /** Legacy: repeated when ``pausesSec`` is absent or wrong length. */
   gapBetweenBlocksSec: z.number().min(0).max(5).default(0),
   /** One value per text block (sorted by ``startSec``): silence before that block (index 0 = after hook). */
@@ -298,6 +300,7 @@ export function buildPreviewSpecFromSession(s: {
     hook: { text: hookText, durationSec: hookS },
     blocks,
     layout: DEFAULT_LAYOUT,
+    framing: "full",
     gapBetweenBlocksSec: 0,
     totalSec,
   };

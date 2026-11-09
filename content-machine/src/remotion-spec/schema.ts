@@ -113,6 +113,8 @@ export type VideoSpecBlock = {
   fontScale?: number | null;
 };
 
+export type VideoFraming = 'full' | 'letterbox' | 'four_five';
+
 export type VerticalAnchor = 'bottom' | 'center' | 'top';
 
 export type TextAlign = 'left' | 'center' | 'right';
@@ -165,6 +167,8 @@ export type VideoSpec = {
   blocks: VideoSpecBlock[];
   /** Optional in older serialized specs — templates read via `resolveLayout()` to backfill. */
   layout?: VideoSpecLayout;
+  /** Media framing inside the 9:16 canvas; omitted = ``full``. */
+  framing?: VideoFraming;
   gapBetweenBlocksSec?: number;
   pausesSec?: number[];
   totalSec: number;

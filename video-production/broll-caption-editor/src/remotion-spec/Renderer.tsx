@@ -2,6 +2,8 @@ import React from 'react';
 import { AbsoluteFill, useCurrentFrame, useVideoConfig } from 'remotion';
 import { normalizeVideoSpecForRender, type VideoSpec } from './schema';
 import Background from './Background';
+import { framingGeometry, resolveFraming } from './framing';
+import BarText from './BarText';
 import BottomCardTemplate from './templates/bottomCard';
 import CenteredPopTemplate from './templates/centeredPop';
 import TopBannerTemplate from './templates/topBanner';
@@ -11,25 +13,34 @@ export default function Renderer(props: VideoSpec) {
   const spec = normalizeVideoSpecForRender(props);
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const timeline = { spec, frame, fps };
 
   // Per-template overlay. Templates intentionally no longer render their own
   // <Video>/<Img> — that lives in <Background> above the switch so swapping
   // template / theme / layout never unmounts the media element.
-  let overlay: React.ReactNode = null;
-  switch (spec.templateId) {
-    case 'bottom-card':
-      overlay = <BottomCardTemplate {...timeline} />;
-      break;
-    case 'top-banner':
-      overlay = <TopBannerTemplate {...timeline} />;
-      break;
-    case 'stacked-cards':
-      overlay = <StackedCardsTemplate {...timeline} />;
-      break;
-    case 'centered-pop':
-    default:
-      overlay = <CenteredPopTemplate {...timeline} />;
+  const geo = framingGeometry(spec.framing);
+  let overlay: React.ReactNode;
+  if (!geo) {
+    overlay = renderTemplate(spec, frame, fps);
+  } else {
+    // Framed: the hook sits in the top bar. Captions go in the bottom bar (letterbox)
+    // or over the 4:5 picture, where the chosen template still applies.
+    const hookOnly = { ...spec, blocks: [] };
+    const captionsOnly = { ...spec, hook: { ...spec.hook, text: '' } };
+    const captionsInBar = resolveFraming(spec.framing) === 'letterbox';
+    overlay = (
+      <>
+        <div style={{ ...BOX, top: geo.hook.top, height: geo.hook.height }}>
+          <BarText spec={hookOnly} frame={frame} fps={fps} barHeight={geo.hook.height} />
+        </div>
+        <div style={{ ...BOX, top: geo.captions.top, height: geo.captions.height }}>
+          {captionsInBar ? (
+            <BarText spec={captionsOnly} frame={frame} fps={fps} barHeight={geo.captions.height} />
+          ) : (
+            renderTemplate(captionsOnly, frame, fps)
+          )}
+        </div>
+      </>
+    );
   }
 
   return (
@@ -38,4 +49,21 @@ export default function Renderer(props: VideoSpec) {
       {overlay}
     </AbsoluteFill>
   );
+}
+
+const BOX: React.CSSProperties = { position: 'absolute', left: 0, width: '100%', overflow: 'hidden' };
+
+function renderTemplate(spec: VideoSpec, frame: number, fps: number): React.ReactNode {
+  const timeline = { spec, frame, fps };
+  switch (spec.templateId) {
+    case 'bottom-card':
+      return <BottomCardTemplate {...timeline} />;
+    case 'top-banner':
+      return <TopBannerTemplate {...timeline} />;
+    case 'stacked-cards':
+      return <StackedCardsTemplate {...timeline} />;
+    case 'centered-pop':
+    default:
+      return <CenteredPopTemplate {...timeline} />;
+  }
 }

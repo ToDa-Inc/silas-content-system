@@ -13,6 +13,7 @@
  * planned for Phase B.6 will wrap that state and own it directly.
  */
 
+import type { ReactNode } from "react";
 import { Copy, Video } from "lucide-react";
 
 import { SaveStatusPill } from "@/components/editor-ui";
@@ -55,6 +56,7 @@ type Props = {
   captionBody: string;
   hashtags: string[];
   captionFull: string;
+  storySection: ReactNode;
 };
 
 export function TalkingHeadEditor({
@@ -88,6 +90,7 @@ export function TalkingHeadEditor({
   captionBody,
   hashtags,
   captionFull,
+  storySection,
 }: Props) {
   return (
     <div className="space-y-4">
@@ -162,6 +165,8 @@ export function TalkingHeadEditor({
           />
         }
       />
+
+      {storySection}
 
       <AiContextSection
         hooks={hooks}

@@ -7,6 +7,7 @@ import {
   Video,
 } from 'remotion';
 import type { VideoSpec } from './schema';
+import { framingGeometry } from './framing';
 
 const FILL: React.CSSProperties = {
   width: '100%',
@@ -37,18 +38,20 @@ function BrollVideo({
   trimStartSec,
   trimEndSec,
   mediaKey,
+  style,
 }: {
   url: string;
   trimStartSec: number;
   trimEndSec: number | undefined;
   mediaKey: string;
+  style: React.CSSProperties;
 }) {
   const { fps } = useVideoConfig();
   const { isRendering } = useRemotionEnvironment();
   const trimBefore = Math.round(trimStartSec * fps);
   const trimAfter =
     trimEndSec != null ? Math.round(trimEndSec * fps) : undefined;
-  const common = { key: mediaKey, src: url, muted: true as const, style: FILL };
+  const common = { key: mediaKey, src: url, muted: true as const, style };
 
   if (isRendering) {
     return (
@@ -72,8 +75,33 @@ function BrollVideo({
 }
 
 export default function Background({ spec }: { spec: VideoSpec }) {
-  const { url, kind } = spec.background;
+  const { url } = spec.background;
   if (!url) return null;
+  const geo = framingGeometry(spec.framing);
+  if (!geo) return <BackgroundMedia spec={spec} />;
+  // Framed: media is cropped to its box; the Renderer's black canvas shows as bars.
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: 0,
+        width: '100%',
+        top: geo.media.top,
+        height: geo.media.height,
+        overflow: 'hidden',
+      }}
+    >
+      <BackgroundMedia spec={spec} objectPosition={FOCAL[spec.background.focalPoint ?? 'center'] ?? 'center'} />
+    </div>
+  );
+}
+
+/** Crop position inside a framed box (letterbox / 4:5). */
+const FOCAL: Record<string, string> = { top: 'center 15%', center: 'center', bottom: 'center 85%' };
+
+function BackgroundMedia({ spec, objectPosition }: { spec: VideoSpec; objectPosition?: string }) {
+  const { url, kind } = spec.background;
+  const style: React.CSSProperties = objectPosition ? { ...FILL, objectPosition } : FILL;
   if (kind === 'video') {
     const trimStart = Number(spec.background.trimStartSec ?? 0);
     const trimEnd =
@@ -85,8 +113,9 @@ export default function Background({ spec }: { spec: VideoSpec }) {
         trimStartSec={trimStart}
         trimEndSec={trimEnd}
         mediaKey={mediaKey}
+        style={style}
       />
     );
   }
-  return <Img key={url} src={url} style={FILL} />;
+  return <Img key={url} src={url} style={style} />;
 }
