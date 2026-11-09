@@ -48,7 +48,7 @@ export function LearningTraceLine({ trace }: { trace: Record<string, unknown> | 
               ) : (
                 r.hook
               )}
-              {r.reason ? <span className="text-app-fg-muted"> · {r.reason}</span> : null}
+              {r.reason ? <span className="text-app-fg-muted"> · {r.reason.split(" → ")[0]}</span> : null}
             </li>
           ))}
         </ul>
