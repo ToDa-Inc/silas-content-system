@@ -45,6 +45,7 @@ import {
 } from "@/components/editor-ui";
 import { CaptionSection } from "@/components/editors/shared/CaptionSection";
 import { StorySection } from "@/components/editors/shared/StorySection";
+import { PublishedReelSection } from "@/components/editors/shared/PublishedReelSection";
 import { CoverTextLayerEditor } from "@/components/editors/cover/CoverTextLayerEditor";
 import { BackgroundPicker } from "@/components/editors/video/BackgroundPicker";
 import { CarouselTextLayerEditor } from "@/components/editors/carousel/CarouselTextLayerEditor";
@@ -1145,6 +1146,8 @@ export function VideoCreateWorkspace({
     },
     [applySession, clientSlug, orgSlug, session, show],
   );
+
+  const showError = useCallback((message: string) => show(message, "error"), [show]);
 
   const saveStories = useCallback(
     async (next: string[]): Promise<boolean> => {
@@ -2705,6 +2708,18 @@ export function VideoCreateWorkspace({
       }
     />
   );
+  const postExtras = (
+    <>
+      {storySection}
+      <PublishedReelSection
+        clientSlug={clientSlug.trim()}
+        orgSlug={orgSlug.trim()}
+        sessionId={session.id}
+        sessionCreatedAt={session.created_at}
+        onError={showError}
+      />
+    </>
+  );
 
   // ────────────────────────────────────────────────────────────────────────────────────────────
   // FORMAT DISPATCH
@@ -2755,7 +2770,7 @@ export function VideoCreateWorkspace({
         captionBody={session.caption_body ?? ""}
         hashtags={session.hashtags ?? []}
         captionFull={captionFull}
-        storySection={storySection}
+        storySection={postExtras}
       />
     );
   }
@@ -3036,7 +3051,7 @@ export function VideoCreateWorkspace({
           }
         />
 
-        {storySection}
+        {postExtras}
 
         <AiContextSection
           hooks={hooks}
@@ -4338,7 +4353,7 @@ export function VideoCreateWorkspace({
         }
       />
 
-      {storySection}
+      {postExtras}
 
       <AiContextSection
         hooks={hooks}

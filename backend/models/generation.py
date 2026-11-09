@@ -409,6 +409,11 @@ class GenerationSessionOut(BaseModel):
 
     id: str
     client_id: str
+    published_reel_id: Optional[str] = None
+    published_link_source: Optional[str] = None
+    published_match_score: Optional[float] = None
+    published_linked_at: Optional[str] = None
+    learning_trace: Optional[Dict[str, Any]] = None
     source_type: str
     source_analysis_ids: Optional[List[str]] = None
     source_reel_ids: Optional[List[str]] = None

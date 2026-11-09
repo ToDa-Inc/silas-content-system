@@ -39,6 +39,7 @@ from services.profile_similarity_gate import (
     lookup_enriched_for_url,
 )
 from services.similarity_scoring_executor import score_items_bounded
+from services.post_reel_linking import auto_link_published_reels
 
 logger = logging.getLogger(__name__)
 
@@ -711,11 +712,19 @@ def _run_own_scrape(
         ).execute()
         insert_snapshots_for_scrape_job(supabase, client_id=client_id, scrape_job_id=job_id)
 
+    link_result: Dict[str, Any] = {}
+    if batch:
+        try:
+            link_result = auto_link_published_reels(supabase, client_id)
+        except Exception:
+            logger.warning("auto_link_published_reels failed for %s", client_id, exc_info=True)
+
     supabase.table("background_jobs").update(
         {
             "status": "completed",
             "completed_at": done_at.isoformat(),
             "result": {
+                "auto_linked_posts": link_result.get("linked", 0),
                 "pipeline": "profile_scrape.own",
                 "username": ig,
                 "only_newer_than": only_newer_than,

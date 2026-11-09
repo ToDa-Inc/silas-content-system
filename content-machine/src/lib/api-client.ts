@@ -827,6 +827,9 @@ export type GenerationSession = {
   caption_body?: string | null;
   hashtags?: string[] | null;
   story_variants?: string[] | null;
+  published_reel_id?: string | null;
+  published_link_source?: "auto" | "manual" | null;
+  learning_trace?: Record<string, unknown> | null;
   text_blocks?: TextBlock[] | null;
   video_spec?: Record<string, unknown> | null;
   cover_text_options?: string[] | null;
@@ -2292,3 +2295,85 @@ export function carouselSlidesZipUrl(clientSlug: string, sessionId: string): str
 }
 
 export { getContentApiBase };
+
+// ── Learning loop: post ↔ published reel ─────────────────────────────────────
+
+export type OwnReelForLinking = {
+  id: string;
+  post_url: string;
+  posted_at: string | null;
+  caption: string;
+  views: number | null;
+  thumbnail_url: string | null;
+  linked_session_id: string | null;
+};
+
+export type PublishedReelSummary = {
+  linked: boolean;
+  link_source?: "auto" | "manual" | null;
+  match_score?: number | null;
+  linked_at?: string | null;
+  reel: {
+    id: string;
+    post_url: string;
+    posted_at: string | null;
+    views: number | null;
+    likes: number | null;
+    comments: number | null;
+    last_updated_at: string | null;
+  } | null;
+  snapshots?: Array<{ scraped_at: string; views: number | null; likes: number | null; comments: number | null }>;
+  diagnostic?: {
+    rule_bucket: string;
+    override_bucket: string | null;
+    excluded: boolean;
+    reason: string;
+  } | null;
+};
+
+async function learningRequest<T>(
+  orgSlug: string,
+  path: string,
+  init?: { method?: string; body?: unknown },
+): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
+  const base = getContentApiBase();
+  const headers = await clientApiHeaders({ orgSlug });
+  try {
+    const res = await contentApiFetch(`${base}/api/v1${path}`, {
+      method: init?.method ?? "GET",
+      headers: { ...headers, "Content-Type": "application/json" },
+      ...(init?.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+    });
+    const json = (await res.json().catch(() => ({}))) as unknown;
+    if (!res.ok) {
+      return { ok: false, error: formatFastApiError(json as Record<string, unknown>, `Failed (${res.status})`) };
+    }
+    return { ok: true, data: json as T };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
+  }
+}
+
+export function fetchOwnReelsForLinking(clientSlug: string, orgSlug: string, postedAfter?: string | null) {
+  const q = new URLSearchParams({ limit: "30" });
+  if (postedAfter) q.set("posted_after", postedAfter);
+  return learningRequest<OwnReelForLinking[]>(
+    orgSlug,
+    `/clients/${encodeURIComponent(clientSlug)}/learning/own-reels?${q.toString()}`,
+  );
+}
+
+export function fetchPublishedReel(clientSlug: string, orgSlug: string, sessionId: string) {
+  return learningRequest<PublishedReelSummary>(
+    orgSlug,
+    `/clients/${encodeURIComponent(clientSlug)}/generate/sessions/${encodeURIComponent(sessionId)}/published-reel`,
+  );
+}
+
+export function setPublishedReel(clientSlug: string, orgSlug: string, sessionId: string, reelId: string | null) {
+  return learningRequest<PublishedReelSummary>(
+    orgSlug,
+    `/clients/${encodeURIComponent(clientSlug)}/generate/sessions/${encodeURIComponent(sessionId)}/published-reel`,
+    { method: "PUT", body: { reel_id: reelId } },
+  );
+}
