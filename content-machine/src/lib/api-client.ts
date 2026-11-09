@@ -2403,6 +2403,7 @@ export type ReelDiagnosticItem = {
   posted_at: string | null;
   caption: string;
   views: number | null;
+  thumbnail_url: string | null;
   bucket: LearningBucket;
   rule_bucket: LearningBucket;
   override_bucket: LearningBucket | null;

@@ -253,6 +253,7 @@ def list_diagnostics(
                 "posted_at": r.get("posted_at"),
                 "caption": (r.get("caption") or "")[:120],
                 "views": r.get("views"),
+                "thumbnail_url": r.get("thumbnail_url"),
                 "bucket": d.get("override_bucket") or d["rule_bucket"],
                 "rule_bucket": d["rule_bucket"],
                 "override_bucket": d.get("override_bucket"),

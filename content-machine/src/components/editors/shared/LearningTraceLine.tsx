@@ -69,8 +69,8 @@ export function LearningTraceLine({ trace }: { trace: Record<string, unknown> | 
       </button>
       {open ? (
         <div className="mt-2 space-y-2">
-          {list("✅ Winners — copied what works", winners)}
-          {list("⛔ Didn't work — avoided", avoid)}
+          {list("Winners — copied what works", winners)}
+          {list("Didn't work — avoided", avoid)}
         </div>
       ) : null}
     </div>

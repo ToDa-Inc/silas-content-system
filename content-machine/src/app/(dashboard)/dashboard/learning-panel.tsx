@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { ExternalLink, Loader2, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
+import { Check, ExternalLink, Loader2, MoreHorizontal, TrendingUp } from "lucide-react";
+import { ReelThumbnail } from "@/components/reel-thumbnail";
 import { useToast } from "@/components/ui/toast-provider";
 import {
   analyzeOwnReel,
@@ -16,12 +18,13 @@ import {
 } from "@/lib/api-client";
 import { generateSessionHref } from "@/lib/generate-session-url";
 
-const BUCKETS: { id: LearningBucket; label: string; hint: string; cls: string }[] = [
-  { id: "scale", label: "✅ Winner", hint: "Make more like this", cls: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" },
-  { id: "adjust_hook", label: "🪝 Weak start", hint: "Good content, try a new first line", cls: "bg-amber-500/15 text-amber-700 dark:text-amber-300" },
-  { id: "adjust_cta", label: "💬 Few comments", hint: "People watched — ask clearer for a comment", cls: "bg-sky-500/15 text-sky-700 dark:text-sky-300" },
-  { id: "retire", label: "⛔ Didn't work", hint: "Skip this topic", cls: "bg-rose-500/15 text-rose-700 dark:text-rose-300" },
-  { id: "keep", label: "Normal", hint: "Nothing to do", cls: "bg-app-chip-bg text-app-fg-muted" },
+/** Status = coloured dot + plain words. `text` colours the status line, `dot` the marker. */
+const BUCKETS: { id: LearningBucket; label: string; hint: string; dot: string; text: string }[] = [
+  { id: "scale", label: "Winner", hint: "Make more like this", dot: "bg-emerald-500", text: "text-emerald-600 dark:text-emerald-400" },
+  { id: "adjust_hook", label: "Weak start", hint: "Good content — try a new first line", dot: "bg-amber-500", text: "text-amber-600 dark:text-amber-400" },
+  { id: "adjust_cta", label: "Few comments", hint: "People watched — ask clearer for a comment", dot: "bg-sky-500", text: "text-sky-600 dark:text-sky-400" },
+  { id: "retire", label: "Didn't work", hint: "Skip this topic", dot: "bg-rose-500", text: "text-rose-600 dark:text-rose-400" },
+  { id: "keep", label: "Normal", hint: "Nothing to do", dot: "bg-zinc-400", text: "text-app-fg-muted" },
 ];
 const LABEL = Object.fromEntries(BUCKETS.map((b) => [b.id, b])) as Record<LearningBucket, (typeof BUCKETS)[number]>;
 
@@ -34,17 +37,26 @@ const RULE_FIELDS: { key: string; label: string }[] = [
   { key: "min_reels", label: "Minimum reels before judging" },
 ];
 
+const PAGE = 15;
+
 /** 23678.5 → "23,700" — a rounded number reads easier than an exact median. */
 function roundViews(n: number): string {
   return (Math.round(n / 100) * 100).toLocaleString();
 }
 
-const PAGE = 15;
-
 function shortDate(iso: string | null): string {
-  if (!iso) return "—";
+  if (!iso) return "";
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString();
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
+
+/** First caption line as a calm title: emojis and arrow symbols removed (they're in the caption). */
+function titleFromCaption(text: string): string {
+  const line = text.split("\n").find((l) => l.trim()) ?? "";
+  return line
+    .replace(/[\p{Extended_Pictographic}\u{FE0F}\u{20E3}\u{2B05}-\u{2B07}\u{27A1}]/gu, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
 
 function firstSentence(text: string | null | undefined): string {
@@ -54,13 +66,133 @@ function firstSentence(text: string | null | undefined): string {
   return m ? m[1] : t.slice(0, 220);
 }
 
-/** Learning loop on the dashboard: what each own reel says, with human override. */
+function Dot({ className }: { className: string }) {
+  return <span aria-hidden className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${className}`} />;
+}
+
+/** One quiet menu per row instead of a dropdown, checkbox and button on every line. */
+function RowMenu({
+  item,
+  busy,
+  queued,
+  onLabel,
+  onIgnore,
+  onAnalyse,
+}: {
+  item: ReelDiagnosticItem;
+  busy: boolean;
+  queued: boolean;
+  onLabel: (bucket: LearningBucket | null) => void;
+  onIgnore: (ignored: boolean) => void;
+  onAnalyse: () => void;
+}) {
+  const [pos, setPos] = useState<CSSProperties | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const open = pos !== null;
+  const setOpen = (next: boolean | ((o: boolean) => boolean)) => {
+    const want = typeof next === "function" ? next(open) : next;
+    if (!want) return setPos(null);
+    // Rendered in <body> with fixed position: the glass panel clips its children (overflow: hidden).
+    const r = btnRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const menuH = 300;
+    const right = Math.max(8, window.innerWidth - r.right);
+    setPos(
+      r.bottom + menuH + 8 > window.innerHeight
+        ? { position: "fixed", right, bottom: window.innerHeight - r.top + 4 }
+        : { position: "fixed", right, top: r.bottom + 4 },
+    );
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!menuRef.current?.contains(t) && !btnRef.current?.contains(t)) setPos(null);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setPos(null);
+    const onMove = () => setPos(null);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onMove);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onMove, true);
+      window.removeEventListener("resize", onMove);
+    };
+  }, [open]);
+
+  const pick = (fn: () => void) => () => {
+    setOpen(false);
+    fn();
+  };
+  const itemCls =
+    "flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-app-fg hover:bg-app-chip-bg/70 disabled:opacity-40";
+
+  return (
+    <div className="relative">
+      <button
+        ref={btnRef}
+        type="button"
+        aria-label="Reel options"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={busy}
+        onClick={() => setOpen((o) => !o)}
+        className="rounded-lg p-1.5 text-app-fg-subtle hover:bg-app-chip-bg/70 hover:text-app-fg disabled:opacity-40"
+      >
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <MoreHorizontal className="h-4 w-4" />}
+      </button>
+      {open && pos
+        ? createPortal(
+        <div
+          ref={menuRef}
+          role="menu"
+          style={pos}
+          className="z-50 w-56 rounded-xl border border-app-card-border bg-[var(--background)] p-1.5 shadow-xl"
+        >
+          <p className="px-2.5 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-app-fg-subtle">Label</p>
+          {BUCKETS.map((b) => (
+            <button key={b.id} type="button" role="menuitem" className={itemCls} onClick={pick(() => onLabel(b.id))}>
+              <Dot className={b.dot} />
+              <span className="flex-1">{b.label}</span>
+              {item.bucket === b.id ? <Check className="h-3.5 w-3.5 text-app-fg-muted" /> : null}
+            </button>
+          ))}
+          {item.override_bucket ? (
+            <button type="button" role="menuitem" className={itemCls} onClick={pick(() => onLabel(null))}>
+              <span className="w-1.5" />
+              <span className="flex-1 text-app-fg-muted">Back to automatic ({LABEL[item.rule_bucket].label})</span>
+            </button>
+          ) : null}
+          <div className="my-1 border-t border-app-divider" />
+          <button type="button" role="menuitem" className={itemCls} onClick={pick(() => onIgnore(!item.excluded))}>
+            <span className="w-1.5" />
+            <span className="flex-1">{item.excluded ? "Use this reel again" : "Ignore this reel"}</span>
+          </button>
+          {!item.analysis ? (
+            <button type="button" role="menuitem" className={itemCls} disabled={queued} onClick={pick(onAnalyse)}>
+              <span className="w-1.5" />
+              <span className="flex-1">{queued ? "AI read queued…" : "Get AI read"}</span>
+            </button>
+          ) : null}
+        </div>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
+
+/** Learning loop on the dashboard: how each own reel did against her usual reel, with human override. */
 export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; orgSlug: string }) {
   const { show } = useToast();
   const [data, setData] = useState<LearningDiagnostics | null>(null);
   const [filter, setFilter] = useState<LearningBucket | "all">("all");
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [rulesOpen, setRulesOpen] = useState(false);
   const [rulesDraft, setRulesDraft] = useState<Record<string, string>>({});
   const [empty, setEmpty] = useState<string | null>(null);
   const [queued, setQueued] = useState<Set<string>>(new Set());
@@ -77,7 +209,7 @@ export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; org
     if (!res.data.items.length) {
       const rc = await recomputeLearningDiagnostics(clientSlug, orgSlug);
       if (rc.ok && rc.data.status === "not_enough_data") {
-        setEmpty(`Not enough data yet — needs ${rc.data.min_reels} reels older than a few days (has ${rc.data.reels}).`);
+        setEmpty(`Not enough reels yet — needs ${rc.data.min_reels} reels older than a few days (has ${rc.data.reels}).`);
       } else if (rc.ok && rc.data.status === "ok") {
         const again = await fetchLearningDiagnostics(clientSlug, orgSlug);
         if (again.ok) setData(again.data);
@@ -121,10 +253,7 @@ export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; org
         return;
       }
       setQueued((prev) => new Set(prev).add(it.reel_id));
-      show(
-        res.data.already_pending ? "Already being analysed." : "Analysis queued — it appears here in a few minutes.",
-        "success",
-      );
+      show(res.data.already_pending ? "Already being analysed." : "AI read queued — it appears here in a few minutes.", "success");
     } finally {
       setBusyId(null);
     }
@@ -141,190 +270,190 @@ export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; org
     show("Saved.", "success");
   };
 
-  if (!data) {
-    return (
-      <section className="glass rounded-2xl border border-app-divider/80 p-5">
-        <p className="text-xs text-app-fg-subtle">Loading learning…</p>
-      </section>
-    );
-  }
+  const chip = (id: LearningBucket | "all", label: string, count: number, dot?: string, hint?: string) => (
+    <button
+      key={id}
+      type="button"
+      title={hint}
+      aria-pressed={filter === id}
+      onClick={() => {
+        setFilter(id);
+        setShown(PAGE);
+      }}
+      className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition ${
+        filter === id ? "bg-app-chip-bg text-app-fg" : "text-app-fg-muted hover:text-app-fg"
+      }`}
+    >
+      {dot ? <Dot className={dot} /> : null}
+      {label}
+      <span className="font-normal text-app-fg-subtle">{count}</span>
+    </button>
+  );
 
   return (
-    <section className="glass rounded-2xl border border-app-divider/80 p-5 md:p-6" aria-label="Learning from results">
-      <div className="mb-3 flex flex-wrap items-center gap-3">
-        <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold text-app-fg">What&apos;s working</h2>
-          <p className="text-[11px] text-app-fg-muted">
-            Compared with her usual reel{data.usual_views ? ` (about ${roundViews(data.usual_views)} views)` : ""}. Your changes always win.
-          </p>
+    <section
+      className="glass glass-strong rounded-2xl border border-app-card-border"
+      aria-label="Learning from results"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-app-divider px-4 py-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="rounded-lg bg-emerald-500/15 p-1.5 text-emerald-600 dark:text-emerald-400">
+            <TrendingUp className="h-4 w-4" aria-hidden />
+          </div>
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold text-app-fg">What&apos;s working</h2>
+            <p className="text-[10px] text-app-fg-muted">
+              {data?.usual_views
+                ? `Each reel compared with her usual reel (about ${roundViews(data.usual_views)} views)`
+                : "Each reel compared with her usual reel"}
+            </p>
+          </div>
         </div>
-        <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-app-fg">
-          <input
-            type="checkbox"
-            checked={data.learning_enabled}
-            onChange={(e) => void saveSettings({ learning_enabled: e.target.checked })}
-            aria-label="Learn from results"
-          />
-          Learn from results
-        </label>
+        {data ? (
+          <label className="inline-flex cursor-pointer items-center gap-2 text-[11px] font-semibold text-app-fg-muted">
+            <input
+              type="checkbox"
+              className="accent-emerald-500"
+              checked={data.learning_enabled}
+              onChange={(e) => void saveSettings({ learning_enabled: e.target.checked })}
+              aria-label="Learn from results"
+            />
+            Learn from results
+          </label>
+        ) : null}
       </div>
 
-      {empty ? <p className="text-xs text-app-fg-subtle">{empty}</p> : null}
+      {!data ? (
+        <p className="px-4 py-6 text-xs text-app-fg-subtle">Loading…</p>
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-1 border-b border-app-divider px-3 py-2">
+            {chip("all", "All", data.items.length)}
+            {BUCKETS.map((b) => chip(b.id, b.label, counts[b.id] ?? 0, b.dot, b.hint))}
+          </div>
 
-      <div className="mb-3 flex flex-wrap gap-1.5">
-        <button
-          type="button"
-          onClick={() => {
-            setFilter("all");
-            setShown(PAGE);
-          }}
-          className={`rounded-lg px-2 py-1 text-[11px] font-semibold ${filter === "all" ? "bg-app-icon-btn-bg text-app-icon-btn-fg" : "text-app-fg-muted"}`}
-        >
-          All {data.items.length}
-        </button>
-        {BUCKETS.map((b) => (
-          <button
-            key={b.id}
-            type="button"
-            title={b.hint}
-            onClick={() => {
-              setFilter(b.id);
-              setShown(PAGE);
-            }}
-            className={`rounded-lg px-2 py-1 text-[11px] font-semibold ${filter === b.id ? b.cls : "text-app-fg-muted"}`}
-          >
-            {b.label} {counts[b.id] ?? 0}
-          </button>
-        ))}
-      </div>
+          {empty ? <p className="px-4 py-6 text-xs text-app-fg-subtle">{empty}</p> : null}
 
-      <ul className="divide-y divide-app-divider/40">
-        {rows.map((it) => {
-          const b = LABEL[it.bucket];
-          const why = firstSentence(it.analysis?.why_it_worked);
-          return (
-            <li key={it.reel_id} className={`py-2.5 ${it.excluded ? "opacity-50" : ""}`}>
-              <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                <span title={b.hint} className={`rounded-md px-1.5 py-0.5 font-bold ${b.cls}`}>{b.label}</span>
-                <span className="text-app-fg-muted">{shortDate(it.posted_at)}</span>
-                <span className="min-w-0 flex-1 text-app-fg">
-                  {it.reason}
-                  {it.override_bucket ? <span className="text-app-fg-muted"> · changed by you</span> : null}
-                </span>
-                <a href={it.post_url} target="_blank" rel="noreferrer" aria-label="Open on Instagram" className="text-app-fg-subtle hover:text-app-fg">
-                  <ExternalLink className="h-3.5 w-3.5" />
-                </a>
-              </div>
-              <p className="mt-0.5 truncate text-[11px] text-app-fg-subtle">{it.caption}</p>
-              {why ? <p className="mt-0.5 text-[11px] text-app-fg-muted">AI: {why}</p> : null}
-              <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px]">
-                <select
-                  value={it.override_bucket ?? ""}
-                  disabled={busyId === it.reel_id}
-                  aria-label="Change label"
-                  onChange={(e) =>
-                    void patchItem(
-                      it,
-                      e.target.value ? { override_bucket: e.target.value as LearningBucket } : { clear_override: true },
-                    )
-                  }
-                  className="glass-inset rounded-md px-1.5 py-0.5 text-[11px] text-app-fg"
-                >
-                  <option value="">
-                    {it.override_bucket ? `Back to automatic (${LABEL[it.rule_bucket].label})` : "Change label"}
-                  </option>
-                  {BUCKETS.map((o) => (
-                    <option key={o.id} value={o.id}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-                <label className="inline-flex items-center gap-1 text-app-fg-muted">
-                  <input
-                    type="checkbox"
-                    checked={it.excluded}
-                    disabled={busyId === it.reel_id}
-                    onChange={(e) => void patchItem(it, { excluded: e.target.checked })}
-                  />
-                  Ignore this reel
-                </label>
-                {!it.analysis && queued.has(it.reel_id) ? (
-                  <span className="text-app-fg-subtle">Analysis queued…</span>
-                ) : !it.analysis ? (
+          <ul className="divide-y divide-app-divider">
+            {rows.map((it) => {
+              const b = LABEL[it.bucket];
+              const why = firstSentence(it.analysis?.why_it_worked);
+              const title = titleFromCaption(it.caption) || "Untitled reel";
+              return (
+                <li key={it.reel_id} className={`flex items-start gap-3 px-4 py-3 ${it.excluded ? "opacity-50" : ""}`}>
+                  <ReelThumbnail src={it.thumbnail_url} alt="" href={it.post_url} className="h-11 w-11 shrink-0 rounded-lg" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs font-medium text-app-fg">{title}</p>
+                    <p className={`mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] font-semibold ${b.text}`} title={`${b.label}: ${it.reason}`}>
+                      <Dot className={b.dot} />
+                      <span className="shrink-0 whitespace-nowrap">{b.label}</span>
+                      <span className="min-w-0 truncate font-normal text-app-fg-muted">· {it.reason}</span>
+                    </p>
+                    <p className="mt-0.5 text-[10px] text-app-fg-subtle">
+                      {shortDate(it.posted_at)}
+                      {it.override_bucket ? " · label changed by you" : ""}
+                      {it.excluded ? " · ignored" : ""}
+                      {it.linked_session_id ? (
+                        <>
+                          {" · "}
+                          <Link href={generateSessionHref(it.linked_session_id)} className="underline hover:text-app-fg">
+                            made in the system
+                          </Link>
+                        </>
+                      ) : null}
+                    </p>
+                    {why ? <p className="mt-1 text-[11px] leading-relaxed text-app-fg-muted">{why}</p> : null}
+                  </div>
+                  <div className="flex shrink-0 items-center">
+                    <a
+                      href={it.post_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label="Open on Instagram"
+                      className="rounded-lg p-1.5 text-app-fg-subtle hover:bg-app-chip-bg/70 hover:text-app-fg"
+                    >
+                      <ExternalLink className="h-4 w-4" />
+                    </a>
+                    <RowMenu
+                      item={it}
+                      busy={busyId === it.reel_id}
+                      queued={queued.has(it.reel_id)}
+                      onLabel={(bucket) =>
+                        void patchItem(it, bucket ? { override_bucket: bucket } : { clear_override: true })
+                      }
+                      onIgnore={(ignored) => void patchItem(it, { excluded: ignored })}
+                      onAnalyse={() => void analyse(it)}
+                    />
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+          {allRows.length === 0 && !empty ? (
+            <p className="px-4 py-6 text-xs text-app-fg-subtle">No reels in this group.</p>
+          ) : null}
+
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-app-divider px-4 py-2.5">
+            {allRows.length > rows.length ? (
+              <button
+                type="button"
+                onClick={() => setShown((n) => n + PAGE)}
+                className="text-[11px] font-semibold text-app-accent hover:underline"
+              >
+                Show {Math.min(PAGE, allRows.length - rows.length)} more
+              </button>
+            ) : (
+              <span />
+            )}
+            <details className="text-right">
+              <summary className="cursor-pointer list-none text-[11px] font-semibold text-app-fg-muted hover:text-app-fg">
+                Rules
+              </summary>
+              <div className="mt-2 w-[min(28rem,80vw)] space-y-2 text-left">
+                <p className="text-[10px] text-app-fg-subtle">Defaults — confirm with Silas.</p>
+                {RULE_FIELDS.map((f) => (
+                  <label key={f.key} className="flex items-center justify-between gap-3 text-[11px] text-app-fg">
+                    <span>{f.label}</span>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      value={rulesDraft[f.key] ?? ""}
+                      aria-label={f.label}
+                      onChange={(e) => setRulesDraft((d) => ({ ...d, [f.key]: e.target.value }))}
+                      className="glass-inset w-16 rounded-md px-1.5 py-0.5 text-right"
+                    />
+                  </label>
+                ))}
+                <div className="flex justify-end gap-2 pt-1">
                   <button
                     type="button"
-                    disabled={busyId === it.reel_id}
-                    onClick={() => void analyse(it)}
-                    className="inline-flex items-center gap-1 text-app-fg-muted hover:text-app-fg disabled:opacity-40"
+                    onClick={() => void saveSettings({ thresholds: {} })}
+                    className="rounded-lg border border-app-divider px-2.5 py-1 text-[11px] font-semibold text-app-fg-muted"
                   >
-                    {busyId === it.reel_id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
-                    Analyse
+                    Reset
                   </button>
-                ) : null}
-                {it.linked_session_id ? (
-                  <Link href={generateSessionHref(it.linked_session_id)} className="text-app-fg-muted underline">
-                    Made in the system
-                  </Link>
-                ) : null}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void saveSettings({
+                        thresholds: Object.fromEntries(
+                          Object.entries(rulesDraft)
+                            .map(([k, v]) => [k, Number(v)] as const)
+                            .filter(([k, v]) => Number.isFinite(v) && v > 0 && v !== data.default_thresholds[k]),
+                        ),
+                      })
+                    }
+                    className="rounded-lg bg-app-chip-bg px-2.5 py-1 text-[11px] font-semibold text-app-fg"
+                  >
+                    Save rules
+                  </button>
+                </div>
               </div>
-            </li>
-          );
-        })}
-      </ul>
-      {allRows.length > rows.length ? (
-        <button
-          type="button"
-          onClick={() => setShown((n) => n + PAGE)}
-          className="mt-2 text-[11px] font-semibold text-app-fg-muted underline hover:text-app-fg"
-        >
-          Show more ({allRows.length - rows.length})
-        </button>
-      ) : null}
-      {allRows.length === 0 && !empty ? <p className="py-2 text-xs text-app-fg-subtle">No reels in this group.</p> : null}
-
-      <details className="mt-3" open={rulesOpen} onToggle={(e) => setRulesOpen((e.target as HTMLDetailsElement).open)}>
-        <summary className="cursor-pointer text-[11px] font-semibold text-app-fg-muted">Rules (defaults — confirm with Silas)</summary>
-        <div className="mt-2 grid gap-2 sm:grid-cols-2">
-          {RULE_FIELDS.map((f) => (
-            <label key={f.key} className="flex items-center justify-between gap-2 text-[11px] text-app-fg">
-              <span>{f.label}</span>
-              <input
-                type="number"
-                step="0.1"
-                min="0"
-                value={rulesDraft[f.key] ?? ""}
-                aria-label={f.label}
-                onChange={(e) => setRulesDraft((d) => ({ ...d, [f.key]: e.target.value }))}
-                className="glass-inset w-20 rounded-md px-1.5 py-0.5 text-right"
-              />
-            </label>
-          ))}
-        </div>
-        <div className="mt-2 flex gap-2">
-          <button
-            type="button"
-            onClick={() =>
-              void saveSettings({
-                thresholds: Object.fromEntries(
-                  Object.entries(rulesDraft)
-                    .map(([k, v]) => [k, Number(v)] as const)
-                    .filter(([k, v]) => Number.isFinite(v) && v > 0 && v !== data.default_thresholds[k]),
-                ),
-              })
-            }
-            className="rounded-lg bg-violet-500/20 px-2.5 py-1 text-[11px] font-bold text-violet-700 dark:text-violet-200 hover:bg-violet-500/30"
-          >
-            Save rules
-          </button>
-          <button
-            type="button"
-            onClick={() => void saveSettings({ thresholds: {} })}
-            className="rounded-lg border border-app-divider px-2.5 py-1 text-[11px] font-semibold text-app-fg-muted"
-          >
-            Reset to defaults
-          </button>
-        </div>
-      </details>
+            </details>
+          </div>
+        </>
+      )}
     </section>
   );
 }

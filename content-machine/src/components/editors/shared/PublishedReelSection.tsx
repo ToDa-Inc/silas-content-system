@@ -10,12 +10,13 @@ import {
   type PublishedReelSummary,
 } from "@/lib/api-client";
 
-const BUCKET_LABEL: Record<string, string> = {
-  scale: "✅ Winner",
-  adjust_hook: "🪝 Weak start",
-  adjust_cta: "💬 Few comments",
-  retire: "⛔ Didn't work",
-  keep: "Normal",
+/** Same status style as the dashboard: coloured dot + plain words. */
+const BUCKET: Record<string, { label: string; dot: string; text: string }> = {
+  scale: { label: "Winner", dot: "bg-emerald-500", text: "text-emerald-600 dark:text-emerald-400" },
+  adjust_hook: { label: "Weak start", dot: "bg-amber-500", text: "text-amber-600 dark:text-amber-400" },
+  adjust_cta: { label: "Few comments", dot: "bg-sky-500", text: "text-sky-600 dark:text-sky-400" },
+  retire: { label: "Didn't work", dot: "bg-rose-500", text: "text-rose-600 dark:text-rose-400" },
+  keep: { label: "Normal", dot: "bg-zinc-400", text: "text-app-fg-muted" },
 };
 
 function fmtDate(iso: string | null | undefined): string {
@@ -128,9 +129,10 @@ export function PublishedReelSection({
             Posted {fmtDate(reel.posted_at)} · <strong>{fmtNum(reel.views)}</strong> views ·{" "}
             {fmtNum(reel.likes)} {reel.likes === 1 ? "like" : "likes"} · {fmtNum(reel.comments)}{" "}
             {reel.comments === 1 ? "comment" : "comments"}
-            {bucket ? (
-              <span className="ml-2 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold text-app-on-amber-title">
-                {BUCKET_LABEL[bucket] ?? bucket}
+            {bucket && BUCKET[bucket] ? (
+              <span className={`ml-2 inline-flex items-center gap-1.5 font-semibold ${BUCKET[bucket].text}`}>
+                <span aria-hidden className={`inline-block h-1.5 w-1.5 rounded-full ${BUCKET[bucket].dot}`} />
+                {BUCKET[bucket].label}
               </span>
             ) : null}
           </p>
