@@ -45,6 +45,8 @@ def test_voice_first_instructions_and_cta_hooks_skipped():
     from services.learning_context import _looks_like_cta
 
     block = format_learning_block(CTX)
-    assert "voice and brand come first" in block and "clickbait" in block
+    assert "voice and brand come first" in block and "teaser" in block
+    # The rule must not name the formulas it bans (naming them primes the model).
+    assert "mistake" not in block.lower() and "guaranteed" not in block.lower()
     assert _looks_like_cta("Kommentiere „Klarheit“ und sichere dir deinen Platz")
     assert not _looks_like_cta("Fällt Dir das auch auf?")

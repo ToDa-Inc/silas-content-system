@@ -176,8 +176,8 @@ def format_learning_block(ctx: Optional[Dict[str, Any]]) -> str:
         "anything below. If a winning pattern clashes with her voice, keep her voice.",
         "- Use WINNERS as evidence of WHICH situations, tensions and opening structures resonate with her audience "
         "(e.g. a concrete everyday moment, a direct question, a named inner conflict) — not as wording to imitate.",
-        "- Never copy or closely paraphrase these lines, and do not use generic clickbait formulas "
-        "(\"this one mistake\", \"guaranteed\", \"nobody tells you\", \"the secret\") unless her own brief uses them.",
+        "- Never copy or closely paraphrase these lines. Do not use generic teaser or listicle openers; "
+        "open with a concrete moment from her audience's day, a direct question, or a clear statement in her own words.",
         "- Prefer her own themes, terms and offers from the client docs over trends implied by view counts.",
     ]
 
