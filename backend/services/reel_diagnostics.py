@@ -155,8 +155,7 @@ def _learning_analyses_last_24h(supabase, client_id: str, now: datetime) -> int:
     return sum(1 for r in rows if (r.get("payload") or {}).get("source") == "learning")
 
 
-def analysis_job_pending(supabase, client_id: str, post_url: str) -> bool:
-    """True when a reel_analyze_url job for this URL is already queued or running."""
+def _pending_analysis_urls(supabase, client_id: str) -> set[str]:
     rows = (
         supabase.table("background_jobs")
         .select("payload")
@@ -165,7 +164,12 @@ def analysis_job_pending(supabase, client_id: str, post_url: str) -> bool:
         .in_("status", ["queued", "running"])
         .execute()
     ).data or []
-    return any((r.get("payload") or {}).get("url") == post_url for r in rows)
+    return {str((r.get("payload") or {}).get("url")) for r in rows}
+
+
+def analysis_job_pending(supabase, client_id: str, post_url: str) -> bool:
+    """True when a reel_analyze_url job for this URL is already queued or running."""
+    return post_url in _pending_analysis_urls(supabase, client_id)
 
 
 def enqueue_reel_analysis(supabase, *, org_id: str, client_id: str, post_url: str) -> None:
@@ -242,11 +246,7 @@ def recompute_reel_diagnostics(supabase, client_id: str, *, now: Optional[dateti
         )
         prev = existing.get(str(r["id"])) or {}
         effective = prev.get("override_bucket") or d["bucket"]
-        if (
-            effective in ("scale", "retire")
-            and not prev.get("excluded")
-            and prev.get("analyzed_bucket") != effective
-        ):
+        if effective in ("scale", "retire") and not prev.get("excluded"):
             to_analyze.append({"reel": r, "bucket": effective})
 
     for i in range(0, len(rows), 200):
@@ -260,24 +260,29 @@ def recompute_reel_diagnostics(supabase, client_id: str, *, now: Optional[dateti
     if to_analyze and client.get("org_id") and client.get("learning_enabled") is not False:
         budget = max(0, MAX_AUTO_ANALYSES_PER_RUN - _learning_analyses_last_24h(supabase, client_id, now))
     if to_analyze and budget > 0:
+        # Decide from what exists, not from what was queued: a reel without an analysis and
+        # without a pending job is (re)queued, so failed attempts (e.g. Apify limit) retry later.
+        urls = [t["reel"]["post_url"] for t in to_analyze]
         done_urls = {
             str(a["post_url"])
             for a in (
                 supabase.table("reel_analyses")
                 .select("post_url")
                 .eq("client_id", client_id)
-                .in_("post_url", [t["reel"]["post_url"] for t in to_analyze])
+                .in_("post_url", urls)
                 .execute()
             ).data
             or []
         }
+        pending_urls = _pending_analysis_urls(supabase, client_id)
         for t in to_analyze:
             url = t["reel"]["post_url"]
-            if url not in done_urls:
-                if analyzed >= budget:
-                    continue
-                enqueue_reel_analysis(supabase, org_id=str(client["org_id"]), client_id=client_id, post_url=url)
-                analyzed += 1
+            if url in done_urls or url in pending_urls:
+                continue
+            if analyzed >= budget:
+                break
+            enqueue_reel_analysis(supabase, org_id=str(client["org_id"]), client_id=client_id, post_url=url)
+            analyzed += 1
             supabase.table("reel_diagnostics").update({"analyzed_bucket": t["bucket"]}).eq(
                 "reel_id", t["reel"]["id"]
             ).execute()
