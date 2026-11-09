@@ -32,6 +32,18 @@ def _hook_line(reel: Dict[str, Any]) -> str:
     return ""
 
 
+def _numbers(m: Dict[str, Any]) -> str:
+    """Exact ratios for the model (the UI shows plain sentences instead)."""
+    parts = []
+    if m.get("views_x") is not None:
+        parts.append(f"views {m['views_x']}× her median")
+    if m.get("comment_rate_x") is not None:
+        parts.append(f"comments/view {m['comment_rate_x']}×")
+    if m.get("engagement_rate_x") is not None:
+        parts.append(f"engagement/view {m['engagement_rate_x']}×")
+    return ", ".join(parts)
+
+
 def _cta_line(caption: Optional[str]) -> str:
     """Last caption line that is not just hashtags — where her CTA usually sits."""
     for line in reversed(str(caption or "").splitlines()):
@@ -98,7 +110,7 @@ def build_learning_context(supabase, client_id: str, *, now: Optional[datetime] 
             "post_url": r.get("post_url"),
             "hook": _hook_line(r),
             "format": r.get("format"),
-            "reason": x["diag"].get("reason"),
+            "reason": _numbers(x["diag"].get("metrics") or {}),
         }
         if with_cta:
             out["cta"] = _cta_line(r.get("caption"))
@@ -123,9 +135,10 @@ def build_learning_context(supabase, client_id: str, *, now: Optional[datetime] 
         "liked": liked,
         "rejected": rejected,
     }
+    plain = {rid: str(by_reel[rid].get("reason") or "") for rid in by_reel}
     ctx["trace"] = {
-        "winners": [{"reel_id": i["reel_id"], "post_url": i["post_url"], "hook": i["hook"], "reason": i["reason"]} for i in ctx["winners"]],
-        "avoid": [{"reel_id": i["reel_id"], "post_url": i["post_url"], "hook": i["hook"], "reason": i["reason"]} for i in ctx["avoid"]],
+        "winners": [{"reel_id": i["reel_id"], "post_url": i["post_url"], "hook": i["hook"], "reason": plain.get(str(i["reel_id"]), "")} for i in ctx["winners"]],
+        "avoid": [{"reel_id": i["reel_id"], "post_url": i["post_url"], "hook": i["hook"], "reason": plain.get(str(i["reel_id"]), "")} for i in ctx["avoid"]],
         "weak_hooks": len(ctx["weak_hooks"]),
         "weak_ctas": len(ctx["weak_ctas"]),
         "liked": len(liked),

@@ -16,27 +16,27 @@ import {
 } from "@/lib/api-client";
 import { generateSessionHref } from "@/lib/generate-session-url";
 
-const BUCKETS: { id: LearningBucket; label: string; cls: string }[] = [
-  { id: "scale", label: "Scale it", cls: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" },
-  { id: "adjust_hook", label: "Adjust hook", cls: "bg-amber-500/15 text-amber-700 dark:text-amber-300" },
-  { id: "adjust_cta", label: "Adjust CTA", cls: "bg-sky-500/15 text-sky-700 dark:text-sky-300" },
-  { id: "retire", label: "Retire", cls: "bg-rose-500/15 text-rose-700 dark:text-rose-300" },
-  { id: "keep", label: "Keep", cls: "bg-app-chip-bg text-app-fg-muted" },
+const BUCKETS: { id: LearningBucket; label: string; hint: string; cls: string }[] = [
+  { id: "scale", label: "✅ Winner", hint: "Make more like this", cls: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" },
+  { id: "adjust_hook", label: "🪝 Weak start", hint: "Good content, try a new first line", cls: "bg-amber-500/15 text-amber-700 dark:text-amber-300" },
+  { id: "adjust_cta", label: "💬 Few comments", hint: "People watched — ask clearer for a comment", cls: "bg-sky-500/15 text-sky-700 dark:text-sky-300" },
+  { id: "retire", label: "⛔ Didn't work", hint: "Skip this topic", cls: "bg-rose-500/15 text-rose-700 dark:text-rose-300" },
+  { id: "keep", label: "Normal", hint: "Nothing to do", cls: "bg-app-chip-bg text-app-fg-muted" },
 ];
 const LABEL = Object.fromEntries(BUCKETS.map((b) => [b.id, b])) as Record<LearningBucket, (typeof BUCKETS)[number]>;
 
 const RULE_FIELDS: { key: string; label: string }[] = [
-  { key: "scale_views_x", label: "Scale it: views ≥ × median" },
-  { key: "low_views_x", label: "Adjust hook / Retire: views < × median" },
-  { key: "cta_comment_rate_x", label: "Adjust CTA: comments/view < × median" },
-  { key: "median_window", label: "Median over last N reels" },
+  { key: "scale_views_x", label: "Winner: at least × her usual views" },
+  { key: "low_views_x", label: "Weak start / Didn't work: below × her usual views" },
+  { key: "cta_comment_rate_x", label: "Few comments: below × her usual comments per view" },
+  { key: "median_window", label: "Her usual reel = middle of her last N reels" },
   { key: "min_age_days", label: "Judge reels after N days" },
   { key: "min_reels", label: "Minimum reels before judging" },
 ];
 
-/** The badge already shows the verdict — keep only the numbers ("Views 4.9× median"). */
-function numbersOnly(reason: string): string {
-  return reason.split(" → ")[0];
+/** 23678.5 → "23,700" — a rounded number reads easier than an exact median. */
+function roundViews(n: number): string {
+  return (Math.round(n / 100) * 100).toLocaleString();
 }
 
 const PAGE = 15;
@@ -154,7 +154,9 @@ export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; org
       <div className="mb-3 flex flex-wrap items-center gap-3">
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold text-app-fg">What&apos;s working</h2>
-          <p className="text-[11px] text-app-fg-muted">Each reel vs her own median. Your override always wins.</p>
+          <p className="text-[11px] text-app-fg-muted">
+            Compared with her usual reel{data.usual_views ? ` (about ${roundViews(data.usual_views)} views)` : ""}. Your changes always win.
+          </p>
         </div>
         <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-app-fg">
           <input
@@ -184,6 +186,7 @@ export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; org
           <button
             key={b.id}
             type="button"
+            title={b.hint}
             onClick={() => {
               setFilter(b.id);
               setShown(PAGE);
@@ -202,11 +205,11 @@ export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; org
           return (
             <li key={it.reel_id} className={`py-2.5 ${it.excluded ? "opacity-50" : ""}`}>
               <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                <span className={`rounded-md px-1.5 py-0.5 font-bold ${b.cls}`}>{b.label}</span>
+                <span title={b.hint} className={`rounded-md px-1.5 py-0.5 font-bold ${b.cls}`}>{b.label}</span>
                 <span className="text-app-fg-muted">{shortDate(it.posted_at)}</span>
                 <span className="min-w-0 flex-1 text-app-fg">
-                  {numbersOnly(it.reason)}
-                  {it.override_bucket ? <span className="text-app-fg-muted"> · your override</span> : null}
+                  {it.reason}
+                  {it.override_bucket ? <span className="text-app-fg-muted"> · changed by you</span> : null}
                 </span>
                 <a href={it.post_url} target="_blank" rel="noreferrer" aria-label="Open on Instagram" className="text-app-fg-subtle hover:text-app-fg">
                   <ExternalLink className="h-3.5 w-3.5" />
@@ -218,7 +221,7 @@ export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; org
                 <select
                   value={it.override_bucket ?? ""}
                   disabled={busyId === it.reel_id}
-                  aria-label="Override bucket"
+                  aria-label="Change label"
                   onChange={(e) =>
                     void patchItem(
                       it,
@@ -227,10 +230,12 @@ export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; org
                   }
                   className="glass-inset rounded-md px-1.5 py-0.5 text-[11px] text-app-fg"
                 >
-                  <option value="">Rule: {LABEL[it.rule_bucket].label}</option>
+                  <option value="">
+                    {it.override_bucket ? `Back to automatic (${LABEL[it.rule_bucket].label})` : "Change label"}
+                  </option>
                   {BUCKETS.map((o) => (
                     <option key={o.id} value={o.id}>
-                      Override: {o.label}
+                      {o.label}
                     </option>
                   ))}
                 </select>
@@ -241,7 +246,7 @@ export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; org
                     disabled={busyId === it.reel_id}
                     onChange={(e) => void patchItem(it, { excluded: e.target.checked })}
                   />
-                  Exclude from learning
+                  Ignore this reel
                 </label>
                 {!it.analysis && queued.has(it.reel_id) ? (
                   <span className="text-app-fg-subtle">Analysis queued…</span>

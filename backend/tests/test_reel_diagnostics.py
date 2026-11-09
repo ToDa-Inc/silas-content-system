@@ -33,13 +33,16 @@ def test_norm_needs_ten_mature_reels():
 def test_scale_on_double_views_or_outlier_flag():
     assert diagnose_reel(_reel(5, 25_000, 1000, 250), NORM, TH)["bucket"] == "scale"
     out = diagnose_reel(_reel(5, 11_000, 440, 110, outlier=True), NORM, TH)
-    assert out["bucket"] == "scale" and "outlier" in out["reason"]
+    assert out["bucket"] == "scale" and out["reason"] == "Stood out from her usual reels"
+    assert diagnose_reel(_reel(5, 25_000, 1000, 250), NORM, TH)["reason"] == "2.5× more views than her usual reel"
+    assert diagnose_reel(_reel(5, 300_000, 9000, 900), NORM, TH)["reason"] == "30× more views than her usual reel"
 
 
 def test_adjust_cta_when_watched_but_few_comments():
     d = diagnose_reel(_reel(5, 12_000, 600, 20), NORM, TH)
     assert d["bucket"] == "adjust_cta"
-    assert d["reason"] == "Views 1.2× median · comments/view 0.2× → Adjust CTA"
+    assert d["reason"] == "More views than usual, but very few comments"
+    assert d["metrics"]["comment_rate_x"] == 0.17
 
 
 def test_adjust_hook_when_low_reach_but_engaged():
@@ -52,6 +55,9 @@ def test_retire_when_low_reach_and_low_engagement():
 
 def test_keep_in_between():
     assert diagnose_reel(_reel(5, 9_000, 360, 90), NORM, TH)["bucket"] == "keep"
+    assert diagnose_reel(_reel(5, 10_000, 400, 100), NORM, TH)["reason"] == "About as many views as usual"
+    assert diagnose_reel(_reel(5, 18_000, 720, 180), NORM, TH)["reason"] == "Somewhat more views than usual"
+    assert diagnose_reel(_reel(5, 8_000, 320, 80), NORM, TH)["reason"] == "Slightly fewer views than usual"
 
 
 def test_thresholds_override_per_client():

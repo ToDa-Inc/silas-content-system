@@ -34,11 +34,11 @@ DEFAULT_THRESHOLDS: Dict[str, float] = {
 }
 BUCKETS = ("scale", "adjust_hook", "adjust_cta", "retire", "keep")
 BUCKET_LABEL = {
-    "scale": "Scale it",
-    "adjust_hook": "Adjust hook",
-    "adjust_cta": "Adjust CTA",
-    "retire": "Retire",
-    "keep": "Keep",
+    "scale": "Winner",
+    "adjust_hook": "Weak start",
+    "adjust_cta": "Few comments",
+    "retire": "Didn't work",
+    "keep": "Normal",
 }
 # Reels older than this are not (re)bucketed — the daily refresh stops updating them anyway.
 DIAGNOSE_LOOKBACK_DAYS = 120
@@ -77,8 +77,9 @@ def _rate(num: Any, views: Any) -> float:
     return float(num or 0) / v if v > 0 else 0.0
 
 
-def _x(value: float, base: float) -> str:
-    return f"{value / base:.1f}×" if base > 0 else "n/a"
+def _times(x: float) -> str:
+    """4.9 → "4.9×", 12.4 → "12×" (no false precision for big jumps)."""
+    return f"{x:.0f}×" if x >= 10 else f"{x:.1f}×".replace(".0×", "×")
 
 
 def compute_norm(reels: List[Dict[str, Any]], th: Dict[str, float], now: datetime) -> Optional[Dict[str, Any]]:
@@ -113,24 +114,34 @@ def diagnose_reel(reel: Dict[str, Any], norm: Dict[str, Any], th: Dict[str, floa
     vx = views / mv if mv > 0 else 0.0
     outlier = bool(reel.get("is_outlier"))
 
+    # Plain-language reason shown to the team; the exact ratios stay in ``metrics``.
     if vx >= th["scale_views_x"] or outlier:
         bucket = "scale"
-        reason = f"Views {_x(views, mv)} median" + (" · outlier" if outlier and vx < th["scale_views_x"] else "")
+        reason = (
+            f"{_times(vx)} more views than her usual reel"
+            if vx >= th["scale_views_x"]
+            else "Stood out from her usual reels"
+        )
     elif vx >= 1.0 and mcr > 0 and cr < th["cta_comment_rate_x"] * mcr:
         bucket = "adjust_cta"
-        reason = f"Views {_x(views, mv)} median · comments/view {_x(cr, mcr)}"
+        reason = "More views than usual, but very few comments"
     elif vx < th["low_views_x"] and er >= mer:
         bucket = "adjust_hook"
-        reason = f"Views {_x(views, mv)} median · engagement/view {_x(er, mer)}"
+        reason = "Few people saw it, but those who did liked it"
     elif vx < th["low_views_x"]:
         bucket = "retire"
-        reason = f"Views {_x(views, mv)} median · engagement/view {_x(er, mer)}"
+        reason = "Fewer views and likes than usual"
     else:
         bucket = "keep"
-        reason = f"Views {_x(views, mv)} median"
+        if vx >= 1.3:
+            reason = "Somewhat more views than usual"
+        elif vx <= 0.85:
+            reason = "Slightly fewer views than usual"
+        else:
+            reason = "About as many views as usual"
     return {
         "bucket": bucket,
-        "reason": f"{reason} → {BUCKET_LABEL[bucket]}",
+        "reason": reason,
         "metrics": {
             "views": int(views),
             "median_views": round(mv, 1),

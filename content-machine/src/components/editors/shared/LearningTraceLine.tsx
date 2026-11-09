@@ -28,9 +28,9 @@ export function LearningTraceLine({ trace }: { trace: Record<string, unknown> | 
   const weak = (t.weak_hooks ?? 0) + (t.weak_ctas ?? 0);
   const parts = [
     winners.length ? plural(winners.length, "winner", "winners") : "",
-    weak ? plural(weak, "weak hook/CTA", "weak hooks/CTAs") : "",
-    avoid.length ? `${avoid.length} to avoid` : "",
-    votes ? plural(votes, "vote", "votes") : "",
+    weak ? plural(weak, "reel to improve", "reels to improve") : "",
+    avoid.length ? plural(avoid.length, "reel that didn't work", "reels that didn't work") : "",
+    votes ? plural(votes, "thumbs vote", "thumbs votes") : "",
   ].filter(Boolean);
   if (!parts.length) return null;
 
@@ -48,7 +48,7 @@ export function LearningTraceLine({ trace }: { trace: Record<string, unknown> | 
               ) : (
                 r.hook
               )}
-              {r.reason ? <span className="text-app-fg-muted"> · {r.reason.split(" → ")[0]}</span> : null}
+              {r.reason ? <span className="text-app-fg-muted"> · {r.reason}</span> : null}
             </li>
           ))}
         </ul>
@@ -69,8 +69,8 @@ export function LearningTraceLine({ trace }: { trace: Record<string, unknown> | 
       </button>
       {open ? (
         <div className="mt-2 space-y-2">
-          {list("Winners", winners)}
-          {list("Avoid", avoid)}
+          {list("✅ Winners — copied what works", winners)}
+          {list("⛔ Didn't work — avoided", avoid)}
         </div>
       ) : null}
     </div>

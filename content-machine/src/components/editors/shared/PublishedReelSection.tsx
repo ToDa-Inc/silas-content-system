@@ -11,11 +11,11 @@ import {
 } from "@/lib/api-client";
 
 const BUCKET_LABEL: Record<string, string> = {
-  scale: "Scale it",
-  adjust_hook: "Adjust hook",
-  adjust_cta: "Adjust CTA",
-  retire: "Retire",
-  keep: "Keep",
+  scale: "✅ Winner",
+  adjust_hook: "🪝 Weak start",
+  adjust_cta: "💬 Few comments",
+  retire: "⛔ Didn't work",
+  keep: "Normal",
 };
 
 function fmtDate(iso: string | null | undefined): string {

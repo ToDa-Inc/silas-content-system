@@ -263,10 +263,15 @@ def list_diagnostics(
                 "analysis": {"why_it_worked": a.get("why_it_worked"), "hook_type": a.get("hook_type")} if a else None,
             }
         )
+    usual = next(
+        (float(d["metrics"]["median_views"]) for d in by_reel.values() if (d.get("metrics") or {}).get("median_views")),
+        None,
+    )
     return {
         "learning_enabled": bool(client.get("learning_enabled", True)),
         "thresholds": resolve_thresholds(client.get("learning_thresholds")),
         "default_thresholds": DEFAULT_THRESHOLDS,
+        "usual_views": usual,
         "items": items,
     }
 

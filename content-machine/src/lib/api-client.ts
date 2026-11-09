@@ -2417,6 +2417,7 @@ export type LearningDiagnostics = {
   learning_enabled: boolean;
   thresholds: Record<string, number>;
   default_thresholds: Record<string, number>;
+  usual_views: number | null;
   items: ReelDiagnosticItem[];
 };
 
