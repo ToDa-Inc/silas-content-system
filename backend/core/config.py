@@ -6,10 +6,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 _REPO_ROOT = _BACKEND_DIR.parent
-OPENROUTER_PRIMARY_MODEL = "google/gemini-3-flash-preview"
+OPENROUTER_PRIMARY_MODEL = "google/gemini-3.8-flash"
 OPENROUTER_FALLBACK_MODEL = "google/gemini-3.1-flash-lite-preview"
 _LEGACY_OPENROUTER_DEFAULTS = {
     "google/gemini-2.0-flash-001",
+    "google/gemini-3-flash-preview",
     "z-ai/glm-5-turbo",
 }
 
@@ -173,7 +174,7 @@ class Settings(BaseSettings):
     )
 
     openrouter_reel_analyze_model: str = Field(
-        default="google/gemini-3-flash-preview",
+        default=OPENROUTER_PRIMARY_MODEL,
         description="OpenRouter model id for single-reel MP4 analysis.",
     )
 

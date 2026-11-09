@@ -62,7 +62,7 @@ Optional: `backend/.env` or `config/.env` for overrides (see load order in root 
    - [openrouter.ai/keys](https://openrouter.ai/keys) → create key.  
    - Same idea as `OPENROUTER_API_KEY` in `config/.env` for the JS scripts.
 
-7. **`OPENROUTER_MODEL`** — defaults to `google/gemini-3-flash-preview`.
+7. **`OPENROUTER_MODEL`** — defaults to `google/gemini-3.8-flash`.
    **`OPENROUTER_MODEL_FALLBACK`** — defaults to `google/gemini-3.1-flash-lite-preview`; on **HTTP 429** the client waits per **Retry-After** / backoff (see **`OPENROUTER_429_MAX_ATTEMPTS`**, **`OPENROUTER_429_MAX_SLEEP_S`** in `.env.example`), then may try the fallback (text/chat; **not** used for image generation or video multimodal). Account-wide/concurrent traffic still counts against the same API key—add OpenRouter credits or reduce worker parallelism if 429 persists.
    **OpenRouter scoring throughput:** by default, similarity scoring uses **4 bounded workers** and a Supabase-backed global pacer of **15 requests/minute** (`OPENROUTER_SCORING_WORKERS`, `OPENROUTER_REQUESTS_PER_MINUTE`). Apply **`backend/sql/phase22_openrouter_rate_limit.sql`** before enabling multiple API/worker processes.
 
