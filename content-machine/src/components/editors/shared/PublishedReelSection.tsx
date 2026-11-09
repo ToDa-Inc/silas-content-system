@@ -24,6 +24,12 @@ function fmtDate(iso: string | null | undefined): string {
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString();
 }
 
+/** First caption line, trimmed to fit a dropdown row. */
+function firstLine(caption: string): string {
+  const line = (caption.split("\n").find((l) => l.trim()) ?? "").trim();
+  return line.length > 48 ? `${line.slice(0, 47)}…` : line;
+}
+
 function fmtNum(n: number | null | undefined): string {
   return typeof n === "number" ? n.toLocaleString() : "—";
 }
@@ -155,7 +161,7 @@ export function PublishedReelSection({
               <option value="">Choose the reel this post became…</option>
               {reels.map((r) => (
                 <option key={r.id} value={r.id} disabled={Boolean(r.linked_session_id && r.linked_session_id !== sessionId)}>
-                  {fmtDate(r.posted_at)} · {fmtNum(r.views)} views · {r.caption.slice(0, 70) || r.post_url}
+                  {fmtDate(r.posted_at)} · {fmtNum(r.views)} views · {firstLine(r.caption) || r.post_url}
                   {r.linked_session_id && r.linked_session_id !== sessionId ? " (linked to another post)" : ""}
                 </option>
               ))}
@@ -165,7 +171,7 @@ export function PublishedReelSection({
             type="button"
             disabled={!choice || busy}
             onClick={() => void save(choice)}
-            className="inline-flex items-center gap-1 rounded-lg bg-violet-500/20 px-2.5 py-1 text-[11px] font-bold text-violet-200 hover:bg-violet-500/30 disabled:opacity-40"
+            className="inline-flex items-center gap-1 rounded-lg bg-violet-500/20 px-2.5 py-1 text-[11px] font-bold text-violet-700 dark:text-violet-200 hover:bg-violet-500/30 disabled:opacity-40"
           >
             {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : null} Link
           </button>
@@ -180,7 +186,7 @@ export function PublishedReelSection({
         </div>
       ) : (
         <p className="text-xs text-app-fg-subtle">
-          Not linked yet. It links automatically when the published caption matches; otherwise pick the reel once it is live.
+          Not linked yet — links itself when the published caption matches, or pick the reel.
         </p>
       )}
     </div>

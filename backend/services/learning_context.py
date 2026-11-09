@@ -55,23 +55,30 @@ def build_learning_context(supabase, client_id: str, *, now: Optional[datetime] 
         return None
     handle = crow[0].get("instagram_handle")
 
-    diags = (
-        supabase.table("reel_diagnostics")
-        .select("reel_id,rule_bucket,override_bucket,excluded,reason,metrics")
-        .eq("client_id", client_id)
-        .eq("excluded", False)
-        .execute()
-    ).data or []
-    by_reel = {str(d["reel_id"]): d for d in diags}
-    reels: Dict[str, Dict[str, Any]] = {}
-    if by_reel:
+    # Reels in the lookback window first (bounded), then only their diagnostics.
+    reels: Dict[str, Dict[str, Any]] = {
+        str(r["id"]): r
         for r in (
             own_reels_query(supabase, client_id, handle, columns="id,post_url,posted_at,caption,hook_text,format,views")
-            .in_("id", list(by_reel.keys()))
             .gte("posted_at", (now - timedelta(days=LOOKBACK_DAYS)).isoformat())
+            .order("posted_at", desc=True)
+            .limit(200)
+            .execute()
+        ).data
+        or []
+    }
+    by_reel: Dict[str, Dict[str, Any]] = {}
+    if reels:
+        for d in (
+            supabase.table("reel_diagnostics")
+            .select("reel_id,rule_bucket,override_bucket,excluded,reason,metrics")
+            .eq("client_id", client_id)
+            .eq("excluded", False)
+            .in_("reel_id", list(reels.keys()))
             .execute()
         ).data or []:
-            reels[str(r["id"])] = r
+            by_reel[str(d["reel_id"])] = d
+    reels = {rid: r for rid, r in reels.items() if rid in by_reel}
 
     grouped: Dict[str, List[Dict[str, Any]]] = {"scale": [], "retire": [], "adjust_hook": [], "adjust_cta": []}
     for rid, r in reels.items():

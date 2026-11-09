@@ -40,13 +40,13 @@ export type ResolvedLayout = {
   raw: VideoSpecLayout;
 };
 
-export function resolveLayoutPx(spec: VideoSpec): ResolvedLayout {
+export function resolveLayoutPx(spec: VideoSpec, canvasH: number = COMP_H): ResolvedLayout {
   const raw = resolveLayout(spec);
   const paddingPx = Math.round(raw.sidePadding * COMP_W);
-  const offsetPx = Math.round(raw.verticalOffset * COMP_H);
+  const offsetPx = Math.round(raw.verticalOffset * canvasH);
   const offsetXPx = Math.round(raw.textPanX * COMP_W);
   const verticalAnchor = raw.verticalAnchor ?? 'bottom';
-  const stackGapPx = Math.round(raw.stackGap * COMP_H);
+  const stackGapPx = Math.round(raw.stackGap * canvasH);
   return {
     paddingPx,
     innerWidth: COMP_W - paddingPx * 2,

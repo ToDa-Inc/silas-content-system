@@ -7,9 +7,9 @@ import { resolveLayoutPx } from '../layout';
 import { isBoldOutlineLayer, overlayBoldOutlineCaptionStyle } from '../textTreatment';
 import { activeCaptionLayers, beatFontScaleMult } from '../activeLayers';
 
-export default function CenteredPopTemplate({ spec, frame, fps }: VideoSpecWithTimeline) {
+export default function CenteredPopTemplate({ spec, frame, fps, canvasH }: VideoSpecWithTimeline) {
   const sec = frame / fps;
-  const layout = resolveLayoutPx(spec);
+  const layout = resolveLayoutPx(spec, canvasH);
   const layers = activeCaptionLayers(spec, sec);
   const strongBg = layers.some((l) => isBoldOutlineLayer(spec, l));
   const ta = layout.textAlign;

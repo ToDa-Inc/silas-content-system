@@ -72,7 +72,7 @@ export function VoteButtons({
         aria-label={`Like ${label}`}
         title="Good — learn from this"
         onClick={() => onVote(1)}
-        className={`${base} ${value === 1 ? "text-emerald-400" : "text-app-fg-subtle"}`}
+        className={`${base} ${value === 1 ? "text-emerald-600 dark:text-emerald-400" : "text-app-fg-subtle"}`}
       >
         <ThumbsUp className="h-3.5 w-3.5" />
       </button>
@@ -82,7 +82,7 @@ export function VoteButtons({
         aria-label={`Dislike ${label}`}
         title="Not for this client — avoid similar"
         onClick={() => onVote(-1)}
-        className={`${base} ${value === -1 ? "text-rose-400" : "text-app-fg-subtle"}`}
+        className={`${base} ${value === -1 ? "text-rose-600 dark:text-rose-400" : "text-app-fg-subtle"}`}
       >
         <ThumbsDown className="h-3.5 w-3.5" />
       </button>

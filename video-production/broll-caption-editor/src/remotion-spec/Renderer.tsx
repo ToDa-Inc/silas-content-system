@@ -2,7 +2,7 @@ import React from 'react';
 import { AbsoluteFill, useCurrentFrame, useVideoConfig } from 'remotion';
 import { normalizeVideoSpecForRender, type VideoSpec } from './schema';
 import Background from './Background';
-import { framingGeometry, resolveFraming } from './framing';
+import { framingGeometry } from './framing';
 import BarText from './BarText';
 import BottomCardTemplate from './templates/bottomCard';
 import CenteredPopTemplate from './templates/centeredPop';
@@ -21,23 +21,24 @@ export default function Renderer(props: VideoSpec) {
   let overlay: React.ReactNode;
   if (!geo) {
     overlay = renderTemplate(spec, frame, fps);
+  } else if (!geo.hookBar || !geo.captionBar) {
+    // 4:5 — the template places hook and captions over the picture (bars are too thin).
+    overlay = (
+      <div style={{ ...BOX, top: geo.media.top, height: geo.media.height }}>
+        {renderTemplate(spec, frame, fps, geo.media.height)}
+      </div>
+    );
   } else {
-    // Framed: the hook sits in the top bar. Captions go in the bottom bar (letterbox)
-    // or over the 4:5 picture, where the chosen template still applies.
+    // Letterbox — hook in the top bar, captions in the bottom bar, both inside the safe area.
     const hookOnly = { ...spec, blocks: [] };
     const captionsOnly = { ...spec, hook: { ...spec.hook, text: '' } };
-    const captionsInBar = resolveFraming(spec.framing) === 'letterbox';
     overlay = (
       <>
-        <div style={{ ...BOX, top: geo.hook.top, height: geo.hook.height }}>
-          <BarText spec={hookOnly} frame={frame} fps={fps} barHeight={geo.hook.height} />
+        <div style={{ ...BOX, top: geo.hookBar.top, height: geo.hookBar.height }}>
+          <BarText spec={hookOnly} frame={frame} fps={fps} barHeight={geo.hookBar.height} />
         </div>
-        <div style={{ ...BOX, top: geo.captions.top, height: geo.captions.height }}>
-          {captionsInBar ? (
-            <BarText spec={captionsOnly} frame={frame} fps={fps} barHeight={geo.captions.height} />
-          ) : (
-            renderTemplate(captionsOnly, frame, fps)
-          )}
+        <div style={{ ...BOX, top: geo.captionBar.top, height: geo.captionBar.height }}>
+          <BarText spec={captionsOnly} frame={frame} fps={fps} barHeight={geo.captionBar.height} />
         </div>
       </>
     );
@@ -53,8 +54,8 @@ export default function Renderer(props: VideoSpec) {
 
 const BOX: React.CSSProperties = { position: 'absolute', left: 0, width: '100%', overflow: 'hidden' };
 
-function renderTemplate(spec: VideoSpec, frame: number, fps: number): React.ReactNode {
-  const timeline = { spec, frame, fps };
+function renderTemplate(spec: VideoSpec, frame: number, fps: number, canvasH?: number): React.ReactNode {
+  const timeline = { spec, frame, fps, canvasH };
   switch (spec.templateId) {
     case 'bottom-card':
       return <BottomCardTemplate {...timeline} />;

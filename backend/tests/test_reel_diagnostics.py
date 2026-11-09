@@ -58,3 +58,15 @@ def test_thresholds_override_per_client():
     th = resolve_thresholds({"scale_views_x": 3, "bogus": 9, "low_views_x": -1})
     assert th["scale_views_x"] == 3.0 and th["low_views_x"] == 0.7 and "bogus" not in th
     assert diagnose_reel(_reel(5, 25_000, 1000, 250), NORM, th)["bucket"] == "keep"
+
+
+def test_fractional_counts_are_clamped_to_whole_numbers():
+    th = resolve_thresholds({"min_reels": 0.5, "median_window": 0.3, "min_age_days": 0.2})
+    assert th["min_reels"] == 1 and th["median_window"] == 1 and th["min_age_days"] == 1
+    # No mature reels: returns None instead of crashing on an empty median.
+    assert compute_norm([], th, NOW) is None
+
+
+def test_window_never_smaller_than_minimum():
+    th = resolve_thresholds({"min_reels": 20, "median_window": 5})
+    assert th["median_window"] == 20

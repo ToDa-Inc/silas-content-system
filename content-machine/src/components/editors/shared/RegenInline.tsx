@@ -51,6 +51,15 @@ export function RegenInline({
         autoFocus
         value={feedback}
         onChange={(e) => setFeedback(e.target.value)}
+        onKeyDown={async (e) => {
+          if (e.key !== "Enter" || busy) return;
+          e.preventDefault();
+          const ok = await onRegen(scope, feedback.trim());
+          if (ok) {
+            setFeedback("");
+            setOpen(false);
+          }
+        }}
         placeholder={placeholder}
         className="glass-inset min-w-0 flex-1 rounded-lg px-2.5 py-1.5 text-[11px] text-app-fg placeholder:text-app-fg-subtle focus:outline-none focus:ring-1 focus:ring-amber-500/35"
       />

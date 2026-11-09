@@ -7,10 +7,10 @@ import { resolveLayoutPx } from '../layout';
 import { cardBoldOutlineCaptionStyle, isBoldOutlineTreatment } from '../textTreatment';
 import { activeCaptionLayers, beatFontScaleMult } from '../activeLayers';
 
-export default function TopBannerTemplate({ spec, frame, fps }: VideoSpecWithTimeline) {
+export default function TopBannerTemplate({ spec, frame, fps, canvasH }: VideoSpecWithTimeline) {
   const sec = frame / fps;
   const theme = resolveAppearance(spec);
-  const layout = resolveLayoutPx(spec);
+  const layout = resolveLayoutPx(spec, canvasH);
   const layers = activeCaptionLayers(spec, sec);
   const ta = layout.textAlign;
   const cross = flexAlignForTextAlign(ta);

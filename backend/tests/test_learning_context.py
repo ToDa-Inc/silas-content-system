@@ -32,3 +32,10 @@ def test_block_reaches_every_prompt_via_client_context():
     packed = _pack_client_row_for_llm({"name": "Conny", "language": "de", "_learning": CTX})
     assert "=== LEARNING" in packed
     assert "=== LEARNING" not in _pack_client_row_for_llm({"name": "Conny", "language": "de"})
+
+
+def test_learning_block_sits_before_large_json_sections():
+    packed = _pack_client_row_for_llm({"name": "Conny", "language": "de", "icp": {"x": "y" * 50_000}, "_learning": CTX})
+    assert packed.index("=== LEARNING") < packed.index("=== ICP (JSON)")
+    # Survives the 60k slice used by the story prompt.
+    assert "=== LEARNING" in packed[:60_000]

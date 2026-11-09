@@ -3497,7 +3497,7 @@ export function VideoCreateWorkspace({
                       [
                         { id: "full" as const, label: "Full frame", title: "Video fills the whole 9:16 frame" },
                         { id: "letterbox" as const, label: "Letterbox", title: "Cinematic 16:9 band — hook in the top bar, captions in the bottom bar" },
-                        { id: "four_five" as const, label: "4:5 centered", title: "Feed-style 4:5 picture — hook in the top bar, captions over the picture" },
+                        { id: "four_five" as const, label: "4:5 centered", title: "Feed-style 4:5 picture — text over the picture, clear of Instagram's buttons" },
                       ] as const
                     ).map((f) => {
                       const active = (livePreviewSpec?.framing ?? previewVideoSpec?.framing ?? "full") === f.id;

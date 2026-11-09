@@ -17,10 +17,10 @@ import {
 import { generateSessionHref } from "@/lib/generate-session-url";
 
 const BUCKETS: { id: LearningBucket; label: string; cls: string }[] = [
-  { id: "scale", label: "Scale it", cls: "bg-emerald-500/15 text-emerald-300" },
-  { id: "adjust_hook", label: "Adjust hook", cls: "bg-amber-500/15 text-amber-300" },
-  { id: "adjust_cta", label: "Adjust CTA", cls: "bg-sky-500/15 text-sky-300" },
-  { id: "retire", label: "Retire", cls: "bg-rose-500/15 text-rose-300" },
+  { id: "scale", label: "Scale it", cls: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" },
+  { id: "adjust_hook", label: "Adjust hook", cls: "bg-amber-500/15 text-amber-700 dark:text-amber-300" },
+  { id: "adjust_cta", label: "Adjust CTA", cls: "bg-sky-500/15 text-sky-700 dark:text-sky-300" },
+  { id: "retire", label: "Retire", cls: "bg-rose-500/15 text-rose-700 dark:text-rose-300" },
   { id: "keep", label: "Keep", cls: "bg-app-chip-bg text-app-fg-muted" },
 ];
 const LABEL = Object.fromEntries(BUCKETS.map((b) => [b.id, b])) as Record<LearningBucket, (typeof BUCKETS)[number]>;
@@ -33,6 +33,13 @@ const RULE_FIELDS: { key: string; label: string }[] = [
   { key: "min_age_days", label: "Judge reels after N days" },
   { key: "min_reels", label: "Minimum reels before judging" },
 ];
+
+/** The badge already shows the verdict — keep only the numbers ("Views 4.9× median"). */
+function numbersOnly(reason: string): string {
+  return reason.split(" → ")[0];
+}
+
+const PAGE = 15;
 
 function shortDate(iso: string | null): string {
   if (!iso) return "—";
@@ -56,6 +63,8 @@ export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; org
   const [rulesOpen, setRulesOpen] = useState(false);
   const [rulesDraft, setRulesDraft] = useState<Record<string, string>>({});
   const [empty, setEmpty] = useState<string | null>(null);
+  const [queued, setQueued] = useState<Set<string>>(new Set());
+  const [shown, setShown] = useState(PAGE);
 
   const load = useCallback(async () => {
     const res = await fetchLearningDiagnostics(clientSlug, orgSlug);
@@ -86,7 +95,8 @@ export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; org
     return c;
   }, [data]);
 
-  const rows = (data?.items ?? []).filter((it) => filter === "all" || it.bucket === filter);
+  const allRows = (data?.items ?? []).filter((it) => filter === "all" || it.bucket === filter);
+  const rows = allRows.slice(0, shown);
 
   const patchItem = async (it: ReelDiagnosticItem, body: Parameters<typeof patchReelDiagnostic>[3]) => {
     setBusyId(it.reel_id);
@@ -106,7 +116,15 @@ export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; org
     setBusyId(it.reel_id);
     try {
       const res = await analyzeOwnReel(clientSlug, orgSlug, it.reel_id);
-      show(res.ok ? "Analysis queued — it appears here in a few minutes." : res.error, res.ok ? "success" : "error");
+      if (!res.ok) {
+        show(res.error, "error");
+        return;
+      }
+      setQueued((prev) => new Set(prev).add(it.reel_id));
+      show(
+        res.data.already_pending ? "Already being analysed." : "Analysis queued — it appears here in a few minutes.",
+        "success",
+      );
     } finally {
       setBusyId(null);
     }
@@ -154,7 +172,10 @@ export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; org
       <div className="mb-3 flex flex-wrap gap-1.5">
         <button
           type="button"
-          onClick={() => setFilter("all")}
+          onClick={() => {
+            setFilter("all");
+            setShown(PAGE);
+          }}
           className={`rounded-lg px-2 py-1 text-[11px] font-semibold ${filter === "all" ? "bg-app-icon-btn-bg text-app-icon-btn-fg" : "text-app-fg-muted"}`}
         >
           All {data.items.length}
@@ -163,7 +184,10 @@ export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; org
           <button
             key={b.id}
             type="button"
-            onClick={() => setFilter(b.id)}
+            onClick={() => {
+              setFilter(b.id);
+              setShown(PAGE);
+            }}
             className={`rounded-lg px-2 py-1 text-[11px] font-semibold ${filter === b.id ? b.cls : "text-app-fg-muted"}`}
           >
             {b.label} {counts[b.id] ?? 0}
@@ -181,7 +205,7 @@ export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; org
                 <span className={`rounded-md px-1.5 py-0.5 font-bold ${b.cls}`}>{b.label}</span>
                 <span className="text-app-fg-muted">{shortDate(it.posted_at)}</span>
                 <span className="min-w-0 flex-1 text-app-fg">
-                  {it.reason}
+                  {numbersOnly(it.reason)}
                   {it.override_bucket ? <span className="text-app-fg-muted"> · your override</span> : null}
                 </span>
                 <a href={it.post_url} target="_blank" rel="noreferrer" aria-label="Open on Instagram" className="text-app-fg-subtle hover:text-app-fg">
@@ -219,7 +243,9 @@ export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; org
                   />
                   Exclude from learning
                 </label>
-                {!it.analysis ? (
+                {!it.analysis && queued.has(it.reel_id) ? (
+                  <span className="text-app-fg-subtle">Analysis queued…</span>
+                ) : !it.analysis ? (
                   <button
                     type="button"
                     disabled={busyId === it.reel_id}
@@ -240,6 +266,16 @@ export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; org
           );
         })}
       </ul>
+      {allRows.length > rows.length ? (
+        <button
+          type="button"
+          onClick={() => setShown((n) => n + PAGE)}
+          className="mt-2 text-[11px] font-semibold text-app-fg-muted underline hover:text-app-fg"
+        >
+          Show more ({allRows.length - rows.length})
+        </button>
+      ) : null}
+      {allRows.length === 0 && !empty ? <p className="py-2 text-xs text-app-fg-subtle">No reels in this group.</p> : null}
 
       <details className="mt-3" open={rulesOpen} onToggle={(e) => setRulesOpen((e.target as HTMLDetailsElement).open)}>
         <summary className="cursor-pointer text-[11px] font-semibold text-app-fg-muted">Rules (defaults — confirm with Silas)</summary>
@@ -271,7 +307,7 @@ export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; org
                 ),
               })
             }
-            className="rounded-lg bg-violet-500/20 px-2.5 py-1 text-[11px] font-bold text-violet-200 hover:bg-violet-500/30"
+            className="rounded-lg bg-violet-500/20 px-2.5 py-1 text-[11px] font-bold text-violet-700 dark:text-violet-200 hover:bg-violet-500/30"
           >
             Save rules
           </button>

@@ -459,6 +459,7 @@ def _pack_client_row_for_llm(
         "\n=== GENERATION_BRIEF (hooks, angles, captions) ===\n" + (gen_brief or "(empty)"),
         "\n=== VOICE_BRIEF (how they speak — scripts must match) ===\n" + (voice_brief or "(empty)"),
         "\n=== ANALYSIS_BRIEF (audience calibration) ===\n" + (analysis_brief or "(empty)"),
+        format_learning_block(client_row.get("_learning")),
         "\n=== ICP (JSON) ===\n" + json.dumps(icp, ensure_ascii=False, default=str)[:12_000],
         "\n=== NICHE_CONFIG (JSON) ===\n" + json.dumps(nc, ensure_ascii=False, default=str)[:12_000],
         "\n=== PRODUCTS (JSON) ===\n" + json.dumps(products, ensure_ascii=False, default=str)[:8000],
@@ -476,10 +477,7 @@ def _pack_client_row_for_llm(
     )
     if cta_block:
         parts.append(cta_block)
-    learning_block = format_learning_block(client_row.get("_learning"))
-    if learning_block:
-        parts.append(learning_block)
-    return "\n".join(parts)
+    return "\n".join(p for p in parts if p)
 
 
 def _caption_text_from_reel_meta(reel_meta: Optional[Dict[str, Any]], *, max_chars: int = 8000) -> str:
@@ -2184,7 +2182,8 @@ def run_story_variants(
         settings.openrouter_model,
         system=_SYSTEM_JSON,
         user=user,
-        max_tokens=4096,
+        # High reasoning tokens count toward the cap on Gemini — leave room for the answer.
+        max_tokens=16_384,
         temperature=0.6,
         reasoning_effort="high",
     )

@@ -4,6 +4,7 @@ import { resolveAppearance } from './appearance';
 import { blockEntranceStyle } from './animations';
 import { activeCaptionLayers, beatFontScaleMult } from './activeLayers';
 import { resolveLayoutPx } from './layout';
+import { BAR_SIDE_PAD } from './framing';
 
 /**
  * Text for the black bars of framed layouts (letterbox / 4:5). Templates position text
@@ -37,8 +38,8 @@ export default function BarText({
         flexDirection: 'column',
         justifyContent: 'center',
         alignItems: 'center',
-        paddingLeft: layout.paddingPx,
-        paddingRight: layout.paddingPx,
+        paddingLeft: Math.max(layout.paddingPx, BAR_SIDE_PAD),
+        paddingRight: Math.max(layout.paddingPx, BAR_SIDE_PAD),
         paddingTop: padY,
         paddingBottom: padY,
         boxSizing: 'border-box',
@@ -57,7 +58,7 @@ export default function BarText({
             key={layer.key}
             style={{
               margin: 0,
-              maxWidth: layout.innerWidth,
+              maxWidth: 1080 - 2 * Math.max(layout.paddingPx, BAR_SIDE_PAD),
               fontSize,
               fontWeight: 800,
               lineHeight: 1.15,

@@ -61,3 +61,23 @@ def test_one_reel_per_post_and_one_post_per_reel():
         [_r("srl_a", "2026-11-03T08:00:00+00:00")],
     )
     assert len(links) == 1
+
+
+def test_handle_wildcards_are_escaped():
+    calls = {}
+
+    class Q:
+        def __getattr__(self, name):
+            def f(*a, **k):
+                calls.setdefault(name, []).append(a)
+                return self
+            return f
+
+    class SB:
+        def table(self, _):
+            return Q()
+
+    from services.post_reel_linking import own_reels_query
+
+    own_reels_query(SB(), "cli_x", "@Conny_G%")
+    assert calls["ilike"] == [("account_username", "conny\\_g\\%")]

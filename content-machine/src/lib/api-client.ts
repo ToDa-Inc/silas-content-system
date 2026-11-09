@@ -2438,7 +2438,7 @@ export function patchReelDiagnostic(
 }
 
 export function analyzeOwnReel(clientSlug: string, orgSlug: string, reelId: string) {
-  return learningRequest<{ queued: boolean }>(
+  return learningRequest<{ queued: boolean; already_pending?: boolean }>(
     orgSlug,
     `/clients/${encodeURIComponent(clientSlug)}/learning/diagnostics/${encodeURIComponent(reelId)}/analyze`,
     { method: "POST" },

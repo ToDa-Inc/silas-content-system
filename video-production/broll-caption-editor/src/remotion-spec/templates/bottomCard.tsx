@@ -8,9 +8,9 @@ import { resolveLayoutPx } from '../layout';
 import { cardBoldOutlineCaptionStyle, isBoldOutlineLayer } from '../textTreatment';
 import { activeCaptionLayers, beatFontScaleMult, type ActiveCaptionLayer } from '../activeLayers';
 
-export default function BottomCardTemplate({ spec, frame, fps }: VideoSpecWithTimeline) {
+export default function BottomCardTemplate({ spec, frame, fps, canvasH }: VideoSpecWithTimeline) {
   const sec = frame / fps;
-  const layout = resolveLayoutPx(spec);
+  const layout = resolveLayoutPx(spec, canvasH);
   const layers = activeCaptionLayers(spec, sec);
   const baseSize = 60;
 

@@ -46,12 +46,20 @@ DIAGNOSE_LOOKBACK_DAYS = 120
 MAX_AUTO_ANALYSES_PER_RUN = 5
 
 
+# Counts that are used as whole numbers (and must be ≥ 1 to make sense).
+_INT_THRESHOLDS = ("min_age_days", "median_window", "min_reels")
+
+
 def resolve_thresholds(raw: Any) -> Dict[str, float]:
     out = dict(DEFAULT_THRESHOLDS)
     if isinstance(raw, dict):
         for k, v in raw.items():
-            if k in out and isinstance(v, (int, float)) and v > 0:
+            if k in out and isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
                 out[k] = float(v)
+    for k in _INT_THRESHOLDS:
+        out[k] = float(max(1, round(out[k])))
+    # The median needs at least as many reels in the window as the minimum asks for.
+    out["median_window"] = max(out["median_window"], out["min_reels"])
     return out
 
 
@@ -135,6 +143,31 @@ def diagnose_reel(reel: Dict[str, Any], norm: Dict[str, Any], th: Dict[str, floa
     }
 
 
+def _learning_analyses_last_24h(supabase, client_id: str, now: datetime) -> int:
+    rows = (
+        supabase.table("background_jobs")
+        .select("payload")
+        .eq("client_id", client_id)
+        .eq("job_type", "reel_analyze_url")
+        .gte("created_at", (now - timedelta(hours=24)).isoformat())
+        .execute()
+    ).data or []
+    return sum(1 for r in rows if (r.get("payload") or {}).get("source") == "learning")
+
+
+def analysis_job_pending(supabase, client_id: str, post_url: str) -> bool:
+    """True when a reel_analyze_url job for this URL is already queued or running."""
+    rows = (
+        supabase.table("background_jobs")
+        .select("payload")
+        .eq("client_id", client_id)
+        .eq("job_type", "reel_analyze_url")
+        .in_("status", ["queued", "running"])
+        .execute()
+    ).data or []
+    return any((r.get("payload") or {}).get("url") == post_url for r in rows)
+
+
 def enqueue_reel_analysis(supabase, *, org_id: str, client_id: str, post_url: str) -> None:
     supabase.table("background_jobs").insert(
         {
@@ -153,7 +186,7 @@ def recompute_reel_diagnostics(supabase, client_id: str, *, now: Optional[dateti
     now = now or datetime.now(timezone.utc)
     crow = (
         supabase.table("clients")
-        .select("org_id,instagram_handle,learning_thresholds")
+        .select("org_id,instagram_handle,learning_thresholds,learning_enabled")
         .eq("id", client_id)
         .limit(1)
         .execute()
@@ -221,7 +254,12 @@ def recompute_reel_diagnostics(supabase, client_id: str, *, now: Optional[dateti
         supabase.table("reel_diagnostics").upsert(rows[i : i + 200], on_conflict="reel_id").execute()
 
     analyzed = 0
-    if to_analyze and client.get("org_id"):
+    # Paid video analyses: only when the client uses learning, and at most
+    # MAX_AUTO_ANALYSES_PER_RUN per client per day across every trigger.
+    budget = 0
+    if to_analyze and client.get("org_id") and client.get("learning_enabled") is not False:
+        budget = max(0, MAX_AUTO_ANALYSES_PER_RUN - _learning_analyses_last_24h(supabase, client_id, now))
+    if to_analyze and budget > 0:
         done_urls = {
             str(a["post_url"])
             for a in (
@@ -236,7 +274,7 @@ def recompute_reel_diagnostics(supabase, client_id: str, *, now: Optional[dateti
         for t in to_analyze:
             url = t["reel"]["post_url"]
             if url not in done_urls:
-                if analyzed >= MAX_AUTO_ANALYSES_PER_RUN:
+                if analyzed >= budget:
                     continue
                 enqueue_reel_analysis(supabase, org_id=str(client["org_id"]), client_id=client_id, post_url=url)
                 analyzed += 1

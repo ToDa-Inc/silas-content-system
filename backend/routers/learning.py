@@ -15,6 +15,7 @@ from services.post_reel_linking import own_reels_query
 from services.reel_diagnostics import (
     BUCKETS,
     DEFAULT_THRESHOLDS,
+    analysis_job_pending,
     enqueue_reel_analysis,
     recompute_reel_diagnostics,
     resolve_thresholds,
@@ -189,7 +190,7 @@ def list_diagnostics(
     slug: str,
     client_id: Annotated[str, Depends(resolve_client_id)],
     supabase: Annotated[Client, Depends(get_supabase)],
-    limit: int = Query(60, ge=1, le=200),
+    limit: int = Query(60, ge=1, le=100),
 ) -> Dict[str, Any]:
     """Own reels with their bucket (override wins), reason, linked post and short AI read."""
     _ = slug
@@ -200,20 +201,25 @@ def list_diagnostics(
         .limit(1)
         .execute()
     ).data[0]
-    diags = (
-        supabase.table("reel_diagnostics")
-        .select("reel_id,rule_bucket,override_bucket,excluded,reason,metrics,computed_at")
-        .eq("client_id", client_id)
-        .execute()
-    ).data or []
-    by_reel = {str(d["reel_id"]): d for d in diags}
-    reels = (
+    # Newest own reels first (bounded), then only their diagnostics — never an id list that
+    # grows with the client's whole history.
+    recent = (
         own_reels_query(supabase, client_id, client.get("instagram_handle"))
-        .in_("id", list(by_reel.keys()) or ["-"])
         .order("posted_at", desc=True)
-        .limit(limit)
+        .limit(limit * 2)
         .execute()
     ).data or []
+    by_reel: Dict[str, Dict[str, Any]] = {}
+    if recent:
+        for d in (
+            supabase.table("reel_diagnostics")
+            .select("reel_id,rule_bucket,override_bucket,excluded,reason,metrics,computed_at")
+            .eq("client_id", client_id)
+            .in_("reel_id", [r["id"] for r in recent])
+            .execute()
+        ).data or []:
+            by_reel[str(d["reel_id"])] = d
+    reels = [r for r in recent if str(r["id"]) in by_reel][:limit]
     urls = [r["post_url"] for r in reels]
     analyses: Dict[str, Dict[str, Any]] = {}
     if urls:
@@ -333,9 +339,12 @@ def analyze_reel_on_demand(
     ).data
     if not reel:
         raise HTTPException(status_code=404, detail="Reel is not one of this client's own reels")
+    post_url = reel[0]["post_url"]
+    if analysis_job_pending(supabase, client_id, post_url):
+        return {"queued": False, "already_pending": True}
     org_id = supabase.table("clients").select("org_id").eq("id", client_id).limit(1).execute().data[0]["org_id"]
-    enqueue_reel_analysis(supabase, org_id=str(org_id), client_id=client_id, post_url=reel[0]["post_url"])
-    return {"queued": True}
+    enqueue_reel_analysis(supabase, org_id=str(org_id), client_id=client_id, post_url=post_url)
+    return {"queued": True, "already_pending": False}
 
 
 # ── Settings ─────────────────────────────────────────────────────────────────

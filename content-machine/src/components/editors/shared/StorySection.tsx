@@ -6,6 +6,13 @@ import { Copy, Loader2 } from "lucide-react";
  * Pure leaf: the host saves edits (`onSave`) and wires `regenInline` to
  * `<RegenInline scope="story">`, same as CaptionSection.
  */
+/** Grow a textarea to fit its text so no line is cut off (narrow screens wrap more). */
+function autoGrow(el: HTMLTextAreaElement | null) {
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = `${el.scrollHeight + 2}px`;
+}
+
 export function StorySection({
   stories,
   onCopy,
@@ -19,12 +26,16 @@ export function StorySection({
 }) {
   const [draft, setDraft] = useState<string[]>(stories);
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    setDraft(stories);
-  }, [stories]);
+  // Keyed on content, not array identity: other saves on the Create screen replace the session
+  // object but leave the stories as they are, so unsaved edits survive them. The key only
+  // changes when the stories themselves change (saved or regenerated) — then the draft follows.
+  const storiesKey = JSON.stringify(stories);
 
   const dirty = draft.length !== stories.length || draft.some((s, i) => s !== stories[i]);
+
+  useEffect(() => {
+    setDraft(JSON.parse(storiesKey) as string[]);
+  }, [storiesKey]);
 
   return (
     <div className="glass rounded-2xl border border-app-divider/80 p-5 md:p-6">
@@ -43,7 +54,7 @@ export function StorySection({
                 setSaving(false);
               }
             }}
-            className="inline-flex items-center gap-1 rounded-lg bg-violet-500/20 px-2.5 py-1 text-[11px] font-bold text-violet-200 hover:bg-violet-500/30 disabled:opacity-40"
+            className="inline-flex items-center gap-1 rounded-lg bg-violet-500/20 px-2.5 py-1 text-[11px] font-bold text-violet-700 dark:text-violet-200 hover:bg-violet-500/30 disabled:opacity-40"
           >
             {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : null} Save
           </button>
@@ -58,11 +69,13 @@ export function StorySection({
               <textarea
                 value={text}
                 rows={2}
+                ref={(el) => autoGrow(el)}
+                onInput={(e) => autoGrow(e.currentTarget)}
                 aria-label={`Story text ${i + 1}`}
                 onChange={(e) =>
                   setDraft((prev) => prev.map((s, j) => (j === i ? e.target.value : s)))
                 }
-                className="glass-inset min-w-0 flex-1 resize-y rounded-lg px-2.5 py-1.5 text-sm text-app-fg focus:outline-none focus:ring-1 focus:ring-amber-500/35"
+                className="glass-inset min-w-0 flex-1 resize-none overflow-hidden rounded-lg px-2.5 py-1.5 text-sm text-app-fg focus:outline-none focus:ring-1 focus:ring-amber-500/35"
               />
               <button
                 type="button"

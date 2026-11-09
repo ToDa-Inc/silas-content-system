@@ -350,7 +350,9 @@ def _digest_summaries_for_auto_idea(summaries: List[dict]) -> List[dict]:
     return out
 
 
-def _load_client_for_generation(supabase: Client, client_id: str) -> Dict[str, Any]:
+def _load_client_for_generation(
+    supabase: Client, client_id: str, *, with_learning: bool = True
+) -> Dict[str, Any]:
     res = (
         supabase.table("clients")
         .select(
@@ -367,6 +369,9 @@ def _load_client_for_generation(supabase: Client, client_id: str) -> Dict[str, A
         row["_niche_benchmarks"] = compute_niche_benchmarks(supabase, client_id)
     except Exception:
         row["_niche_benchmarks"] = {}
+    if not with_learning:
+        row["_learning"] = None
+        return row
     try:
         row["_learning"] = build_learning_context(supabase, client_id)
     except Exception:
@@ -390,7 +395,7 @@ def list_format_digests(
 ) -> list[dict]:
     _ = slug
     if refresh and settings.openrouter_api_key:
-        client_row = _load_client_for_generation(supabase, client_id)
+        client_row = _load_client_for_generation(supabase, client_id, with_learning=False)
         ensure_format_digests_fresh(settings, supabase, client_id, client_row=client_row)
     return list_format_digest_summaries(supabase, client_id)
 

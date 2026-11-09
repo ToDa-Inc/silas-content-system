@@ -57,9 +57,9 @@ function stackedCumulativeRows(spec: VideoSpecWithTimeline["spec"], sec: number)
   return [...layers, ...capped];
 }
 
-export default function StackedCardsTemplate({ spec, frame, fps }: VideoSpecWithTimeline) {
+export default function StackedCardsTemplate({ spec, frame, fps, canvasH }: VideoSpecWithTimeline) {
   const sec = frame / fps;
-  const layout = resolveLayoutPx(spec);
+  const layout = resolveLayoutPx(spec, canvasH);
 
   const rows = stackedCumulativeRows(spec, sec);
 
@@ -75,8 +75,8 @@ export default function StackedCardsTemplate({ spec, frame, fps }: VideoSpecWith
     anchor === "top"
       ? padPx
       : anchor === "center"
-        ? Math.round(COMP_H * 0.34)
-        : Math.round(COMP_H * 0.54);
+        ? Math.round((canvasH ?? COMP_H) * 0.34)
+        : Math.round((canvasH ?? COMP_H) * 0.54);
 
   const card = (row: ActiveCaptionLayer) => {
     const layerTheme = mergeLayerAppearance(spec, row.kind === "block" ? row.appearance : null);

@@ -90,7 +90,8 @@ def own_reels_query(supabase, client_id: str, handle: Optional[str], columns: st
     )
     h = (handle or "").strip().lstrip("@").lower()
     if h:
-        q = q.ilike("account_username", h)
+        # Escape LIKE wildcards: Instagram handles often contain "_".
+        q = q.ilike("account_username", re.sub(r"([\\%_])", r"\\\1", h))
     return q
 
 

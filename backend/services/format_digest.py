@@ -284,6 +284,9 @@ def compute_format_digests(
     except Exception:
         client_row["_niche_benchmarks"] = {}
 
+    # Niche pattern docs describe what works in the niche; the client's own learning block stays out
+    # so digests don't depend on which endpoint happened to trigger the rebuild.
+    client_row.pop("_learning", None)
     client_brief = _pack_client_row_for_llm(client_row)
     nb = client_row.get("_niche_benchmarks") if isinstance(client_row.get("_niche_benchmarks"), dict) else {}
 
