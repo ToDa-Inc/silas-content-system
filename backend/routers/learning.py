@@ -1,4 +1,4 @@
-"""Learning loop API: post ↔ reel linking (diagnostics, votes and settings build on this router)."""
+"""Learning loop API: post ↔ reel linking, reel diagnostics, learning settings, hook/angle votes."""
 
 from __future__ import annotations
 
@@ -12,6 +12,13 @@ from supabase import Client
 from core.database import get_supabase
 from core.deps import resolve_client_id
 from services.post_reel_linking import own_reels_query
+from services.reel_diagnostics import (
+    BUCKETS,
+    DEFAULT_THRESHOLDS,
+    enqueue_reel_analysis,
+    recompute_reel_diagnostics,
+    resolve_thresholds,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["learning"])
 
@@ -173,3 +180,255 @@ def published_reel_summary(
         "snapshots": snaps,
         "diagnostic": diag[0] if diag else None,
     }
+
+
+# ── Diagnostics ──────────────────────────────────────────────────────────────
+
+@router.get("/clients/{slug}/learning/diagnostics")
+def list_diagnostics(
+    slug: str,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    limit: int = Query(60, ge=1, le=200),
+) -> Dict[str, Any]:
+    """Own reels with their bucket (override wins), reason, linked post and short AI read."""
+    _ = slug
+    client = (
+        supabase.table("clients")
+        .select("instagram_handle,learning_enabled,learning_thresholds")
+        .eq("id", client_id)
+        .limit(1)
+        .execute()
+    ).data[0]
+    diags = (
+        supabase.table("reel_diagnostics")
+        .select("reel_id,rule_bucket,override_bucket,excluded,reason,metrics,computed_at")
+        .eq("client_id", client_id)
+        .execute()
+    ).data or []
+    by_reel = {str(d["reel_id"]): d for d in diags}
+    reels = (
+        own_reels_query(supabase, client_id, client.get("instagram_handle"))
+        .in_("id", list(by_reel.keys()) or ["-"])
+        .order("posted_at", desc=True)
+        .limit(limit)
+        .execute()
+    ).data or []
+    urls = [r["post_url"] for r in reels]
+    analyses: Dict[str, Dict[str, Any]] = {}
+    if urls:
+        for a in (
+            supabase.table("reel_analyses")
+            .select("post_url,why_it_worked,hook_type,analyzed_at")
+            .eq("client_id", client_id)
+            .in_("post_url", urls)
+            .order("analyzed_at", desc=True)
+            .execute()
+        ).data or []:
+            analyses.setdefault(str(a["post_url"]), a)
+    linked: Dict[str, str] = {}
+    if reels:
+        for row in (
+            supabase.table("generation_sessions")
+            .select("id,published_reel_id")
+            .eq("client_id", client_id)
+            .in_("published_reel_id", [r["id"] for r in reels])
+            .execute()
+        ).data or []:
+            linked[str(row["published_reel_id"])] = str(row["id"])
+    items = []
+    for r in reels:
+        d = by_reel[str(r["id"])]
+        a = analyses.get(str(r["post_url"]))
+        items.append(
+            {
+                "reel_id": r["id"],
+                "post_url": r["post_url"],
+                "posted_at": r.get("posted_at"),
+                "caption": (r.get("caption") or "")[:120],
+                "views": r.get("views"),
+                "bucket": d.get("override_bucket") or d["rule_bucket"],
+                "rule_bucket": d["rule_bucket"],
+                "override_bucket": d.get("override_bucket"),
+                "excluded": bool(d.get("excluded")),
+                "reason": d.get("reason") or "",
+                "computed_at": d.get("computed_at"),
+                "linked_session_id": linked.get(str(r["id"])),
+                "analysis": {"why_it_worked": a.get("why_it_worked"), "hook_type": a.get("hook_type")} if a else None,
+            }
+        )
+    return {
+        "learning_enabled": bool(client.get("learning_enabled", True)),
+        "thresholds": resolve_thresholds(client.get("learning_thresholds")),
+        "default_thresholds": DEFAULT_THRESHOLDS,
+        "items": items,
+    }
+
+
+class DiagnosticPatch(BaseModel):
+    override_bucket: Optional[str] = None
+    clear_override: bool = False
+    excluded: Optional[bool] = None
+
+
+@router.patch("/clients/{slug}/learning/diagnostics/{reel_id}")
+def patch_diagnostic(
+    slug: str,
+    reel_id: str,
+    body: DiagnosticPatch,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+) -> Dict[str, Any]:
+    """Human judgement: override the bucket (always wins) and/or exclude the reel from learning."""
+    _ = slug
+    patch: Dict[str, Any] = {}
+    if body.clear_override:
+        patch["override_bucket"] = None
+        patch["overridden_at"] = None
+    elif body.override_bucket is not None:
+        if body.override_bucket not in BUCKETS:
+            raise HTTPException(status_code=400, detail=f"override_bucket must be one of {', '.join(BUCKETS)}")
+        patch["override_bucket"] = body.override_bucket
+        patch["overridden_at"] = _now()
+    if body.excluded is not None:
+        patch["excluded"] = body.excluded
+    if not patch:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    res = (
+        supabase.table("reel_diagnostics")
+        .update(patch)
+        .eq("reel_id", reel_id)
+        .eq("client_id", client_id)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(status_code=404, detail="No diagnostic for this reel")
+    return res.data[0]
+
+
+@router.post("/clients/{slug}/learning/diagnostics/recompute")
+def recompute_diagnostics(
+    slug: str,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+) -> Dict[str, Any]:
+    _ = slug
+    return recompute_reel_diagnostics(supabase, client_id)
+
+
+@router.post("/clients/{slug}/learning/diagnostics/{reel_id}/analyze")
+def analyze_reel_on_demand(
+    slug: str,
+    reel_id: str,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+) -> Dict[str, Any]:
+    """Queue the AI reel analysis (hook type, why it worked) for one own reel."""
+    _ = slug
+    reel = (
+        own_reels_query(supabase, client_id, _client_handle(supabase, client_id))
+        .eq("id", reel_id)
+        .limit(1)
+        .execute()
+    ).data
+    if not reel:
+        raise HTTPException(status_code=404, detail="Reel is not one of this client's own reels")
+    org_id = supabase.table("clients").select("org_id").eq("id", client_id).limit(1).execute().data[0]["org_id"]
+    enqueue_reel_analysis(supabase, org_id=str(org_id), client_id=client_id, post_url=reel[0]["post_url"])
+    return {"queued": True}
+
+
+# ── Settings ─────────────────────────────────────────────────────────────────
+
+
+class LearningSettingsBody(BaseModel):
+    learning_enabled: Optional[bool] = None
+    thresholds: Optional[Dict[str, float]] = None
+
+
+@router.put("/clients/{slug}/learning/settings")
+def put_learning_settings(
+    slug: str,
+    body: LearningSettingsBody,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+) -> Dict[str, Any]:
+    """'Learn from results' switch and threshold overrides ({} resets to defaults)."""
+    _ = slug
+    patch: Dict[str, Any] = {}
+    if body.learning_enabled is not None:
+        patch["learning_enabled"] = body.learning_enabled
+    if body.thresholds is not None:
+        clean = {k: float(v) for k, v in body.thresholds.items() if k in DEFAULT_THRESHOLDS and v > 0}
+        patch["learning_thresholds"] = clean
+    if not patch:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    row = supabase.table("clients").update(patch).eq("id", client_id).execute().data[0]
+    return {
+        "learning_enabled": bool(row.get("learning_enabled", True)),
+        "thresholds": resolve_thresholds(row.get("learning_thresholds")),
+    }
+
+
+# ── Votes on hooks / angles ──────────────────────────────────────────────────
+
+
+def vote_text_key(text: str) -> str:
+    return " ".join((text or "").lower().split())
+
+
+class VoteBody(BaseModel):
+    session_id: Optional[str] = None
+    kind: str
+    text: str
+    vote: int  # 1 = up, -1 = down, 0 = clear
+
+
+@router.put("/clients/{slug}/learning/votes")
+def put_vote(
+    slug: str,
+    body: VoteBody,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+) -> Dict[str, Any]:
+    _ = slug
+    if body.kind not in ("hook", "angle"):
+        raise HTTPException(status_code=400, detail="kind must be hook or angle")
+    if body.vote not in (-1, 0, 1):
+        raise HTTPException(status_code=400, detail="vote must be -1, 0 or 1")
+    key = vote_text_key(body.text)
+    if not key:
+        raise HTTPException(status_code=400, detail="text is required")
+    if body.vote == 0:
+        supabase.table("hook_votes").delete().eq("client_id", client_id).eq("kind", body.kind).eq(
+            "text_key", key
+        ).execute()
+        return {"kind": body.kind, "text": body.text, "vote": 0}
+    supabase.table("hook_votes").upsert(
+        {
+            "client_id": client_id,
+            "session_id": body.session_id,
+            "kind": body.kind,
+            "text": body.text.strip()[:2000],
+            "text_key": key[:2000],
+            "vote": body.vote,
+            "updated_at": _now(),
+        },
+        on_conflict="client_id,kind,text_key",
+    ).execute()
+    return {"kind": body.kind, "text": body.text, "vote": body.vote}
+
+
+@router.get("/clients/{slug}/learning/votes")
+def list_votes(
+    slug: str,
+    client_id: Annotated[str, Depends(resolve_client_id)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+    kind: Optional[str] = Query(None),
+) -> List[Dict[str, Any]]:
+    """All votes for this client (the UI matches them to hooks / angles by text)."""
+    _ = slug
+    q = supabase.table("hook_votes").select("kind,text,text_key,vote,updated_at").eq("client_id", client_id)
+    if kind:
+        q = q.eq("kind", kind)
+    return q.order("updated_at", desc=True).limit(500).execute().data or []

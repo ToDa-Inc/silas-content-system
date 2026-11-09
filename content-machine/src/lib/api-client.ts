@@ -2377,3 +2377,90 @@ export function setPublishedReel(clientSlug: string, orgSlug: string, sessionId:
     { method: "PUT", body: { reel_id: reelId } },
   );
 }
+
+export type HookVote = { kind: "hook" | "angle"; text: string; text_key: string; vote: number };
+
+export function fetchVotes(clientSlug: string, orgSlug: string) {
+  return learningRequest<HookVote[]>(orgSlug, `/clients/${encodeURIComponent(clientSlug)}/learning/votes`);
+}
+
+export function putVote(
+  clientSlug: string,
+  orgSlug: string,
+  body: { session_id?: string | null; kind: "hook" | "angle"; text: string; vote: -1 | 0 | 1 },
+) {
+  return learningRequest<{ vote: number }>(orgSlug, `/clients/${encodeURIComponent(clientSlug)}/learning/votes`, {
+    method: "PUT",
+    body,
+  });
+}
+
+export type LearningBucket = "scale" | "adjust_hook" | "adjust_cta" | "retire" | "keep";
+
+export type ReelDiagnosticItem = {
+  reel_id: string;
+  post_url: string;
+  posted_at: string | null;
+  caption: string;
+  views: number | null;
+  bucket: LearningBucket;
+  rule_bucket: LearningBucket;
+  override_bucket: LearningBucket | null;
+  excluded: boolean;
+  reason: string;
+  computed_at: string | null;
+  linked_session_id: string | null;
+  analysis: { why_it_worked: string | null; hook_type: string | null } | null;
+};
+
+export type LearningDiagnostics = {
+  learning_enabled: boolean;
+  thresholds: Record<string, number>;
+  default_thresholds: Record<string, number>;
+  items: ReelDiagnosticItem[];
+};
+
+export function fetchLearningDiagnostics(clientSlug: string, orgSlug: string) {
+  return learningRequest<LearningDiagnostics>(orgSlug, `/clients/${encodeURIComponent(clientSlug)}/learning/diagnostics`);
+}
+
+export function patchReelDiagnostic(
+  clientSlug: string,
+  orgSlug: string,
+  reelId: string,
+  body: { override_bucket?: LearningBucket; clear_override?: boolean; excluded?: boolean },
+) {
+  return learningRequest<Record<string, unknown>>(
+    orgSlug,
+    `/clients/${encodeURIComponent(clientSlug)}/learning/diagnostics/${encodeURIComponent(reelId)}`,
+    { method: "PATCH", body },
+  );
+}
+
+export function analyzeOwnReel(clientSlug: string, orgSlug: string, reelId: string) {
+  return learningRequest<{ queued: boolean }>(
+    orgSlug,
+    `/clients/${encodeURIComponent(clientSlug)}/learning/diagnostics/${encodeURIComponent(reelId)}/analyze`,
+    { method: "POST" },
+  );
+}
+
+export function recomputeLearningDiagnostics(clientSlug: string, orgSlug: string) {
+  return learningRequest<{ status: string; diagnosed?: number; reels?: number; min_reels?: number }>(
+    orgSlug,
+    `/clients/${encodeURIComponent(clientSlug)}/learning/diagnostics/recompute`,
+    { method: "POST" },
+  );
+}
+
+export function putLearningSettings(
+  clientSlug: string,
+  orgSlug: string,
+  body: { learning_enabled?: boolean; thresholds?: Record<string, number> },
+) {
+  return learningRequest<{ learning_enabled: boolean; thresholds: Record<string, number> }>(
+    orgSlug,
+    `/clients/${encodeURIComponent(clientSlug)}/learning/settings`,
+    { method: "PUT", body },
+  );
+}

@@ -57,6 +57,7 @@ type Props = {
   hashtags: string[];
   captionFull: string;
   storySection: ReactNode;
+  hookActions?: (text: string) => ReactNode;
 };
 
 export function TalkingHeadEditor({
@@ -91,6 +92,7 @@ export function TalkingHeadEditor({
   hashtags,
   captionFull,
   storySection,
+  hookActions,
 }: Props) {
   return (
     <div className="space-y-4">
@@ -172,6 +174,7 @@ export function TalkingHeadEditor({
         hooks={hooks}
         regenHooks={(fb) => onRegenSection("hooks", fb)}
         busy={regenBusyScope === "hooks"}
+        hookActions={hookActions}
       />
     </div>
   );

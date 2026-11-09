@@ -33,6 +33,7 @@ from models.generation import (
     RegenerateCarouselSlideBody,
 )
 from routers.generation import _load_session, _now_iso, _row_to_out
+from services.learning_context import build_learning_context
 from services.content_generation import get_chosen_angle, run_carousel_slide_texts
 from services.format_classifier import canonicalize_stored_format_key
 from services.image_generation import (
@@ -969,7 +970,13 @@ def _client_row_for_session(supabase: Client, client_id: str) -> Dict[str, Any]:
         .limit(1)
         .execute()
     )
-    return dict(cres.data[0]) if cres.data else {}
+    row = dict(cres.data[0]) if cres.data else {}
+    if row:
+        try:
+            row["_learning"] = build_learning_context(supabase, client_id)
+        except Exception:
+            logger.warning("build_learning_context failed for %s", client_id, exc_info=True)
+    return row
 
 
 def _template_slides_from_row(row: Dict[str, Any]) -> List[Dict[str, Any]]:

@@ -8,6 +8,7 @@ import re
 from typing import Any, Dict, List, Literal, Optional, Sequence
 
 from core.config import Settings
+from services.learning_context import format_learning_block
 from services.client_dna_compile import _context_texts_only
 from services.format_classifier import canonicalize_stored_format_key
 from services.openrouter import chat_json_completion, chat_text_completion
@@ -475,6 +476,9 @@ def _pack_client_row_for_llm(
     )
     if cta_block:
         parts.append(cta_block)
+    learning_block = format_learning_block(client_row.get("_learning"))
+    if learning_block:
+        parts.append(learning_block)
     return "\n".join(parts)
 
 

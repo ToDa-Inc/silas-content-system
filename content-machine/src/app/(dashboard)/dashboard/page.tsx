@@ -8,6 +8,7 @@ import { CompetitorWins, FreshFromNiche } from "./dashboard-daily-lane";
 import { DashboardKpiStrip } from "./dashboard-kpi-strip";
 import { DashboardUpdateReels } from "./dashboard-update-reels";
 import { OwnReelMetricsDashboard } from "./own-reel-metrics-dashboard";
+import { LearningPanel } from "./learning-panel";
 
 type DashboardSearchParams = { focusReel?: string | string[] };
 
@@ -69,6 +70,11 @@ export default async function DashboardPage({
             orgSlug={orgSlug}
             focusReelId={focusReel || undefined}
           />
+          {!syncDisabled ? (
+            <div className="mt-6">
+              <LearningPanel clientSlug={clientSlug} orgSlug={orgSlug} />
+            </div>
+          ) : null}
         </div>
         <div className="flex flex-col gap-4 lg:col-span-1">
           <FreshFromNiche

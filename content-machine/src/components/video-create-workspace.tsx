@@ -46,6 +46,8 @@ import {
 import { CaptionSection } from "@/components/editors/shared/CaptionSection";
 import { StorySection } from "@/components/editors/shared/StorySection";
 import { PublishedReelSection } from "@/components/editors/shared/PublishedReelSection";
+import { VoteButtons, useVotes } from "@/components/editors/shared/VoteButtons";
+import { LearningTraceLine } from "@/components/editors/shared/LearningTraceLine";
 import { CoverTextLayerEditor } from "@/components/editors/cover/CoverTextLayerEditor";
 import { BackgroundPicker } from "@/components/editors/video/BackgroundPicker";
 import { CarouselTextLayerEditor } from "@/components/editors/carousel/CarouselTextLayerEditor";
@@ -1148,6 +1150,21 @@ export function VideoCreateWorkspace({
   );
 
   const showError = useCallback((message: string) => show(message, "error"), [show]);
+  const { vote: castVote, current: currentVote } = useVotes(clientSlug, orgSlug, session?.id);
+  const hookActions = useCallback(
+    (text: string) => (
+      <VoteButtons
+        value={currentVote("hook", text)}
+        label="hook"
+        onVote={(v) =>
+          void castVote("hook", text, v).then((err) => {
+            if (err) show(err, "error");
+          })
+        }
+      />
+    ),
+    [castVote, currentVote, show],
+  );
 
   const saveStories = useCallback(
     async (next: string[]): Promise<boolean> => {
@@ -2710,6 +2727,7 @@ export function VideoCreateWorkspace({
   );
   const postExtras = (
     <>
+      <LearningTraceLine trace={session.learning_trace} />
       {storySection}
       <PublishedReelSection
         clientSlug={clientSlug.trim()}
@@ -2771,6 +2789,7 @@ export function VideoCreateWorkspace({
         hashtags={session.hashtags ?? []}
         captionFull={captionFull}
         storySection={postExtras}
+        hookActions={hookActions}
       />
     );
   }
@@ -3054,6 +3073,7 @@ export function VideoCreateWorkspace({
         {postExtras}
 
         <AiContextSection
+          hookActions={hookActions}
           hooks={hooks}
           regenHooks={(fb) => onRegenSection("hooks", fb)}
           busy={regenBusyScope === "hooks"}
@@ -3079,6 +3099,7 @@ export function VideoCreateWorkspace({
         </div>
         <div className="mt-4">
           <AiContextSection
+            hookActions={hookActions}
             hooks={hooks}
             regenHooks={(fb) => onRegenSection("hooks", fb)}
             busy={regenBusyScope === "hooks"}
@@ -4356,6 +4377,7 @@ export function VideoCreateWorkspace({
       {postExtras}
 
       <AiContextSection
+        hookActions={hookActions}
         hooks={hooks}
         regenHooks={(fb) => onRegenSection("hooks", fb)}
         busy={regenBusyScope === "hooks"}

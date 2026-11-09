@@ -19,6 +19,7 @@ from core.database import get_supabase_for_settings
 from services.apify import enrich_reel_urls_direct
 from services.instagram_post_url import canonical_instagram_post_url
 from services.reel_thumbnail_url import reel_thumbnail_url_from_apify_item
+from services.reel_diagnostics import recompute_reel_diagnostics
 
 DEFAULT_MAX_AGE_DAYS = 14
 DEFAULT_BATCH_LIMIT = 500  # max reels refreshed per run (cost guard)
@@ -246,6 +247,12 @@ def run_scraped_reels_refresh(settings: Settings, job: Dict[str, Any]) -> None:
     progress["unchanged"] = unchanged
     progress["snapshots_inserted"] = len(snapshots)
     progress["estimated_cost_usd"] = round(len(items) * _COST_ENRICH_PER_RESULT_USD, 4)
+    if client_id:
+        try:
+            diag = recompute_reel_diagnostics(supabase, str(client_id))
+            progress["diagnostics"] = {k: diag.get(k) for k in ("status", "diagnosed", "counts", "analyses_queued")}
+        except Exception as e:  # diagnostics must never fail the refresh
+            progress["diagnostics"] = {"status": "error", "error": str(e)[:300]}
     _complete(supabase, job_id, progress)
 
 

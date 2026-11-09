@@ -8,6 +8,7 @@ import { ReelThumbnail } from "@/components/reel-thumbnail";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useToast } from "@/components/ui/toast-provider";
 import { VideoCreateWorkspace } from "@/components/video-create-workspace";
+import { VoteButtons, useVotes } from "@/components/editors/shared/VoteButtons";
 import type { ClientCarouselTemplate, ClientCoverTemplate, ClientCta, ScrapedReelRow } from "@/lib/api";
 import { formatCommentViewPct } from "@/lib/reel-comment-view";
 import { generateSessionHref } from "@/lib/generate-session-url";
@@ -312,6 +313,13 @@ function CoverTemplatePickerEmpty() {
       to reuse cover examples from Media.
     </div>
   );
+}
+
+/** Text stored for an angle vote: title plus situation, so the prompt sees what the angle was. */
+function angleVoteText(raw: Record<string, unknown>): string {
+  const title = typeof raw.title === "string" ? raw.title.trim() : "";
+  const situation = typeof raw.situation === "string" ? raw.situation.trim() : "";
+  return situation ? `${title} — ${situation}` : title;
 }
 
 function str(v: unknown): string {
@@ -992,6 +1000,7 @@ export default function GeneratePage() {
   const [patternsOpen, setPatternsOpen] = useState(false);
   const [clientSlug, setClientSlug] = useState("");
   const [orgSlug, setOrgSlug] = useState("");
+  const { vote: castAngleVote, current: currentAngleVote } = useVotes(clientSlug, orgSlug, session?.id);
 
   const refreshSessions = useCallback(
     async (cs?: string, os?: string) => {
@@ -2272,8 +2281,19 @@ export default function GeneratePage() {
                   }`}
                 >
                   <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-sm font-semibold text-app-fg">{str(raw.title)}</p>
+                    <p className="flex-1 text-sm font-semibold text-app-fg">{str(raw.title)}</p>
                     {blueprint ? <BlueprintBadge /> : null}
+                    {str(raw.title) ? (
+                      <VoteButtons
+                        value={currentAngleVote("angle", angleVoteText(raw))}
+                        label="angle"
+                        onVote={(v) =>
+                          void castAngleVote("angle", angleVoteText(raw), v).then((err) => {
+                            if (err) show(err, "error");
+                          })
+                        }
+                      />
+                    ) : null}
                   </div>
                   <p className="text-xs text-app-fg-muted">{str(raw.situation)}</p>
                   <p className="text-[11px] text-app-fg-subtle">

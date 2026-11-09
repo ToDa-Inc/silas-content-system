@@ -40,6 +40,7 @@ from services.profile_similarity_gate import (
 )
 from services.similarity_scoring_executor import score_items_bounded
 from services.post_reel_linking import auto_link_published_reels
+from services.reel_diagnostics import recompute_reel_diagnostics
 
 logger = logging.getLogger(__name__)
 
@@ -718,6 +719,10 @@ def _run_own_scrape(
             link_result = auto_link_published_reels(supabase, client_id)
         except Exception:
             logger.warning("auto_link_published_reels failed for %s", client_id, exc_info=True)
+        try:
+            recompute_reel_diagnostics(supabase, client_id)
+        except Exception:
+            logger.warning("recompute_reel_diagnostics failed for %s", client_id, exc_info=True)
 
     supabase.table("background_jobs").update(
         {

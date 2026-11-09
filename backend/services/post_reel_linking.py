@@ -77,10 +77,13 @@ def best_auto_links(
     return out
 
 
-def own_reels_query(supabase, client_id: str, handle: Optional[str]):
+OWN_REEL_COLUMNS = "id,post_url,posted_at,caption,views,likes,comments,last_updated_at,thumbnail_url"
+
+
+def own_reels_query(supabase, client_id: str, handle: Optional[str], columns: str = OWN_REEL_COLUMNS):
     q = (
         supabase.table("scraped_reels")
-        .select("id,post_url,posted_at,caption,views,likes,comments,last_updated_at,thumbnail_url")
+        .select(columns)
         .eq("client_id", client_id)
         .eq("source", "client_baseline")
         .is_("competitor_id", "null")

@@ -8,7 +8,7 @@
  * Pure leaf (props in / events out). The host owns the regeneration call.
  */
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { RegenInline } from "./RegenInline";
 
@@ -17,9 +17,11 @@ type Props = {
   scriptForTalkingHead?: string | null;
   regenHooks: (feedback: string) => Promise<boolean>;
   busy: boolean;
+  /** Optional per-hook controls (e.g. thumbs up / down for the learning loop). */
+  hookActions?: (text: string) => ReactNode;
 };
 
-export function AiContextSection({ hooks, scriptForTalkingHead, regenHooks, busy }: Props) {
+export function AiContextSection({ hooks, scriptForTalkingHead, regenHooks, busy, hookActions }: Props) {
   const [open, setOpen] = useState(false);
   if (!hooks.length && !scriptForTalkingHead) return null;
 
@@ -53,9 +55,10 @@ export function AiContextSection({ hooks, scriptForTalkingHead, regenHooks, busy
                 {hooks.map((h, i) => (
                   <li
                     key={i}
-                    className="rounded-lg border border-app-divider/50 bg-app-chip-bg/30 px-3 py-2 text-xs leading-relaxed text-app-fg"
+                    className="flex items-start gap-2 rounded-lg border border-app-divider/50 bg-app-chip-bg/30 px-3 py-2 text-xs leading-relaxed text-app-fg"
                   >
-                    {h?.text || "—"}
+                    <span className="min-w-0 flex-1">{h?.text || "—"}</span>
+                    {hookActions && h?.text ? hookActions(h.text) : null}
                   </li>
                 ))}
               </ul>

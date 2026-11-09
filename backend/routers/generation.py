@@ -70,6 +70,7 @@ from services.format_digest import (
     list_format_digest_summaries,
 )
 from services.instagram_post_url import canonical_instagram_post_url
+from services.learning_context import build_learning_context, has_learning
 from services.reel_metrics import compute_niche_benchmarks, enrich_engagement_metrics
 from services.url_adapt_format_recommendation import recommend_url_adapt_format
 
@@ -366,7 +367,17 @@ def _load_client_for_generation(supabase: Client, client_id: str) -> Dict[str, A
         row["_niche_benchmarks"] = compute_niche_benchmarks(supabase, client_id)
     except Exception:
         row["_niche_benchmarks"] = {}
+    try:
+        row["_learning"] = build_learning_context(supabase, client_id)
+    except Exception:
+        logger.warning("build_learning_context failed for %s", client_id, exc_info=True)
+        row["_learning"] = None
     return row
+
+
+def _learning_trace(client_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    ctx = client_row.get("_learning")
+    return ctx.get("trace") if has_learning(ctx) else None
 
 
 @router.get("/clients/{slug}/generate/format-digests")
@@ -762,6 +773,7 @@ def generation_start(
         "hashtags": None,
         "story_variants": None,
         "status": "angles_ready",
+        "learning_trace": _learning_trace(client_row),
         "feedback": None,
         "prompt_version": GENERATION_PROMPT_VERSION,
         "created_at": now,
@@ -924,6 +936,7 @@ def _finalize_session_package(
             "carousel_slides": slides,
             "cover_text_options": None,
             "status": "content_ready",
+            "learning_trace": _learning_trace(client_row),
             "updated_at": now,
         }
         supabase.table("generation_sessions").update(patch).eq("id", session_id).execute()
@@ -980,6 +993,7 @@ def _finalize_session_package(
         "text_blocks": package.get("text_blocks"),
         "cover_text_options": cover_options or None,
         "status": "content_ready",
+        "learning_trace": _learning_trace(client_row),
         "updated_at": now,
     }
     supabase.table("generation_sessions").update(patch).eq("id", session_id).execute()
@@ -1194,6 +1208,7 @@ def generation_regenerate(
         "story_variants": package["story_variants"],
         "text_blocks": package.get("text_blocks"),
         "status": "content_ready",
+        "learning_trace": _learning_trace(client_row),
         "updated_at": now,
     }
     supabase.table("generation_sessions").update(patch).eq("id", session_id).execute()
