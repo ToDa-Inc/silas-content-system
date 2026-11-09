@@ -156,3 +156,13 @@ def test_no_requeue_when_analysis_exists_or_job_pending_or_cap_used():
     ):
         recompute_reel_diagnostics(_SB(db), "cli_x", now=NOW)
         assert _queued(db) == []
+
+
+def test_winner_must_also_be_in_her_top_share():
+    # Window where the top 20% start at 60k: a 25k reel (2.5× median 10k) is not a winner.
+    window = [_reel(4 + i, 10_000, 400, 100) for i in range(10)] + [_reel(20 + i, 60_000, 2400, 600) for i in range(3)]
+    norm = compute_norm(window, TH, NOW)
+    assert norm["top_views"] == 60_000
+    d = diagnose_reel(_reel(5, 25_000, 1000, 250), norm, TH)
+    assert d["bucket"] != "scale"
+    assert diagnose_reel(_reel(5, 70_000, 2800, 700), norm, TH)["bucket"] == "scale"

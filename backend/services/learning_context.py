@@ -22,6 +22,15 @@ MAX_PER_BUCKET = 5
 MAX_VOTES_PER_SIDE = 15
 
 
+_CTA_WORDS = ("kommentier", "comment", "link in", "schreib mir", "dm me", "jetzt anmelden", "sign up")
+
+
+def _looks_like_cta(line: str) -> bool:
+    """A caption that opens with its call to action is not a hook example."""
+    low = line.lower()
+    return any(w in low for w in _CTA_WORDS)
+
+
 def _hook_line(reel: Dict[str, Any]) -> str:
     hook = str(reel.get("hook_text") or "").strip()
     if hook:
@@ -97,6 +106,9 @@ def build_learning_context(supabase, client_id: str, *, now: Optional[datetime] 
         d = by_reel[rid]
         bucket = d.get("override_bucket") or d["rule_bucket"]
         if bucket in grouped:
+            # Hook-based groups need a real opening line, not a CTA that starts the caption.
+            if bucket in ("scale", "adjust_hook", "retire") and _looks_like_cta(_hook_line(r)):
+                continue
             vx = float((d.get("metrics") or {}).get("views_x") or 0)
             grouped[bucket].append({"reel": r, "diag": d, "views_x": vx})
     grouped["scale"].sort(key=lambda x: -x["views_x"])
@@ -159,8 +171,14 @@ def format_learning_block(ctx: Optional[Dict[str, Any]]) -> str:
     assert ctx is not None
     lines = [
         "\n=== LEARNING (this client's own results + approved/rejected ideas) ===",
-        "Evidence of what works for THIS audience. Use the patterns (hook mechanics, angle, structure, CTA style); "
-        "never copy lines word for word.",
+        "How to use this block:",
+        "- The client's voice and brand come first: VOICE_BRIEF, GENERATION_BRIEF and the client docs always win over "
+        "anything below. If a winning pattern clashes with her voice, keep her voice.",
+        "- Use WINNERS as evidence of WHICH situations, tensions and opening structures resonate with her audience "
+        "(e.g. a concrete everyday moment, a direct question, a named inner conflict) — not as wording to imitate.",
+        "- Never copy or closely paraphrase these lines, and do not use generic clickbait formulas "
+        "(\"this one mistake\", \"guaranteed\", \"nobody tells you\", \"the secret\") unless her own brief uses them.",
+        "- Prefer her own themes, terms and offers from the client docs over trends implied by view counts.",
     ]
 
     def block(title: str, rows: List[str]) -> None:
@@ -168,7 +186,7 @@ def format_learning_block(ctx: Optional[Dict[str, Any]]) -> str:
             lines.append(f"\n{title}:")
             lines.extend(f"- {r}" for r in rows)
 
-    block("WINNERS (do more of this)", [f"{w['hook']} [{w['format'] or 'reel'} · {w['reason']}]" for w in ctx["winners"]])
+    block("WINNERS (situations / openings that resonated — learn the why, not the words)", [f"{w['hook']} [{w['format'] or 'reel'} · {w['reason']}]" for w in ctx["winners"]])
     block("HOOKS_THAT_DID_NOT_STOP_THE_SCROLL (avoid this hook style)", [f"{w['hook']} [{w['reason']}]" for w in ctx["weak_hooks"]])
     block("CTAS_THAT_UNDERPERFORMED (watched, few comments — write stronger CTAs)", [f"{w['cta']} [{w['reason']}]" for w in ctx["weak_ctas"] if w.get("cta")])
     block("AVOID (low reach and low engagement)", [f"{w['hook']} [{w['reason']}]" for w in ctx["avoid"]])

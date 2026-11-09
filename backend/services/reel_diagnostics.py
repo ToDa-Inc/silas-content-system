@@ -31,6 +31,8 @@ DEFAULT_THRESHOLDS: Dict[str, float] = {
     "scale_views_x": 2.0,
     "low_views_x": 0.7,
     "cta_comment_rate_x": 0.5,
+    # A winner must also be in her top share of reels (0.2 = top 20%), so "Winner" stays rare.
+    "winner_top_share": 0.2,
 }
 BUCKETS = ("scale", "adjust_hook", "adjust_cta", "retire", "keep")
 BUCKET_LABEL = {
@@ -60,6 +62,7 @@ def resolve_thresholds(raw: Any) -> Dict[str, float]:
         out[k] = float(max(1, round(out[k])))
     # The median needs at least as many reels in the window as the minimum asks for.
     out["median_window"] = max(out["median_window"], out["min_reels"])
+    out["winner_top_share"] = min(out["winner_top_share"], 1.0)
     return out
 
 
@@ -82,6 +85,13 @@ def _times(x: float) -> str:
     return f"{x:.0f}×" if x >= 10 else f"{x:.1f}×".replace(".0×", "×")
 
 
+def _top_share_cutoff(views: List[float], share: float) -> float:
+    """Views needed to be in the top ``share`` of the window (0.2 → 80th percentile)."""
+    ranked = sorted(views, reverse=True)
+    k = max(1, round(len(ranked) * share))
+    return ranked[min(k, len(ranked)) - 1]
+
+
 def compute_norm(reels: List[Dict[str, Any]], th: Dict[str, float], now: datetime) -> Optional[Dict[str, Any]]:
     """Median views / comment rate / engagement rate over the last N mature reels, or None."""
     min_age = timedelta(days=th["min_age_days"])
@@ -101,6 +111,7 @@ def compute_norm(reels: List[Dict[str, Any]], th: Dict[str, float], now: datetim
             _rate((r.get("likes") or 0) + (r.get("comments") or 0), r["views"]) for r in window
         ),
         "reels_in_median": len(window),
+        "top_views": _top_share_cutoff([float(r["views"]) for r in window], th["winner_top_share"]),
     }
 
 
@@ -115,7 +126,8 @@ def diagnose_reel(reel: Dict[str, Any], norm: Dict[str, Any], th: Dict[str, floa
     outlier = bool(reel.get("is_outlier"))
 
     # Plain-language reason shown to the team; the exact ratios stay in ``metrics``.
-    if vx >= th["scale_views_x"] or outlier:
+    in_top = views >= float(norm.get("top_views") or 0)
+    if (vx >= th["scale_views_x"] or outlier) and in_top:
         bucket = "scale"
         reason = (
             f"{_times(vx)} more views than her usual reel"

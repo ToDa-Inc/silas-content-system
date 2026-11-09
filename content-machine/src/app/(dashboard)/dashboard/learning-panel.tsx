@@ -30,6 +30,7 @@ const LABEL = Object.fromEntries(BUCKETS.map((b) => [b.id, b])) as Record<Learni
 
 const RULE_FIELDS: { key: string; label: string }[] = [
   { key: "scale_views_x", label: "Winner: at least × her usual views" },
+  { key: "winner_top_share", label: "Winner: also in her top share of reels (0.2 = top 20%)" },
   { key: "low_views_x", label: "Weak start / Didn't work: below × her usual views" },
   { key: "cta_comment_rate_x", label: "Few comments: below × her usual comments per view" },
   { key: "median_window", label: "Her usual reel = middle of her last N reels" },
@@ -416,7 +417,7 @@ export function LearningPanel({ clientSlug, orgSlug }: { clientSlug: string; org
                     <span>{f.label}</span>
                     <input
                       type="number"
-                      step="0.1"
+                      step={f.key === "winner_top_share" ? "0.05" : "0.1"}
                       min="0"
                       value={rulesDraft[f.key] ?? ""}
                       aria-label={f.label}

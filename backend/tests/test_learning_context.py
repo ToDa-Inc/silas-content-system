@@ -21,11 +21,11 @@ def test_empty_or_disabled_learning_adds_nothing():
 
 def test_block_targets_each_bucket_at_its_part():
     block = format_learning_block(CTX)
-    assert "WINNERS (do more of this)" in block and "Nett sein macht dich unsichtbar." in block
+    assert "WINNERS (situations / openings that resonated" in block and "Nett sein macht dich unsichtbar." in block
     assert "HOOKS_THAT_DID_NOT_STOP_THE_SCROLL" in block
     assert "CTAS_THAT_UNDERPERFORMED" in block and "Kommentiere „Freiheit“" in block
     assert "AVOID" in block and "REJECTED_BY_THE_TEAM" in block and "Chef-Bashing" in block
-    assert "never copy lines word for word" in block
+    assert "Never copy or closely paraphrase" in block
 
 
 def test_block_reaches_every_prompt_via_client_context():
@@ -39,3 +39,12 @@ def test_learning_block_sits_before_large_json_sections():
     assert packed.index("=== LEARNING") < packed.index("=== ICP (JSON)")
     # Survives the 60k slice used by the story prompt.
     assert "=== LEARNING" in packed[:60_000]
+
+
+def test_voice_first_instructions_and_cta_hooks_skipped():
+    from services.learning_context import _looks_like_cta
+
+    block = format_learning_block(CTX)
+    assert "voice and brand come first" in block and "clickbait" in block
+    assert _looks_like_cta("Kommentiere „Klarheit“ und sichere dir deinen Platz")
+    assert not _looks_like_cta("Fällt Dir das auch auf?")
