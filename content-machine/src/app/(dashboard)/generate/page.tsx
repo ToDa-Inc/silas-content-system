@@ -1001,6 +1001,8 @@ export default function GeneratePage() {
   const [clientSlug, setClientSlug] = useState("");
   const [orgSlug, setOrgSlug] = useState("");
   const { vote: castAngleVote, current: currentAngleVote } = useVotes(clientSlug, orgSlug, session?.id);
+  /** False until the first context lookup resolves, so "no client" is not shown while it is still loading. */
+  const [contextResolved, setContextResolved] = useState(false);
 
   const refreshSessions = useCallback(
     async (cs?: string, os?: string) => {
@@ -1022,6 +1024,7 @@ export default function GeneratePage() {
     const ctx = await clientApiContext();
     setClientSlug(ctx.clientSlug);
     setOrgSlug(ctx.orgSlug);
+    setContextResolved(true);
     return ctx;
   }, []);
 
@@ -1644,7 +1647,7 @@ export default function GeneratePage() {
         </p>
       </header>
 
-      {!clientSlug && (
+      {contextResolved && !clientSlug && (
         <p className="mb-6 text-sm text-amber-600 dark:text-amber-400">
           No active client in workspace — complete onboarding or switch client.
         </p>

@@ -7,12 +7,15 @@ export function IntelligenceProgressBar({
   status,
   staleHint,
   onDismissStale,
+  showPercent = true,
 }: {
   label: string;
   percent: number;
   status: "running" | "queued" | "completed" | "failed" | null;
   staleHint?: boolean;
   onDismissStale?: () => void;
+  /** Hide the number when the bar is an estimate rather than measured progress. */
+  showPercent?: boolean;
 }) {
   const barPct = Math.min(100, Math.max(0, percent));
   const pulse =
@@ -41,9 +44,11 @@ export function IntelligenceProgressBar({
       ) : null}
       <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] text-zinc-600 dark:text-app-fg-muted">
         <span className="min-w-0 truncate">{label}</span>
-        <span className="shrink-0 tabular-nums text-zinc-500 dark:text-app-fg-faint">
-          {Math.round(barPct)}%
-        </span>
+        {showPercent ? (
+          <span className="shrink-0 tabular-nums text-zinc-500 dark:text-app-fg-faint">
+            {Math.round(barPct)}%
+          </span>
+        ) : null}
       </div>
       <div className="h-2 overflow-hidden rounded-full bg-zinc-200/90 dark:bg-white/10">
         <div

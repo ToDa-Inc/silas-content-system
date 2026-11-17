@@ -13,6 +13,15 @@ import { IntelligenceProgressBar } from "./intelligence-progress-bar";
 
 type SyncMode = "own" | "competitors" | "both";
 
+type OwnSyncResult = { ok: false } | { ok: true; skipped: boolean; stored: number };
+
+const NO_RECENT_REELS_MESSAGE =
+  "Instagram returned no reels from the last 30 days, so nothing was changed. Try again in a few minutes.";
+
+function reelsStoredLabel(n: number): string {
+  return `${n} ${n === 1 ? "reel" : "reels"}`;
+}
+
 type Props = {
   open: boolean;
   onClose: () => void;
@@ -157,7 +166,7 @@ export function SyncDataModal({
     return () => document.removeEventListener("keydown", h);
   }, [open, busy, closeModal]);
 
-  async function runOwn(): Promise<boolean> {
+  async function runOwn(): Promise<OwnSyncResult> {
     const apiBase = getContentApiBase();
     const headers = await clientApiHeaders({ orgSlug });
     const res = await contentApiFetch(
@@ -166,14 +175,23 @@ export function SyncDataModal({
     );
     if (res.status === 409) {
       setError("A refresh for your reels is already running — please wait.");
-      return false;
+      return { ok: false };
     }
     if (!res.ok) {
       const json = (await res.json().catch(() => ({}))) as { detail?: unknown };
-      setError(formatFastApiError(json, await res.text().catch(() => "Refresh failed")));
-      return false;
+      setError(formatFastApiError(json, "Refresh failed"));
+      return { ok: false };
     }
-    return true;
+    // The endpoint runs the scrape inline, so the body says what was actually stored.
+    const json = (await res.json().catch(() => ({}))) as {
+      result?: { skipped?: string; own_reels_stored?: number } | null;
+    };
+    const result = json.result ?? {};
+    return {
+      ok: true,
+      skipped: Boolean(result.skipped),
+      stored: Number(result.own_reels_stored) || 0,
+    };
   }
 
   async function runCompetitors(): Promise<{
@@ -246,15 +264,16 @@ export function SyncDataModal({
       if (mode === "own") {
         setProgressPhase("own");
         setProgressLabel("Refreshing your reels…");
-        const ok = await runOwn();
-        if (!ok) {
+        const own = await runOwn();
+        if (!own.ok || own.skipped) {
+          if (own.ok) setError(NO_RECENT_REELS_MESSAGE);
           setProgressStatus("failed");
           setBusy(false);
           setProgressPhase("idle");
           return;
         }
-        setProgressLabel("Done — your reels are up to date.");
-        onSyncMessage?.("Your reels were refreshed.");
+        setProgressLabel(`Done — ${reelsStoredLabel(own.stored)} updated.`);
+        onSyncMessage?.(`${reelsStoredLabel(own.stored)} refreshed from your Instagram.`);
         await finishOk();
         return;
       }
@@ -289,13 +308,17 @@ export function SyncDataModal({
       /* both */
       setProgressPhase("own");
       setProgressLabel("Step 1 of 2 — your reels…");
-      const ownOk = await runOwn();
-      if (!ownOk) {
+      const own = await runOwn();
+      if (!own.ok) {
         setProgressStatus("failed");
         setBusy(false);
         setProgressPhase("idle");
         return;
       }
+      // An empty own-reels result must not read as "everything is up to date" below.
+      const ownNote = own.skipped
+        ? "No recent reels came back for your account, so those were left unchanged."
+        : `${reelsStoredLabel(own.stored)} refreshed.`;
       setProgressPct(45);
       setProgressPhase("competitors");
       setProgressLabel("Step 2 of 2 — tracked creators…");
@@ -307,16 +330,14 @@ export function SyncDataModal({
         return;
       }
       if (comp.background) {
-        setProgressLabel("Done — your reels are fresh. Tracked creators may update in a few minutes.");
-        onSyncMessage?.(
-          "Your reels are up to date. Tracked creators continue refreshing — check back in a few minutes.",
-        );
+        setProgressLabel(`${ownNote} Tracked creators may update in a few minutes.`);
+        onSyncMessage?.(`${ownNote} Tracked creators continue refreshing — check back in a few minutes.`);
       } else if (comp.queued) {
-        setProgressLabel("Done — your reels are fresh. Tracked creator refresh will start soon.");
-        onSyncMessage?.("Your reels are up to date. Tracked creator refresh will start soon.");
+        setProgressLabel(`${ownNote} Tracked creator refresh will start soon.`);
+        onSyncMessage?.(`${ownNote} Tracked creator refresh will start soon.`);
       } else {
-        setProgressLabel("Done — everything is up to date.");
-        onSyncMessage?.("Your reels and tracked creators are up to date.");
+        setProgressLabel(`${ownNote} Tracked creators are up to date.`);
+        onSyncMessage?.(`${ownNote} Tracked creators are up to date.`);
       }
       await finishOk();
     } catch {
@@ -364,9 +385,10 @@ export function SyncDataModal({
         {busy ? (
           <div className="mb-4">
             <IntelligenceProgressBar
-              label={progressLabel}
+              label={progressStatus === "failed" ? "Refresh didn't complete" : progressLabel}
               percent={barPercent}
               status={progressStatus}
+              showPercent={progressStatus !== "running"}
             />
           </div>
         ) : (

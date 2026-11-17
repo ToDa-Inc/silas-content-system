@@ -36,7 +36,7 @@ export default async function IntelligencePage() {
 
   const competitors = compRes.ok ? compRes.data : [];
   const nOutliers = outlierRes.ok ? outlierRes.count : 0;
-  const lastSyncedAt = baselineRes.ok && baselineRes.data ? baselineRes.data.scraped_at : null;
+  const lastSyncedAt = baselineRes.ok ? (baselineRes.data?.scraped_at ?? null) : undefined;
 
   const clientLabel = formatClientLabel(clientSlug);
   const syncDisabled = !clientSlug.trim() || !orgSlug.trim();

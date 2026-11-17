@@ -40,9 +40,12 @@ const dim: Record<Size, string> = {
 export function ReelThumbnail({ src, alt = "Reel thumbnail", href, size = "md", className }: Props) {
   /** Which `url` last fired onError — avoids an effect when the thumbnail URL changes. */
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  /** Which `url` finished loading — drives the placeholder shimmer. */
+  const [loadedUrl, setLoadedUrl] = useState<string | null>(null);
 
   const url = src?.trim() ?? "";
   const imgBroken = failedUrl === url && url.length > 0;
+  const imgLoaded = loadedUrl === url;
 
   const empty = (
     <div
@@ -75,13 +78,24 @@ export function ReelThumbnail({ src, alt = "Reel thumbnail", href, size = "md", 
 
   const body = (
     <>
+      {imgLoaded ? null : (
+        <span
+          className="absolute inset-0 animate-pulse bg-zinc-200 dark:bg-zinc-800"
+          aria-hidden
+        />
+      )}
       {/* eslint-disable-next-line @next/next/no-img-element -- IG via /api/thumbnail-proxy or other CDNs */}
       <img
+        ref={(el) => {
+          // Cached images can finish before React attaches onLoad.
+          if (el?.complete && el.naturalWidth > 0) setLoadedUrl(url);
+        }}
         src={imgSrc}
         alt={alt}
         className="h-full w-full object-cover transition duration-300 ease-out group-hover:scale-[1.06] group-hover:brightness-[1.14]"
         loading="lazy"
         decoding="async"
+        onLoad={() => setLoadedUrl(url)}
         onError={() => setFailedUrl(url)}
       />
       <span

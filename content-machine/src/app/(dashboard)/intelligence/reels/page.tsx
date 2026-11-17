@@ -175,7 +175,7 @@ export default async function IntelligenceReelsPage({ searchParams }: PageProps)
     fetchClient(),
   ]);
 
-  const lastSyncedAt = baselineRes.ok && baselineRes.data ? baselineRes.data.scraped_at : null;
+  const lastSyncedAt = baselineRes.ok ? (baselineRes.data?.scraped_at ?? null) : undefined;
   const rows = reelsRes.ok ? reelsRes.data : [];
   const total = reelsRes.ok ? reelsRes.total : 0;
   const competitors = compRes.ok ? compRes.data : [];

@@ -9,7 +9,10 @@ type Props = {
   orgSlug: string;
   disabled?: boolean;
   disabledHint?: string | null;
-  /** ISO timestamp of the last successful baseline sync, or null if never synced. */
+  /**
+   * ISO timestamp of the last successful baseline sync, `null` if never synced,
+   * `undefined` when the lookup failed (shows nothing rather than a false "Not refreshed yet").
+   */
   lastSyncedAt?: string | null;
   /**
    * `embedded` — smaller control + calmer status line for dense headers (e.g. Reels catalog).
@@ -108,7 +111,7 @@ export function IntelligenceToolbar({
               : `Last refreshed ${ago} — may be out of date`
             : `Last refreshed ${ago}`}
         </p>
-      ) : !disabled && clientSlug.trim() ? (
+      ) : lastSyncedAt === null && !disabled && clientSlug.trim() ? (
         <p className="text-[10px] leading-snug text-app-fg-muted">Not refreshed yet</p>
       ) : null}
       {statusMsg ? (
