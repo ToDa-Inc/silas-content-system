@@ -66,7 +66,7 @@ Optional: `backend/.env` or `config/.env` for overrides (see load order in root 
    **`OPENROUTER_MODEL_FALLBACK`** — defaults to `google/gemini-3.1-flash-lite-preview`; on **HTTP 429** the client waits per **Retry-After** / backoff (see **`OPENROUTER_429_MAX_ATTEMPTS`**, **`OPENROUTER_429_MAX_SLEEP_S`** in `.env.example`), then may try the fallback (text/chat; **not** used for image generation or video multimodal). Account-wide/concurrent traffic still counts against the same API key—add OpenRouter credits or reduce worker parallelism if 429 persists.
    **OpenRouter scoring throughput:** by default, similarity scoring uses **4 bounded workers** and a Supabase-backed global pacer of **15 requests/minute** (`OPENROUTER_SCORING_WORKERS`, `OPENROUTER_REQUESTS_PER_MINUTE`). Apply **`backend/sql/phase22_openrouter_rate_limit.sql`** before enabling multiple API/worker processes.
 
-8. **`OPENAI_API_KEY`** — required for **Create → Generate image** (gpt-image-1.5). Set in repo root `.env`.
+8. **`FREEPIK_API_KEY`** — required for image generation in **Create** (covers, carousels). Set in repo root `.env`. (`OPENAI_API_KEY` is declared in `core/config.py` but no code reads it.)
 
 9. **`CORS_ORIGINS`** — include `http://localhost:3000` and `http://127.0.0.1:3000` for local Next.js; add production origins as needed.
 
