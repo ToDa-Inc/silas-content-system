@@ -181,6 +181,12 @@ def run_scraped_reels_refresh(settings: Settings, job: Dict[str, Any]) -> None:
     progress["enriched"] = len(items)
     if usage_limit_hit:
         progress["apify_usage_limit_partial_enrich"] = True
+    if errors and not items:
+        # Every batch failed (revoked token, usage limit, Apify outage). Recording this as a
+        # clean "completed" run hides it from the cron, the job list and "Last refreshed".
+        progress["phase"] = "failed"
+        _save(supabase, job_id, progress)
+        raise RuntimeError(f"Apify enrich failed for all {len(rows)} reels: {errors[0]}")
 
     # ── update scraped_reels + insert reel_snapshots ──────────────────────────
     progress["phase"] = "updating"

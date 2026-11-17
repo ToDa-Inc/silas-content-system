@@ -87,7 +87,7 @@ The worker polls `claim_next_job` every 5 seconds and runs one job at a time. `G
 
 | `job_type` | Does | Started by |
 |---|---|---|
-| `baseline_scrape` | Last 30 days of the creator's reels; writes a `client_baselines` row (the "Last refreshed" date), upserts own reels, writes snapshots. | Manual only: `POST /sync/own`, `/sync`, `/baseline/refresh` (the Refresh button) |
+| `baseline_scrape` | Last 30 days of the creator's reels; writes a `client_baselines` row (one input to the "Last refreshed" date, see section 8), upserts own reels, writes snapshots. | Manual only: `POST /sync/own`, `/sync`, `/baseline/refresh` (the Refresh button) |
 | `profile_scrape` | Reels for one competitor, or the creator when `scrape_own` is set. | Daily tick, `sync-all`, add competitor |
 | `competitor_discovery` | Finds and scores candidate competitors. | `POST /competitors/discover` |
 | `keyword_reel_similarity` | Niche discovery: keyword search, enrich, Gemini similarity gate, store. | Niche cron, daily tick |
@@ -361,9 +361,9 @@ Builder note: the Railway dashboard shows both services as "RAILPACK", but the r
 2. Apify → Billing: the account's monthly limit. A free plan has a small monthly cap that a daily competitor sync can exhaust.
 3. `background_jobs` for rows stuck in `queued` or `running`.
 
-Note: `scraped_reels_refresh` records Apify errors in `result.enrich_errors` and still finishes as `completed`, so a failed refresh does not show as failed.
+Note: when **every** Apify batch of a `scraped_reels_refresh` fails (bad token, usage limit, outage) the job is marked `failed` with the first error as its message. If only some batches fail, the job still completes and lists them in `result.enrich_errors`.
 
-**"Last refreshed" does not move.** That date comes from `client_baselines.scraped_at`, written only by `baseline_scrape`. No scheduler starts a baseline; only the manual Refresh does. Daily jobs still add snapshots.
+**How "Last refreshed" is worked out.** `GET /clients/{slug}/baseline` returns `last_synced_at`: the newest of the last baseline and the last **successful** daily job for that client (`services/sync_status.py`). A job counts when it is `completed` and it is the own-handle `profile_scrape`, a `scraped_reels_refresh` that enriched at least one reel, or a `baseline_scrape` that found recent reels. Failed jobs, competitor scrapes and empty results do not count. If the date is stuck, the daily jobs are failing; check the worker logs.
 
 **Costs.** Per-result Apify prices are on the actor pages; the refresh job estimates `results × $0.0023`. Keyword discovery and 147 tracked creators are the main daily cost.
 
@@ -377,8 +377,7 @@ Note: `scraped_reels_refresh` records Apify errors in `result.enrich_errors` and
 - How a new user is created and linked to an organisation (profile, `api_key`, membership) is only implemented in the onboarding route; I did not find a separate admin flow.
 - Nothing creates `cron_schedules` rows, so the worker scheduler is idle unless rows were inserted by hand. Verify in Supabase.
 - `cleanup-renders` has no scheduler.
-- No scheduler starts a baseline (section 8).
-- Failed refresh jobs are recorded as completed (section 8).
+- No scheduler starts a baseline. The baseline row (medians used for scoring) therefore only updates when someone clicks Refresh; the "Last refreshed" date no longer depends on it.
 - Publishing and scheduling are not built.
 
 ---

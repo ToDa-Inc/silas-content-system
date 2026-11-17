@@ -52,6 +52,7 @@ from services.instagram_post_url import (
 )
 from services.breakout_recompute import recompute_breakouts_for_client
 from services.competitor_manual import add_manual_competitor, preview_manual_competitor
+from services.sync_status import latest_successful_sync_at
 from services.job_queue import (
     fail_abandoned_queued_jobs,
     fail_stale_running_jobs,
@@ -1474,8 +1475,12 @@ def get_baseline(
     )
     if not res.data:
         raise HTTPException(status_code=404, detail="No baseline yet")
+    return {**_pick_baseline_row(res.data), "last_synced_at": _last_synced_at(supabase, client_id, res.data[0])}
+
+
+def _pick_baseline_row(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
-    for row in res.data:
+    for row in rows:
         exp = row.get("expires_at")
         if not exp:
             return row
@@ -1485,7 +1490,21 @@ def get_baseline(
                 return row
         except (ValueError, TypeError):
             return row
-    return res.data[0]
+    return rows[0]
+
+
+def _last_synced_at(supabase: Client, client_id: str, newest_baseline: Dict[str, Any]) -> Optional[str]:
+    """Newest of the last baseline and the last good daily refresh (what the UI calls "Last refreshed")."""
+    baseline_at = newest_baseline.get("scraped_at")
+    try:
+        job_at = latest_successful_sync_at(supabase, client_id)
+    except Exception:
+        logger.warning("latest_successful_sync_at failed for %s", client_id, exc_info=True)
+        return baseline_at
+    stamps = [s for s in (baseline_at, job_at) if s]
+    if not stamps:
+        return None
+    return max(stamps, key=lambda s: datetime.fromisoformat(str(s).replace("Z", "+00:00")).astimezone(timezone.utc))
 
 
 @router.post("/clients/{slug}/baseline/refresh")

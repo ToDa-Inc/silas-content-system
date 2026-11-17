@@ -119,6 +119,8 @@ export type BaselineRow = {
   reels_analyzed: number | null;
   scraped_at: string | null;
   expires_at: string | null;
+  /** Newest of the last baseline and the last good daily refresh; absent on older API versions. */
+  last_synced_at?: string | null;
 };
 
 /** One block of the client brain (Context page). */
